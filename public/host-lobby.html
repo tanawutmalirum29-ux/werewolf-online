@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+  <title>Werewolf Lobby</title>
+
+  <meta name="viewport"
+  content="width=device-width, initial-scale=1.0">
+
+  <style>
+
+    *{
+      box-sizing:border-box;
+    }
+
+    body{
+
+      margin:0;
+      padding:20px;
+
+      background:#111;
+
+      color:white;
+
+      font-family:Arial;
+    }
+
+    h1,h2,h3{
+
+      margin-top:0;
+    }
+
+    .top-box{
+
+      background:#1a1a1a;
+
+      border-radius:18px;
+
+      padding:20px;
+
+      margin-bottom:20px;
+    }
+
+    .room-code{
+
+      font-size:30px;
+
+      font-weight:bold;
+
+      color:#5865f2;
+    }
+
+    .player-count{
+
+      margin-top:10px;
+
+      font-size:18px;
+
+      opacity:0.8;
+    }
+
+    #playerList{
+
+      margin-top:20px;
+    }
+
+    .player-card{
+
+      background:#1e1e1e;
+
+      border-radius:14px;
+
+      padding:16px;
+
+      margin-bottom:12px;
+
+      display:flex;
+
+      justify-content:space-between;
+
+      align-items:center;
+    }
+
+    .player-left{
+
+      display:flex;
+
+      align-items:center;
+
+      gap:12px;
+    }
+
+    .avatar{
+
+      width:45px;
+      height:45px;
+
+      border-radius:50%;
+
+      background:#5865f2;
+
+      display:flex;
+
+      align-items:center;
+
+      justify-content:center;
+
+      font-weight:bold;
+
+      font-size:18px;
+    }
+
+    .player-name{
+
+      font-size:18px;
+      font-weight:bold;
+    }
+
+    .status{
+
+      color:#57f287;
+
+      font-size:14px;
+    }
+
+    button{
+
+      width:100%;
+
+      padding:16px;
+
+      border:none;
+
+      border-radius:16px;
+
+      background:#5865f2;
+
+      color:white;
+
+      font-size:18px;
+
+      font-weight:bold;
+
+      cursor:pointer;
+
+      margin-top:20px;
+    }
+
+    button:hover{
+
+      opacity:0.9;
+    }
+
+    .empty{
+
+      background:#1a1a1a;
+
+      padding:20px;
+
+      border-radius:14px;
+
+      text-align:center;
+
+      opacity:0.7;
+    }
+
+  </style>
+
+</head>
+
+<body>
+
+<h1>🎮 GAME LOBBY</h1>
+
+<div class="top-box">
+
+  <div>
+    รหัสห้อง
+  </div>
+
+  <div
+    class="room-code"
+    id="roomText"
+  >
+  </div>
+
+  <div
+    class="player-count"
+  >
+
+    ผู้เล่น:
+    <span id="playerCount">
+      0
+    </span>
+
+  </div>
+
+</div>
+
+<h2>ผู้เล่นในห้อง</h2>
+
+<div id="playerList"></div>
+
+<button onclick="startGame()">
+เริ่มเกม
+</button>
+
+<script>
+
+const room =
+JSON.parse(
+  localStorage.getItem(
+    "currentRoom"
+  )
+);
+
+document.getElementById(
+  "roomText"
+).innerText =
+room.roomCode;
+
+function renderPlayers(){
+
+  const playerList =
+    document.getElementById(
+      "playerList"
+    );
+
+  playerList.innerHTML = "";
+
+  document.getElementById(
+    "playerCount"
+  ).innerText =
+  room.players.length;
+
+  if(room.players.length <= 0){
+
+    playerList.innerHTML = `
+
+      <div class="empty">
+
+        ยังไม่มีผู้เล่นเข้าห้อง
+
+      </div>
+
+    `;
+
+    return;
+  }
+
+  room.players.forEach(player=>{
+
+    const firstLetter =
+      player.name.charAt(0);
+
+    playerList.innerHTML += `
+
+      <div class="player-card">
+
+        <div class="player-left">
+
+          <div class="avatar">
+
+            ${firstLetter}
+
+          </div>
+
+          <div>
+
+            <div class="player-name">
+
+              ${player.name}
+
+            </div>
+
+            <div class="status">
+
+              พร้อมเล่น
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+    `;
+
+  });
+
+}
+
+function startGame(){
+
+  if(
+    room.players.length
+    !==
+    room.roles.length
+  ){
+
+    alert(
+      "จำนวนผู้เล่นไม่ตรงกับจำนวนอาชีพ"
+    );
+
+    return;
+  }
+
+  const shuffledRoles =
+    [...room.roles]
+    .sort(()=>Math.random()-0.5);
+
+  room.players.forEach(
+    (player,index)=>{
+
+      player.role =
+        shuffledRoles[index];
+
+      player.alive = true;
+
+      player.action = "-";
+
+    }
+  );
+
+  room.started = true;
+
+  localStorage.setItem(
+
+    "currentRoom",
+
+    JSON.stringify(room)
+
+  );
+
+  location.href =
+    "host-game.html";
+
+}
+
+renderPlayers();
+
+</script>
+
+</body>
+
+</html>
