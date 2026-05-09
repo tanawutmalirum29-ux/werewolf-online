@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+  <title>Werewolf Player</title>
+
+  <meta name="viewport"
+  content="width=device-width, initial-scale=1.0">
+
+  <style>
+
+    *{
+      box-sizing:border-box;
+    }
+
+    body{
+
+      margin:0;
+      padding:20px;
+
+      background:#111;
+
+      color:white;
+
+      font-family:Arial;
+    }
+
+    input,
+    button{
+
+      width:100%;
+
+      padding:15px;
+
+      border:none;
+
+      border-radius:14px;
+
+      margin-bottom:12px;
+
+      font-size:16px;
+    }
+
+    input{
+
+      background:#1e1e1e;
+      color:white;
+    }
+
+    button{
+
+      background:#5865f2;
+
+      color:white;
+
+      font-weight:bold;
+
+      cursor:pointer;
+    }
+
+    .card{
+
+      background:#1a1a1a;
+
+      border-radius:18px;
+
+      padding:20px;
+
+      margin-bottom:20px;
+    }
+
+    .hidden{
+
+      display:none;
+    }
+
+    .player-card{
+
+      background:#1e1e1e;
+
+      border-radius:14px;
+
+      padding:15px;
+
+      margin-bottom:10px;
+    }
+
+    .role-box{
+
+      background:#5865f2;
+
+      padding:20px;
+
+      border-radius:18px;
+
+      text-align:center;
+
+      margin-bottom:20px;
+    }
+
+    .role-name{
+
+      font-size:30px;
+
+      font-weight:bold;
+
+      margin-top:10px;
+    }
+
+    .status{
+
+      margin-top:10px;
+
+      font-size:15px;
+
+      opacity:0.8;
+    }
+
+    .action-box{
+
+      background:#1e1e1e;
+
+      border-radius:18px;
+
+      padding:20px;
+
+      margin-top:20px;
+    }
+
+    select{
+
+      width:100%;
+
+      padding:15px;
+
+      border:none;
+
+      border-radius:14px;
+
+      margin-top:10px;
+
+      background:#222;
+
+      color:white;
+    }
+
+    #gameStatus{
+
+      margin-top:10px;
+
+      color:#57f287;
+    }
+
+  </style>
+
+</head>
+
+<body>
+
+<!-- JOIN PAGE -->
+
+<div id="joinPage">
+
+  <h1>🎮 WEREWOLF</h1>
+
+  <div class="card">
+
+    <input
+      id="name"
+      placeholder="ชื่อ"
+    >
+
+    <input
+      id="roomCode"
+      placeholder="รหัสห้อง"
+    >
+
+    <button onclick="joinRoom()">
+      เข้าห้อง
+    </button>
+
+  </div>
+
+</div>
+
+<!-- LOBBY PAGE -->
+
+<div
+  id="lobbyPage"
+  class="hidden"
+>
+
+  <h1>🎮 GAME LOBBY</h1>
+
+  <div class="card">
+
+    <h2>
+      ห้อง:
+      <span id="roomText"></span>
+    </h2>
+
+    <div id="gameStatus">
+
+      รอผู้สร้างเริ่มเกม...
+
+    </div>
+
+  </div>
+
+  <h2>ผู้เล่น</h2>
+
+  <div id="playerList"></div>
+
+</div>
+
+<!-- GAME PAGE -->
+
+<div
+  id="gamePage"
+  class="hidden"
+>
+
+  <h1>🎮 GAME</h1>
+
+  <div class="role-box">
+
+    <div>
+      บทของคุณ
+    </div>
+
+    <div
+      class="role-name"
+      id="myRole"
+    >
+    </div>
+
+    <div
+      class="status"
+      id="aliveStatus"
+    >
+    </div>
+
+  </div>
+
+  <div class="action-box">
+
+    <h2>Action</h2>
+
+    <div id="actionArea"></div>
+
+  </div>
+
+</div>
+
+<script>
+
+let playerName = "";
+
+let room = null;
+let gameStartedUI = false;
+
+function joinRoom(){
+
+  const name =
+    document.getElementById(
+      "name"
+    ).value;
+
+  const roomCode =
+    document.getElementById(
+      "roomCode"
+    ).value;
+
+  if(!name || !roomCode){
+
+    alert(
+      "กรอกข้อมูลให้ครบ"
+    );
+
+    return;
+  }
+
+  const savedRoom =
+    JSON.parse(
+      localStorage.getItem(
+        "currentRoom"
+      )
+    );
+
+  if(!savedRoom){
+
+    alert(
+      "ไม่พบห้อง"
+    );
+
+    return;
+  }
+
+  if(
+    savedRoom.roomCode
+    !==
+    roomCode
+  ){
+
+    alert(
+      "รหัสห้องไม่ถูกต้อง"
+    );
+
+    return;
+  }
+
+  playerName = name;
+
+  room = savedRoom;
+
+  const alreadyJoined =
+    room.players.find(
+      p=>p.name===name
+    );
+
+  if(!alreadyJoined){
+
+    room.players.push({
+
+      name,
+
+      alive:true,
+
+      role:null,
+
+      action:"-"
+
+    });
+
+  }
+
+  localStorage.setItem(
+
+    "currentRoom",
+
+    JSON.stringify(room)
+
+  );
+
+  document.getElementById(
+    "joinPage"
+  ).classList.add(
+    "hidden"
+  );
+
+  document.getElementById(
+    "lobbyPage"
+  ).classList.remove(
+    "hidden"
+  );
+
+  document.getElementById(
+    "roomText"
+  ).innerText =
+  room.roomCode;
+
+  renderLobby();
+
+  checkGameStart();
+
+  setInterval(()=>{
+
+    syncRoom();
+
+    checkGameStart();
+
+  },1000);
+
+}
+function checkGameStart(){
+
+  if(
+    room.started
+    &&
+    !gameStartedUI
+  ){
+
+    gameStartedUI = true;
+
+    startGameView();
+
+  }
+
+}
+
+function syncRoom(){
+
+  room =
+    JSON.parse(
+      localStorage.getItem(
+        "currentRoom"
+      )
+    );
+
+  if(room.started){
+
+    const me =
+      room.players.find(
+        p=>p.name===playerName
+      );
+
+    startGameView();
+
+  }else{
+
+    renderLobby();
+
+  }
+
+}
+
+function renderLobby(){
+
+  const playerList =
+    document.getElementById(
+      "playerList"
+    );
+
+  playerList.innerHTML = "";
+
+  room.players.forEach(player=>{
+
+    playerList.innerHTML += `
+
+      <div class="player-card">
+
+        ${player.name}
+
+      </div>
+
+    `;
+
+  });
+
+}
+
+function checkGameStart(){
+
+  if(room.started){
+
+    startGameView();
+
+  }
+
+}
+
+function startGameView(){
+
+  document.getElementById(
+    "lobbyPage"
+  ).classList.add(
+    "hidden"
+  );
+
+  document.getElementById(
+    "gamePage"
+  ).classList.remove(
+    "hidden"
+  );
+
+  const me =
+    room.players.find(
+      p=>p.name===playerName
+    );
+
+  document.getElementById(
+    "myRole"
+  ).innerText =
+  me.role;
+
+  let statusText =
+    me.alive
+    ? "คุณยังมีชีวิต"
+    : "คุณตายแล้ว";
+
+  // นักล่าหัวเห็นเป้าหมายอย่างเดียว
+
+  if(
+    me.role === "นักล่าหัว"
+  ){
+
+    if(!me.target){
+
+      assignHunterTarget(me);
+    }
+
+    statusText += `
+
+      <br><br>
+
+      🎯 เป้าหมาย:
+      <b>${me.target}</b>
+
+    `;
+  }
+
+  // บทที่มีโอกาสเปิดเผยตัว
+
+  const revealRoles = [
+
+    "นายพราน",
+    "กามเทพ",
+    "ผู้หยั่งรู้"
+
+  ];
+
+  if(
+    revealRoles.includes(
+      me.role
+    )
+  ){
+
+    statusText += `
+
+      <br><br>
+
+      ⚠️ บทนี้มีโอกาสเปิดเผยตัว
+
+    `;
+  }
+
+  document.getElementById(
+    "aliveStatus"
+  ).innerHTML =
+  statusText;
+
+  renderActionUI(me);
+
+}
+
+
+  const skillRoles = [
+
+    "หมาป่า",
+    "หมอ",
+    "ผู้หยั่งรู้",
+    "แม่มด"
+
+  ];
+
+  if(
+    !skillRoles.includes(
+      me.role
+    )
+  ){
+
+    area.innerHTML =
+      "บทนี้ไม่มีสกิล";
+
+    return;
+  }
+
+  let html = `
+
+    <select id="targetPlayer">
+
+  `;
+
+  room.players.forEach(player=>{
+
+    if(
+  player.name !== me.name
+  &&
+  player.alive
+){
+
+      html += `
+
+        <option value="${player.name}">
+          ${player.name}
+        </option>
+
+      `;
+    }
+
+  });
+
+  html += `
+
+    </select>
+
+    <button
+      onclick="useSkill()"
+      style="
+      margin-top:15px;
+      "
+    >
+      ใช้สกิล
+    </button>
+
+  `;
+
+  area.innerHTML = html;
+
+}
+
+function assignHunterTarget(me){
+
+  // บทที่ห้ามเป็นเป้า
+
+  const bannedRoles = [
+
+    "หมาป่า"
+
+  ];
+
+  const possibleTargets =
+
+    room.players.filter(player=>{
+
+      if(
+        player.name === me.name
+      ){
+
+        return false;
+      }
+
+      if(
+        bannedRoles.includes(
+          player.role
+        )
+      ){
+
+        return false;
+      }
+
+      return true;
+
+    });
+
+  if(
+    possibleTargets.length <= 0
+  ){
+
+    me.target = "ไม่มี";
+
+    return;
+  }
+
+  const randomTarget =
+
+    possibleTargets[
+      Math.floor(
+        Math.random()
+        *
+        possibleTargets.length
+      )
+    ];
+
+  me.target =
+    randomTarget.name;
+
+  localStorage.setItem(
+
+    "currentRoom",
+
+    JSON.stringify(room)
+
+  );
+
+}
+
+function renderActionUI(me){
+
+  const area =
+    document.getElementById(
+      "actionArea"
+    );
+
+  if(!me.alive){
+
+    area.innerHTML =
+      "คุณตายแล้ว";
+
+    return;
+  }
+
+  const skillRoles = [
+
+    "หมาป่า",
+    "หมอ",
+    "ผู้หยั่งรู้",
+    "แม่มด"
+
+  ];
+
+  if(
+    !skillRoles.includes(
+      me.role
+    )
+  ){
+
+    area.innerHTML =
+      "บทนี้ไม่มีสกิล";
+
+    return;
+  }
+
+  let html = `
+
+    <select id="targetPlayer">
+
+  `;
+
+  room.players.forEach(player=>{
+
+    if(player.name !== me.name){
+
+      html += `
+
+        <option value="${player.name}">
+          ${player.name}
+        </option>
+
+      `;
+    }
+
+  });
+
+  html += `
+    </select>
+
+    <button
+      onclick="useSkill()"
+      style="margin-top:15px;"
+    >
+      ใช้สกิล
+    </button>
+  `;
+
+  area.innerHTML = html;
+
+}
+
+function useSkill(){
+
+  const target =
+    document.getElementById(
+      "targetPlayer"
+    ).value;
+
+  const me =
+    room.players.find(
+      p=>p.name===playerName
+    );
+
+  me.action =
+    `${me.role} → ${target}`;
+
+  localStorage.setItem(
+
+    "currentRoom",
+
+    JSON.stringify(room)
+
+  );
+
+  alert(
+    "ใช้สกิลแล้ว"
+  );
+
+}
+
+</script>
+
+</body>
+
+</html>
