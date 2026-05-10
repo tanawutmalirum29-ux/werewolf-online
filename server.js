@@ -212,7 +212,105 @@ io.on("connection",(socket)=>{
   });
 
 });
+socket.on("kickPlayer",({roomCode,name})=>{
 
+  const room = rooms[roomCode];
+
+  if(!room) return;
+
+  room.players =
+  room.players.filter(
+    p=>p.name !== name
+  );
+
+  emitRoom(roomCode);
+
+});
+
+socket.on("closeRoom",(roomCode)=>{
+
+  if(!rooms[roomCode]) return;
+
+  io.to(roomCode).emit(
+    "roomClosed"
+  );
+
+  delete rooms[roomCode];
+
+});
+
+socket.on("hostLeave",(roomCode)=>{
+
+  if(!rooms[roomCode]) return;
+
+  io.to(roomCode).emit(
+    "roomClosed"
+  );
+
+  delete rooms[roomCode];
+
+});
+
+socket.on("disconnect",()=>{
+
+  for(const roomCode in rooms){
+
+    const room = rooms[roomCode];
+
+    room.players =
+    room.players.filter(
+      p=>p.id !== socket.id
+    );
+
+    emitRoom(roomCode);
+
+  }
+
+});
+socket.on(
+  "kickPlayer",
+  ({roomCode,name})=>{
+
+    const room =
+    rooms[roomCode];
+
+    if(!room) return;
+
+    const kickedPlayer =
+    room.players.find(
+      p=>p.name===name
+    );
+
+    if(kickedPlayer){
+
+      io.to(
+        kickedPlayer.id
+      ).emit(
+        "kicked"
+      );
+
+    }
+
+    room.players =
+    room.players.filter(
+      p=>p.name!==name
+    );
+
+    emitRoom(roomCode);
+
+  }
+);
+socket.on(
+  "getAllRooms",
+  ()=>{
+
+    socket.emit(
+      "allRooms",
+      Object.values(rooms)
+    );
+
+  }
+);
 server.listen(process.env.PORT || 3000,()=>{
   console.log("Server running");
 });
