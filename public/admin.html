@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin Room Control</title>
+  <style>
+    body{
+      background:#111;
+      color:white;
+      font-family:Arial;
+      padding:20px;
+    }
+
+    .room{
+      background:#1e1e1e;
+      padding:10px;
+      margin-bottom:10px;
+      border-radius:10px;
+    }
+
+    button{
+      padding:8px;
+      margin-top:5px;
+      border:none;
+      border-radius:8px;
+      cursor:pointer;
+      background:red;
+      color:white;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2>🔥 Admin Room Control</h2>
+
+<div id="rooms"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+
+function loadRooms(){
+  socket.emit("getAllRooms");
+}
+
+socket.on("allRooms", (rooms) => {
+
+  const container = document.getElementById("rooms");
+  container.innerHTML = "";
+
+  for(const code in rooms){
+
+    const room = rooms[code];
+
+    container.innerHTML += `
+      <div class="room">
+        <div>ห้อง: ${code}</div>
+        <div>ผู้เล่น: ${room.players.length}</div>
+
+        <button onclick="deleteRoom('${code}')">
+          ลบห้อง
+        </button>
+      </div>
+    `;
+
+  }
+
+});
+
+function deleteRoom(code){
+  socket.emit("closeRoom", code);
+}
+
+socket.on("roomClosed", () => {
+  loadRooms();
+});
+
+loadRooms();
+</script>
+
+</body>
+</html>
