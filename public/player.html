@@ -253,12 +253,56 @@
 
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
+
 <script>
+
+const socket = io();
+
+let room = null;
 
 let playerName = "";
 
-let room = null;
 let gameStartedUI = false;
+
+socket.on(
+  "roomData",
+  (serverRoom)=>{
+
+    room = serverRoom;
+
+    if(!gameStartedUI){
+
+      renderLobby();
+
+      checkGameStart();
+
+    }else{
+
+      const me =
+      room.players.find(
+        p=>p.name===playerName
+      );
+
+      if(me){
+
+        updateGameUI(me);
+
+      }
+
+    }
+
+  }
+);
+
+socket.on(
+  "errorMessage",
+  (msg)=>{
+
+    alert(msg);
+
+  }
+);
 
 function joinRoom(){
 
@@ -274,73 +318,20 @@ function joinRoom(){
 
   if(!name || !roomCode){
 
-    alert(
-      "กรอกข้อมูลให้ครบ"
-    );
+    alert("กรอกข้อมูลให้ครบ");
 
     return;
-  }
 
-  const savedRoom =
-    JSON.parse(
-      localStorage.getItem(
-        "currentRoom"
-      )
-    );
-
-  if(!savedRoom){
-
-    alert(
-      "ไม่พบห้อง"
-    );
-
-    return;
-  }
-
-  if(
-    savedRoom.roomCode
-    !==
-    roomCode
-  ){
-
-    alert(
-      "รหัสห้องไม่ถูกต้อง"
-    );
-
-    return;
   }
 
   playerName = name;
 
-  room = savedRoom;
-
-  const alreadyJoined =
-    room.players.find(
-      p=>p.name===name
-    );
-
-  if(!alreadyJoined){
-
-    room.players.push({
-
-      name,
-
-      alive:true,
-
-      role:null,
-
-      action:"-"
-
-    });
-
-  }
-
-  localStorage.setItem(
-
-    "currentRoom",
-
-    JSON.stringify(room)
-
+  socket.emit(
+    "joinRoom",
+    {
+      roomCode,
+      name
+    }
   );
 
   document.getElementById(
@@ -355,67 +346,16 @@ function joinRoom(){
     "hidden"
   );
 
+}
+
+function renderLobby(){
+
+  if(!room) return;
+
   document.getElementById(
     "roomText"
   ).innerText =
   room.roomCode;
-
-  renderLobby();
-
-  checkGameStart();
-
-  setInterval(()=>{
-
-    syncRoom();
-
-    checkGameStart();
-
-  },1000);
-
-}
-function checkGameStart(){
-
-  if(
-    room.started
-    &&
-    !gameStartedUI
-  ){
-
-    gameStartedUI = true;
-
-    startGameView();
-
-  }
-
-}
-
-function syncRoom(){
-
-  room =
-    JSON.parse(
-      localStorage.getItem(
-        "currentRoom"
-      )
-    );
-
-  if(room.started){
-
-    const me =
-      room.players.find(
-        p=>p.name===playerName
-      );
-
-    startGameView();
-
-  }else{
-
-    renderLobby();
-
-  }
-
-}
-
-function renderLobby(){
 
   const playerList =
     document.getElementById(
@@ -442,7 +382,13 @@ function renderLobby(){
 
 function checkGameStart(){
 
-  if(room.started){
+  if(
+    room.started
+    &&
+    !gameStartedUI
+  ){
+
+    gameStartedUI = true;
 
     startGameView();
 
@@ -469,6 +415,12 @@ function startGameView(){
       p=>p.name===playerName
     );
 
+  updateGameUI(me);
+
+}
+
+function updateGameUI(me){
+
   document.getElementById(
     "myRole"
   ).innerText =
@@ -479,16 +431,11 @@ function startGameView(){
     ? "คุณยังมีชีวิต"
     : "คุณตายแล้ว";
 
-  // นักล่าหัวเห็นเป้าหมายอย่างเดียว
-
   if(
     me.role === "นักล่าหัว"
+    &&
+    me.target
   ){
-
-    if(!me.target){
-
-      assignHunterTarget(me);
-    }
 
     statusText += `
 
@@ -498,31 +445,7 @@ function startGameView(){
       <b>${me.target}</b>
 
     `;
-  }
 
-  // บทที่มีโอกาสเปิดเผยตัว
-
-  const revealRoles = [
-
-    "นายพราน",
-    "กามเทพ",
-    "ผู้หยั่งรู้"
-
-  ];
-
-  if(
-    revealRoles.includes(
-      me.role
-    )
-  ){
-
-    statusText += `
-
-      <br><br>
-
-      ⚠️ บทนี้มีโอกาสเปิดเผยตัว
-
-    `;
   }
 
   document.getElementById(
@@ -531,138 +454,6 @@ function startGameView(){
   statusText;
 
   renderActionUI(me);
-
-}
-
-
-  const skillRoles = [
-
-    "หมาป่า",
-    "หมอ",
-    "ผู้หยั่งรู้",
-    "แม่มด"
-
-  ];
-
-  if(
-    !skillRoles.includes(
-      me.role
-    )
-  ){
-
-    area.innerHTML =
-      "บทนี้ไม่มีสกิล";
-
-    return;
-  }
-
-  let html = `
-
-    <select id="targetPlayer">
-
-  `;
-
-  room.players.forEach(player=>{
-
-    if(
-  player.name !== me.name
-  &&
-  player.alive
-){
-
-      html += `
-
-        <option value="${player.name}">
-          ${player.name}
-        </option>
-
-      `;
-    }
-
-  });
-
-  html += `
-
-    </select>
-
-    <button
-      onclick="useSkill()"
-      style="
-      margin-top:15px;
-      "
-    >
-      ใช้สกิล
-    </button>
-
-  `;
-
-  area.innerHTML = html;
-
-}
-
-function assignHunterTarget(me){
-
-  // บทที่ห้ามเป็นเป้า
-
-  const bannedRoles = [
-
-    "หมาป่า"
-
-  ];
-
-  const possibleTargets =
-
-    room.players.filter(player=>{
-
-      if(
-        player.name === me.name
-      ){
-
-        return false;
-      }
-
-      if(
-        bannedRoles.includes(
-          player.role
-        )
-      ){
-
-        return false;
-      }
-
-      return true;
-
-    });
-
-  if(
-    possibleTargets.length <= 0
-  ){
-
-    me.target = "ไม่มี";
-
-    return;
-  }
-
-  const randomTarget =
-
-    possibleTargets[
-      Math.floor(
-        Math.random()
-        *
-        possibleTargets.length
-      )
-    ];
-
-  me.target =
-    randomTarget.name;
-
-  localStorage.setItem(
-
-    "currentRoom",
-
-    JSON.stringify(room)
-
-  );
 
 }
 
@@ -679,6 +470,7 @@ function renderActionUI(me){
       "คุณตายแล้ว";
 
     return;
+
   }
 
   const skillRoles = [
@@ -700,6 +492,7 @@ function renderActionUI(me){
       "บทนี้ไม่มีสกิล";
 
     return;
+
   }
 
   let html = `
@@ -710,7 +503,11 @@ function renderActionUI(me){
 
   room.players.forEach(player=>{
 
-    if(player.name !== me.name){
+    if(
+      player.name !== me.name
+      &&
+      player.alive
+    ){
 
       html += `
 
@@ -719,11 +516,13 @@ function renderActionUI(me){
         </option>
 
       `;
+
     }
 
   });
 
   html += `
+
     </select>
 
     <button
@@ -732,6 +531,7 @@ function renderActionUI(me){
     >
       ใช้สกิล
     </button>
+
   `;
 
   area.innerHTML = html;
@@ -750,20 +550,17 @@ function useSkill(){
       p=>p.name===playerName
     );
 
-  me.action =
-    `${me.role} → ${target}`;
-
-  localStorage.setItem(
-
-    "currentRoom",
-
-    JSON.stringify(room)
-
+  socket.emit(
+    "setAction",
+    {
+      roomCode: room.roomCode,
+      name: playerName,
+      action:
+      `${me.role} → ${target}`
+    }
   );
 
-  alert(
-    "ใช้สกิลแล้ว"
-  );
+  alert("ใช้สกิลแล้ว");
 
 }
 
