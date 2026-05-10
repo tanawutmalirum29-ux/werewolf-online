@@ -14,12 +14,18 @@ app.use(express.static("public"));
 const rooms = {};
 const ADMIN_PASSWORD = "123456";
 
+/* =========================
+   EMIT ROOM
+========================= */
 function emitRoom(roomCode) {
   const room = rooms[roomCode];
   if (!room) return;
   io.to(roomCode).emit("roomData", room);
 }
 
+/* =========================
+   DELETE ROOM (SAFE)
+========================= */
 function deleteRoom(roomCode, reason = "unknown") {
   if (!rooms[roomCode]) return;
 
@@ -29,19 +35,29 @@ function deleteRoom(roomCode, reason = "unknown") {
   console.log("Room deleted:", roomCode, reason);
 }
 
+/* =========================
+   CLEANUP = DELETE IF EMPTY
+========================= */
 function cleanupRoom(roomCode) {
   const room = rooms[roomCode];
   if (!room) return;
 
+  // 🔥 FIX: ลบห้องทันทีถ้า player = 0
   if (room.players.length === 0) {
     deleteRoom(roomCode, "empty");
   }
 }
 
+/* =========================
+   SOCKET
+========================= */
 io.on("connection", (socket) => {
 
   console.log("connected:", socket.id);
 
+  /* =========================
+     CREATE ROOM
+  ========================= */
   socket.on("createRoom", (data) => {
 
     if (!data?.roomCode) return;
@@ -60,7 +76,6 @@ io.on("connection", (socket) => {
       players: []
     };
 
-    // ✔ IMPORTANT: host ต้อง join room ด้วย
     socket.join(data.roomCode);
 
     socket.emit("roomCreated", {
@@ -70,10 +85,16 @@ io.on("connection", (socket) => {
     console.log("Room created:", data.roomCode);
   });
 
+  /* =========================
+     JOIN ROOM
+  ========================= */
   socket.on("joinRoom", ({ roomCode, name }) => {
 
     const room = rooms[roomCode];
-    if (!room) return socket.emit("errorMessage", "ไม่พบห้อง");
+    if (!room) {
+      socket.emit("errorMessage", "ไม่พบห้อง");
+      return;
+    }
 
     const existing = room.players.find(p => p.name === name);
 
@@ -102,9 +123,13 @@ io.on("connection", (socket) => {
     emitRoom(roomCode);
   });
 
+  /* =========================
+     GET ROOM
+  ========================= */
   socket.on("getRoom", (roomCode) => {
 
     const room = rooms[roomCode];
+
     if (!room) {
       socket.emit("roomData", null);
       return;
@@ -114,6 +139,9 @@ io.on("connection", (socket) => {
     socket.emit("roomData", room);
   });
 
+  /* =========================
+     START GAME
+  ========================= */
   socket.on("startGame", (roomCode) => {
 
     const room = rooms[roomCode];
@@ -129,6 +157,9 @@ io.on("connection", (socket) => {
     emitRoom(roomCode);
   });
 
+  /* =========================
+     KICK PLAYER
+  ========================= */
   socket.on("kickPlayer", ({ roomCode, name }) => {
 
     const room = rooms[roomCode];
@@ -137,22 +168,33 @@ io.on("connection", (socket) => {
     room.players = room.players.filter(p => p.name !== name);
 
     emitRoom(roomCode);
+
+    // 🔥 สำคัญ: ลบถ้า player = 0
     cleanupRoom(roomCode);
   });
 
+  /* =========================
+     END GAME
+  ========================= */
   socket.on("endGame", (roomCode) => {
     deleteRoom(roomCode, "endGame");
   });
 
+  /* =========================
+     DISCONNECT
+  ========================= */
   socket.on("disconnect", () => {
 
     for (const roomCode in rooms) {
 
       const room = rooms[roomCode];
+      if (!room) continue;
 
       room.players = room.players.filter(p => p.id !== socket.id);
 
       emitRoom(roomCode);
+
+      // 🔥 FIX CORE: ถ้าไม่มี player = ลบห้องทันที
       cleanupRoom(roomCode);
     }
   });
