@@ -17,6 +17,8 @@ const rooms = {};
 
 function emitRoom(roomCode) {
 
+  if (!rooms[roomCode]) return;
+
   io.to(roomCode).emit(
     "roomData",
     rooms[roomCode]
@@ -26,7 +28,26 @@ function emitRoom(roomCode) {
 
 io.on("connection", (socket) => {
 
+  console.log("User connected:", socket.id);
+
+  // =========================
+  // CREATE ROOM (FIXED)
+  // =========================
   socket.on("createRoom", (data) => {
+
+    if (!data?.roomCode) return;
+
+    // กันห้องซ้ำ
+    if (rooms[data.roomCode]) {
+
+      socket.emit(
+        "errorMessage",
+        "มีห้องนี้อยู่แล้ว"
+      );
+
+      return;
+
+    }
 
     rooms[data.roomCode] = {
       roomCode: data.roomCode,
@@ -44,66 +65,68 @@ io.on("connection", (socket) => {
       rooms[data.roomCode]
     );
 
+    console.log("Room created:", data.roomCode);
+
   });
 
-  socket.on(
-    "joinRoom",
-    ({ roomCode, name }) => {
+  // =========================
+  // JOIN ROOM
+  // =========================
+  socket.on("joinRoom", ({ roomCode, name }) => {
 
-      const room = rooms[roomCode];
+    const room = rooms[roomCode];
 
-      if (!room) {
+    if (!room) {
 
-        socket.emit(
-          "errorMessage",
-          "ไม่พบห้อง"
-        );
-
-        return;
-
-      }
-
-      const already = room.players.find(
-        p => p.name === name
+      socket.emit(
+        "errorMessage",
+        "ไม่พบห้อง"
       );
 
-      if (already) {
-
-        already.id = socket.id;
-
-        socket.join(roomCode);
-
-        emitRoom(roomCode);
-
-        return;
-
-      }
-
-      room.players.push({
-        id: socket.id,
-        name,
-        role: null,
-        alive: true,
-        action: "-",
-        target: null,
-
-        memory: {
-          killed: false,
-          protected: false,
-          muted: false,
-          poisoned: false,
-          cursed: false,
-          notes: ""
-        }
-      });
-
-      socket.join(roomCode);
-
-      emitRoom(roomCode);
+      return;
 
     }
-  );
 
+    const already = room.players.find(
+      p => p.name === name
+    );
+
+    if (already) {
+
+      already.id = socket.id;
+      socket.join(roomCode);
+      emitRoom(roomCode);
+      return;
+
+    }
+
+    room.players.push({
+      id: socket.id,
+      name,
+      role: null,
+      alive: true,
+      action: "-",
+      target: null,
+
+      memory: {
+        killed: false,
+        protected: false,
+        muted: false,
+        poisoned: false,
+        cursed: false,
+        notes: ""
+      }
+    });
+
+    socket.join(roomCode);
+
+    emitRoom(roomCode);
+
+  });
+
+  // =========================
+  // GET ROOM
+  // =========================
   socket.on("getRoom", (roomCode) => {
 
     if (rooms[roomCode]) {
@@ -117,6 +140,9 @@ io.on("connection", (socket) => {
 
   });
 
+  // =========================
+  // START GAME
+  // =========================
   socket.on("startGame", (roomCode) => {
 
     const room = rooms[roomCode];
@@ -129,7 +155,7 @@ io.on("connection", (socket) => {
     room.players.forEach((player, index) => {
 
       player.role =
-        shuffled[index] || "Villager";
+        shuffled[index] || "ชาวบ้าน";
 
       if (player.role === "นักล่าหัว") {
 
@@ -160,183 +186,154 @@ io.on("connection", (socket) => {
 
   });
 
-  socket.on(
-    "setAction",
-    ({ roomCode, name, action }) => {
+  // =========================
+  // GAME ACTIONS
+  // =========================
+  socket.on("setAction", ({ roomCode, name, action }) => {
 
-      const room = rooms[roomCode];
+    const room = rooms[roomCode];
+    if (!room) return;
 
-      if (!room) return;
+    const player = room.players.find(
+      p => p.name === name
+    );
 
-      const player = room.players.find(
-        p => p.name === name
-      );
+    if (player) {
 
-      if (player) {
-
-        player.action = action;
-
-        emitRoom(roomCode);
-
-      }
+      player.action = action;
+      emitRoom(roomCode);
 
     }
-  );
 
-  socket.on(
-    "killPlayer",
-    ({ roomCode, name }) => {
+  });
 
-      const room = rooms[roomCode];
+  socket.on("killPlayer", ({ roomCode, name }) => {
 
-      if (!room) return;
+    const room = rooms[roomCode];
+    if (!room) return;
 
-      const player = room.players.find(
-        p => p.name === name
-      );
+    const player = room.players.find(
+      p => p.name === name
+    );
 
-      if (player) {
+    if (player) {
 
-        player.alive = false;
-
-        room.logs.unshift({
-          text: `${name} ถูกฆ่า`,
-          time: new Date().toLocaleTimeString()
-        });
-
-        emitRoom(roomCode);
-
-      }
-
-    }
-  );
-
-  socket.on(
-    "revivePlayer",
-    ({ roomCode, name }) => {
-
-      const room = rooms[roomCode];
-
-      if (!room) return;
-
-      const player = room.players.find(
-        p => p.name === name
-      );
-
-      if (player) {
-
-        player.alive = true;
-
-        emitRoom(roomCode);
-
-      }
-
-    }
-  );
-
-  socket.on(
-    "toggleMemory",
-    ({ roomCode, name, type }) => {
-
-      const room = rooms[roomCode];
-
-      if (!room) return;
-
-      const player = room.players.find(
-        p => p.name === name
-      );
-
-      if (player) {
-
-        player.memory[type] =
-          !player.memory[type];
-
-        emitRoom(roomCode);
-
-      }
-
-    }
-  );
-
-  socket.on(
-    "updateNotes",
-    ({ roomCode, name, value }) => {
-
-      const room = rooms[roomCode];
-
-      if (!room) return;
-
-      const player = room.players.find(
-        p => p.name === name
-      );
-
-      if (player) {
-
-        player.memory.notes = value;
-
-        emitRoom(roomCode);
-
-      }
-
-    }
-  );
-
-  socket.on(
-    "setPhase",
-    ({ roomCode, phase }) => {
-
-      const room = rooms[roomCode];
-
-      if (!room) return;
-
-      room.phase = phase;
+      player.alive = false;
 
       room.logs.unshift({
-        text: `เปลี่ยนเป็น ${phase}`,
+        text: `${name} ถูกฆ่า`,
         time: new Date().toLocaleTimeString()
       });
 
       emitRoom(roomCode);
 
     }
-  );
 
-  socket.on(
-    "kickPlayer",
-    ({ roomCode, name }) => {
+  });
 
-      const room = rooms[roomCode];
+  socket.on("revivePlayer", ({ roomCode, name }) => {
 
-      if (!room) return;
+    const room = rooms[roomCode];
+    if (!room) return;
 
-      const kickedPlayer = room.players.find(
-        p => p.name === name
-      );
+    const player = room.players.find(
+      p => p.name === name
+    );
 
-      if (kickedPlayer) {
+    if (player) {
 
-        io.to(kickedPlayer.id).emit(
-          "kicked"
-        );
+      player.alive = true;
+      emitRoom(roomCode);
 
-      }
+    }
 
-      room.players = room.players.filter(
-        p => p.name !== name
-      );
+  });
+
+  socket.on("toggleMemory", ({ roomCode, name, type }) => {
+
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    const player = room.players.find(
+      p => p.name === name
+    );
+
+    if (player) {
+
+      player.memory[type] =
+        !player.memory[type];
 
       emitRoom(roomCode);
 
     }
-  );
 
+  });
+
+  socket.on("updateNotes", ({ roomCode, name, value }) => {
+
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    const player = room.players.find(
+      p => p.name === name
+    );
+
+    if (player) {
+
+      player.memory.notes = value;
+      emitRoom(roomCode);
+
+    }
+
+  });
+
+  socket.on("setPhase", ({ roomCode, phase }) => {
+
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    room.phase = phase;
+
+    room.logs.unshift({
+      text: `เปลี่ยนเป็น ${phase}`,
+      time: new Date().toLocaleTimeString()
+    });
+
+    emitRoom(roomCode);
+
+  });
+
+  socket.on("kickPlayer", ({ roomCode, name }) => {
+
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    const kickedPlayer = room.players.find(
+      p => p.name === name
+    );
+
+    if (kickedPlayer) {
+
+      io.to(kickedPlayer.id).emit("kicked");
+
+    }
+
+    room.players = room.players.filter(
+      p => p.name !== name
+    );
+
+    emitRoom(roomCode);
+
+  });
+
+  // =========================
+  // CLOSE ROOM
+  // =========================
   socket.on("closeRoom", (roomCode) => {
 
     if (!rooms[roomCode]) return;
 
-    io.to(roomCode).emit(
-      "roomClosed"
-    );
+    io.to(roomCode).emit("roomClosed");
 
     delete rooms[roomCode];
 
@@ -346,14 +343,15 @@ io.on("connection", (socket) => {
 
     if (!rooms[roomCode]) return;
 
-    io.to(roomCode).emit(
-      "roomClosed"
-    );
+    io.to(roomCode).emit("roomClosed");
 
     delete rooms[roomCode];
 
   });
 
+  // =========================
+  // DISCONNECT CLEANUP
+  // =========================
   socket.on("disconnect", () => {
 
     for (const roomCode in rooms) {
@@ -368,6 +366,8 @@ io.on("connection", (socket) => {
 
     }
 
+    console.log("User disconnected:", socket.id);
+
   });
 
 });
@@ -376,7 +376,7 @@ server.listen(
   process.env.PORT || 3000,
   () => {
 
-    console.log("Server running");
+    console.log("Server running on port 3000");
 
   }
 );
