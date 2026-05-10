@@ -32,6 +32,12 @@
 <body>
 
 <h2>🔥 Admin Room Control</h2>
+<button onclick="goHome()" style="
+  background:#5865f2;
+  margin-bottom:15px;
+">
+  ⬅ กลับหน้าแรก
+</button>
 
 <div id="rooms"></div>
 
@@ -74,6 +80,9 @@ function deleteRoom(code){
 socket.on("roomClosed", () => {
   loadRooms();
 });
+function goHome(){
+  location.href = "index.html";
+}
 
 loadRooms();
 </script>
