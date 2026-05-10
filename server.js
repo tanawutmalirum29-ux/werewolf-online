@@ -356,23 +356,46 @@ io.on("connection", (socket) => {
   // =========================
   socket.on("disconnect", () => {
 
-    for (const roomCode in rooms) {
+  for(const roomCode in rooms){
 
-      const room = rooms[roomCode];
+    const room = rooms[roomCode];
+    if(!room) continue;
 
-      room.players = room.players.filter(
-        p => p.id !== socket.id
-      );
+    room.players = room.players.filter(
+      p => p.id !== socket.id
+    );
 
-      emitRoom(roomCode);
+    emitRoom(roomCode);
 
-    }
+    cleanupRoom(roomCode);
 
-    console.log("User disconnected:", socket.id);
-
-  });
+  }
 
 });
+
+socket.on("endGame", (roomCode) => {
+
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  io.to(roomCode).emit("roomClosed");
+
+  delete rooms[roomCode];
+
+  console.log("Room deleted (game ended):", roomCode);
+
+});
+function cleanupRoom(roomCode){
+
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  if(room.players.length === 0){
+    delete rooms[roomCode];
+    console.log("Room auto removed:", roomCode);
+  }
+
+}
 
 server.listen(
   process.env.PORT || 3000,
