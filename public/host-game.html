@@ -283,6 +283,12 @@
   >
     🌙 กลางคืน
   </button>
+<button
+  style="background:#ed4245; flex:1;"
+  onclick="endGame()"
+>
+  ❌ จบเกม / ลบห้อง
+</button>
 
 </div>
 
@@ -736,6 +742,19 @@ function renderLogs(){
     `;
 
   });
+
+}
+function endGame(){
+
+  if(!room?.roomCode) return;
+
+  socket.emit("endGame", room.roomCode);
+
+  sessionStorage.removeItem("roomCode");
+
+  alert("จบเกมแล้ว");
+
+  location.href = "index.html";
 
 }
 
