@@ -5,14 +5,10 @@
 
   <title>Werewolf Lobby</title>
 
-  <meta name="viewport"
-  content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <style>
-
-    *{
-      box-sizing:border-box;
-    }
+    *{box-sizing:border-box;}
 
     body{
       margin:0;
@@ -22,9 +18,7 @@
       font-family:Arial;
     }
 
-    h1,h2,h3{
-      margin-top:0;
-    }
+    h1,h2,h3{margin-top:0;}
 
     .top-box{
       background:#1a1a1a;
@@ -45,16 +39,13 @@
       opacity:0.8;
     }
 
-    #playerList{
-      margin-top:20px;
-    }
+    #playerList{margin-top:20px;}
 
     .player-card{
       background:#1e1e1e;
       border-radius:14px;
       padding:16px;
       margin-bottom:12px;
-
       display:flex;
       justify-content:space-between;
       align-items:center;
@@ -99,9 +90,7 @@
       padding:14px;
     }
 
-    button:hover{
-      opacity:0.9;
-    }
+    button:hover{opacity:0.9;}
 
     .main-btn{
       width:100%;
@@ -139,23 +128,13 @@
 
 <div class="top-box">
 
-  <div>
-    รหัสห้อง
-  </div>
+  <div>รหัสห้อง</div>
 
-  <div
-    class="room-code"
-    id="roomText"
-  >
-  </div>
+  <div class="room-code" id="roomText"></div>
 
   <div class="player-count">
-
     ผู้เล่น:
-    <span id="playerCount">
-      0
-    </span>
-
+    <span id="playerCount">0</span>
   </div>
 
 </div>
@@ -164,17 +143,11 @@
 
 <div id="playerList"></div>
 
-<button
-  class="main-btn"
-  onclick="startGame()"
->
+<button class="main-btn" onclick="startGame()">
   เริ่มเกม
 </button>
 
-<button
-  class="danger-btn"
-  onclick="closeRoom()"
->
+<button class="danger-btn" onclick="closeRoom()">
   ยุบห้อง
 </button>
 
@@ -186,229 +159,146 @@ const socket = io();
 
 let room = null;
 
-const roomCode =
-sessionStorage.getItem(
-  "roomCode"
-);
+const roomCode = sessionStorage.getItem("roomCode");
 
+/* =========================
+   GUARD
+========================= */
 if(!roomCode){
-
   alert("ไม่พบห้อง");
-
-  location.href =
-  "index.html";
-
+  location.href = "index.html";
 }
 
-socket.emit(
-  "getRoom",
-  roomCode
-);
-
-socket.on(
-  "roomData",
-  (serverRoom)=>{
-
-    if(!serverRoom){
-
-      alert("ห้องถูกยุบแล้ว");
-
-      sessionStorage.removeItem(
-        "roomCode"
-      );
-
-      location.href =
-      "index.html";
-
-      return;
-
-    }
-
-    room = serverRoom;
-
-    document.getElementById(
-      "roomText"
-    ).innerText =
-    room.roomCode;
-
-    renderPlayers();
-
-    if(room.started){
-
-      location.href =
-      "host-game.html";
-
-    }
-
+/* =========================
+   AUTO RECONNECT SAFE
+========================= */
+socket.on("connect", () => {
+  if(roomCode){
+    socket.emit("getRoom", roomCode);
   }
-);
+});
 
-socket.on(
-  "roomClosed",
-  ()=>{
+/* =========================
+   ROOM DATA
+========================= */
+socket.on("roomData", (serverRoom) => {
 
-    alert("ห้องถูกยุบ");
-
-    sessionStorage.removeItem(
-      "roomCode"
-    );
-
-    location.href =
-    "index.html";
-
+  if(!serverRoom){
+    alert("ห้องถูกยุบแล้ว");
+    sessionStorage.removeItem("roomCode");
+    location.href = "index.html";
+    return;
   }
-);
 
+  room = serverRoom;
+
+  document.getElementById("roomText").innerText = room.roomCode;
+  renderPlayers();
+
+  if(room.started){
+    location.href = "host-game.html";
+  }
+
+});
+
+/* =========================
+   ROOM CLOSED
+========================= */
+socket.on("roomClosed", () => {
+  alert("ห้องถูกยุบ");
+  sessionStorage.removeItem("roomCode");
+  location.href = "index.html";
+});
+
+/* =========================
+   RENDER PLAYERS
+========================= */
 function renderPlayers(){
 
-  const playerList =
-    document.getElementById(
-      "playerList"
-    );
+  if(!room) return;
+
+  const playerList = document.getElementById("playerList");
 
   playerList.innerHTML = "";
 
-  document.getElementById(
-    "playerCount"
-  ).innerText =
-  room.players.length;
+  document.getElementById("playerCount").innerText =
+  room.players?.length || 0;
 
-  if(room.players.length <= 0){
-
+  if(!room.players || room.players.length <= 0){
     playerList.innerHTML = `
-
-      <div class="empty">
-
-        ยังไม่มีผู้เล่นเข้าห้อง
-
-      </div>
-
+      <div class="empty">ยังไม่มีผู้เล่นเข้าห้อง</div>
     `;
-
     return;
-
   }
 
-  room.players.forEach(player=>{
+  room.players.forEach(player => {
 
-    const firstLetter =
-      player.name.charAt(0);
+    const firstLetter = player.name?.charAt(0) || "?";
 
     playerList.innerHTML += `
-
       <div class="player-card">
 
         <div class="player-left">
 
-          <div class="avatar">
-            ${firstLetter}
-          </div>
+          <div class="avatar">${firstLetter}</div>
 
           <div>
-
-            <div class="player-name">
-              ${player.name}
-            </div>
-
-            <div class="status">
-              พร้อมเล่น
-            </div>
-
+            <div class="player-name">${player.name}</div>
+            <div class="status">พร้อมเล่น</div>
           </div>
 
         </div>
 
-        <button
-          class="kick-btn"
-          onclick="
-            kickPlayer(
-              '${player.name}'
-            )
-          "
-        >
+        <button class="kick-btn" onclick="kickPlayer(\`${player.name}\`)">
           เตะ
         </button>
 
       </div>
-
     `;
-
   });
 
 }
 
+/* =========================
+   KICK
+========================= */
 function kickPlayer(name){
 
-  const confirmKick =
-  confirm(
-    "เตะ " + name + " ?"
-  );
+  if(!confirm("เตะ " + name + " ?")) return;
 
-  if(!confirmKick){
-
-    return;
-
-  }
-
-  socket.emit(
-    "kickPlayer",
-    {
-      roomCode,
-      name
-    }
-  );
+  socket.emit("kickPlayer", {
+    roomCode,
+    name
+  });
 
 }
 
+/* =========================
+   START GAME (FIXED)
+========================= */
 function startGame(){
 
-  if(
-    room.players.length
-    !==
-    room.roles.length
-  ){
+  if(!room) return;
 
-    alert(
-      "จำนวนผู้เล่นไม่ตรงกับจำนวนอาชีพ"
-    );
-
+  if(room.players.length !== room.roles.length){
+    alert("จำนวนผู้เล่นไม่ตรงกับจำนวนอาชีพ");
     return;
-
   }
 
-  socket.emit(
-    "startGame",
-    room.roomCode
-  );
-
+  socket.emit("startGame", roomCode);
 }
 
+/* =========================
+   END GAME (FIXED)
+========================= */
 function closeRoom(){
 
-  const confirmClose =
-  confirm(
-    "ต้องการยุบห้อง ?"
-  );
+  if(!confirm("ต้องการยุบห้อง ?")) return;
 
-  if(!confirmClose){
-
-    return;
-
-  }
-
-  socket.emit(
-    "closeRoom",
-    room.roomCode
-  );
-
+  socket.emit("endGame", roomCode);
 }
-
-window.addEventListener("beforeunload", ()=>{
-  // อย่าส่ง hostLeave
-});
 
 </script>
 
 </body>
-
 </html>
