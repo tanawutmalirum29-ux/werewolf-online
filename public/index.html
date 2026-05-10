@@ -1,11 +1,175 @@
-<!DOCTYPE html>  <html>  
-<head>  
-  <title>Werewolf Game</title>  
-  <link rel="stylesheet" href="style.css">  
-</head>  
-<body>  <h1>Werewolf Online</h1>  <a href="player.html">  
-  <button>เข้าเป็นผู้เล่น</button>  
-</a>  <a href="host-create.html">  
-  <button>เข้าเป็น GM</button>  
-</a>  </body>  
+<!DOCTYPE html>
+<html lang="th">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Werewolf Online</title>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #1a1a1a, #0d0d0d);
+      color: white;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .container {
+      text-align: center;
+      width: 90%;
+      max-width: 420px;
+    }
+
+    h1 {
+      font-size: 34px;
+      margin-bottom: 10px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      user-select: none;
+      transition: 0.2s;
+    }
+
+    h1:active {
+      transform: scale(0.95);
+    }
+
+    .subtitle {
+      color: #aaa;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+
+    .card {
+      background: #1c1c1c;
+      padding: 20px;
+      border-radius: 18px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      margin: 10px 0;
+      border: none;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+
+    .btn-player {
+      background: #5865f2;
+      color: white;
+    }
+
+    .btn-player:hover {
+      background: #4752c4;
+    }
+
+    .btn-gm {
+      background: #f39c12;
+      color: black;
+    }
+
+    .btn-gm:hover {
+      background: #d98c10;
+    }
+
+    .footer {
+      margin-top: 20px;
+      font-size: 12px;
+      color: #666;
+    }
+
+    /* glow effect */
+    .glow {
+      text-shadow: 0 0 10px #5865f2, 0 0 20px #5865f2;
+    }
+
+    /* secret hint */
+    .hint {
+      margin-top: 15px;
+      font-size: 11px;
+      color: #444;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <h1 id="title">🐺 Werewolf Online</h1>
+
+  <div class="subtitle">
+    เกมล่าหมาป่าออนไลน์แบบเรียลไทม์
+  </div>
+
+  <div class="card">
+
+    <a href="player.html">
+      <button class="btn-player">
+        🎮 เข้าเป็นผู้เล่น
+      </button>
+    </a>
+
+    <a href="host-create.html">
+      <button class="btn-gm">
+        🧠 เข้าเป็น GM
+      </button>
+    </a>
+
+  </div>
+
+  <div class="hint">
+    💡 (ลองกดหัวเกมเร็ว ๆ)
+  </div>
+
+  <div class="footer">
+    v1.0 • Real-time Werewolf Game
+  </div>
+
+</div>
+
+<script>
+  // ===== SECRET ADMIN TRIGGER =====
+  let click = 0;
+  let last = 0;
+
+  document.getElementById("title").addEventListener("click", () => {
+
+    const now = Date.now();
+
+    if (now - last > 1000) {
+      click = 0;
+    }
+
+    click++;
+    last = now;
+
+    if (click >= 3) {
+      click = 0;
+      document.getElementById("title").classList.add("glow");
+
+      setTimeout(() => {
+        document.getElementById("title").classList.remove("glow");
+      }, 1000);
+
+      alert("🔐 โหมดลับถูกปลดล็อก (ต้องใส่รหัสในเกม)");
+    }
+
+  });
+</script>
+
+</body>
 </html>
