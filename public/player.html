@@ -2,7 +2,6 @@
 <html>
 
 <head>
-
   <title>Werewolf Player</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
@@ -61,14 +60,12 @@
 
     .role-name{font-size:30px;font-weight:bold;}
   </style>
-
 </head>
 
 <body>
 
 <!-- JOIN -->
 <div id="joinPage">
-
   <h1>🎮 WEREWOLF</h1>
 
   <div class="card">
@@ -76,27 +73,20 @@
     <input id="roomCode" placeholder="รหัสห้อง">
     <button onclick="joinRoom()">เข้าห้อง</button>
   </div>
-
 </div>
 
 <!-- LOBBY -->
 <div id="lobbyPage" class="hidden">
-
   <h1>LOBBY</h1>
-
   <h2>ห้อง: <span id="roomText"></span></h2>
-
   <div id="playerList"></div>
-
 </div>
 
 <!-- GAME -->
 <div id="gamePage" class="hidden">
-
   <div class="role-box">
     <div id="myRole"></div>
   </div>
-
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
@@ -109,16 +99,6 @@ let room = null;
 let playerName = "";
 let joined = false;
 let gameStartedUI = false;
-
-/* =========================
-   ROLE DESC
-========================= */
-const roleDescriptions = {
-  "หมาป่า":"ฆ่าคนทุกคืน",
-  "ชาวบ้าน":"หาหมาป่า",
-  "หมอ":"ป้องกันคน",
-  "ผู้หยั่งรู้":"ตรวจคน"
-};
 
 /* =========================
    JOIN ROOM
@@ -134,12 +114,13 @@ function joinRoom(){
   }
 
   playerName = name;
+  joined = false;
 
   socket.emit("joinRoom", { roomCode, name });
 }
 
 /* =========================
-   JOIN SUCCESS (IMPORTANT FIX)
+   JOIN SUCCESS (FIXED CORE)
 ========================= */
 socket.on("joinSuccess", (data) => {
 
@@ -150,10 +131,12 @@ socket.on("joinSuccess", (data) => {
 
   document.getElementById("roomText").innerText = data.roomCode;
 
+  // 🔥 ขอ state ใหม่ทันที
+  socket.emit("getRoom", data.roomCode);
 });
 
 /* =========================
-   ROOM UPDATE (ONLY ONE)
+   ROOM DATA (ONLY UPDATE)
 ========================= */
 socket.on("roomData", (serverRoom) => {
 
@@ -182,7 +165,6 @@ socket.on("roomData", (serverRoom) => {
   if(gameStartedUI){
     document.getElementById("myRole").innerText = me.role || "-";
   }
-
 });
 
 /* =========================
@@ -198,7 +180,6 @@ function renderLobby(){
   room.players.forEach(p => {
     list.innerHTML += `<div class="player-card">${p.name}</div>`;
   });
-
 }
 
 /* =========================
