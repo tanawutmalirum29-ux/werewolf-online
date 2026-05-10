@@ -4,7 +4,6 @@
 <head>
 
   <title>Werewolf Lobby</title>
-
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <style>
@@ -129,7 +128,6 @@
 <div class="top-box">
 
   <div>รหัสห้อง</div>
-
   <div class="room-code" id="roomText"></div>
 
   <div class="player-count">
@@ -156,43 +154,46 @@
 <script>
 
 const socket = io();
-
 let room = null;
 
 const roomCode = sessionStorage.getItem("roomCode");
 
 /* =========================
-   GUARD
+   SAFE INIT (FIXED)
 ========================= */
 if(!roomCode){
-  alert("ไม่พบห้อง");
   location.href = "index.html";
 }
 
 /* =========================
-   AUTO RECONNECT SAFE
+   IMPORTANT FIX:
+   host must NOT cause empty-room deletion
+   -> force join as spectator
 ========================= */
 socket.on("connect", () => {
+
   if(roomCode){
+
+    socket.emit("joinRoomAsSpectator", roomCode);
     socket.emit("getRoom", roomCode);
+
   }
+
 });
 
 /* =========================
-   ROOM DATA
+   ROOM DATA (SAFE)
 ========================= */
 socket.on("roomData", (serverRoom) => {
 
   if(!serverRoom){
-    alert("ห้องถูกยุบแล้ว");
-    sessionStorage.removeItem("roomCode");
-    location.href = "index.html";
-    return;
+    return; // กัน redirect กระชากตอน reconnect
   }
 
   room = serverRoom;
 
   document.getElementById("roomText").innerText = room.roomCode;
+
   renderPlayers();
 
   if(room.started){
@@ -205,33 +206,39 @@ socket.on("roomData", (serverRoom) => {
    ROOM CLOSED
 ========================= */
 socket.on("roomClosed", () => {
+
   alert("ห้องถูกยุบ");
   sessionStorage.removeItem("roomCode");
   location.href = "index.html";
+
 });
 
 /* =========================
-   RENDER PLAYERS
+   RENDER PLAYERS (SAFE)
 ========================= */
 function renderPlayers(){
 
-  if(!room) return;
-
   const playerList = document.getElementById("playerList");
+
+  if(!room){
+    playerList.innerHTML = "";
+    return;
+  }
+
+  const players = room.players || [];
+
+  document.getElementById("playerCount").innerText = players.length;
 
   playerList.innerHTML = "";
 
-  document.getElementById("playerCount").innerText =
-  room.players?.length || 0;
-
-  if(!room.players || room.players.length <= 0){
+  if(players.length === 0){
     playerList.innerHTML = `
       <div class="empty">ยังไม่มีผู้เล่นเข้าห้อง</div>
     `;
     return;
   }
 
-  room.players.forEach(player => {
+  players.forEach(player => {
 
     const firstLetter = player.name?.charAt(0) || "?";
 
@@ -249,7 +256,8 @@ function renderPlayers(){
 
         </div>
 
-        <button class="kick-btn" onclick="kickPlayer(\`${player.name}\`)">
+        <button class="kick-btn"
+          onclick="kickPlayer('${player.name.replace(/'/g, "\\'")}')">
           เตะ
         </button>
 
@@ -274,7 +282,7 @@ function kickPlayer(name){
 }
 
 /* =========================
-   START GAME (FIXED)
+   START GAME
 ========================= */
 function startGame(){
 
@@ -289,7 +297,7 @@ function startGame(){
 }
 
 /* =========================
-   END GAME (FIXED)
+   END GAME
 ========================= */
 function closeRoom(){
 
