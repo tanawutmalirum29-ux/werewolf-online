@@ -118,18 +118,29 @@ io.on("connection", (socket) => {
     socket.join(roomCode);
     emitRoom(roomCode);
   });
+socket.on("joinRoomAsSpectator", (roomCode) => {
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  socket.join(roomCode);
+  socket.emit("roomData", room);
+});
 
   /* =========================
      GET ROOM
   ========================= */
   socket.on("getRoom", (roomCode) => {
+  const room = rooms[roomCode];
+  if (!room) {
+    socket.emit("roomData", null);
+    return;
+  }
 
-    const room = rooms[roomCode];
-    if (!room) return;
+  socket.join(roomCode);
 
-    socket.join(roomCode);
-    socket.emit("roomData", room);
-  });
+  // ใช้ helper ตัวเดียวกัน
+  socket.emit("roomData", room);
+});
 
   /* =========================
      START GAME
