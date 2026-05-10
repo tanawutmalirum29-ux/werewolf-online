@@ -2,107 +2,148 @@
 <html lang="th">
 
 <head>
-  <meta charset="UTF-8">
-  <title>Werewolf Online</title>
+<meta charset="UTF-8">
+<title>Werewolf Online</title>
 
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <style>
-    * {
-      box-sizing: border-box;
-      font-family: Arial, sans-serif;
-    }
+<style>
+*{
+  box-sizing:border-box;
+  font-family:Arial,sans-serif;
+}
 
-    body {
-      margin: 0;
-      background: radial-gradient(circle at top, #1a1a1a, #0d0d0d);
-      color: white;
-      height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-    }
+body{
+  margin:0;
+  height:100vh;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  background:radial-gradient(circle at top,#1a1a1a,#0d0d0d);
+  color:white;
+}
 
-    .container {
-      text-align: center;
-      width: 90%;
-      max-width: 420px;
-    }
+/* container */
+.container{
+  width:90%;
+  max-width:420px;
+  text-align:center;
+}
 
-    h1 {
-      font-size: 34px;
-      margin-bottom: 10px;
-      letter-spacing: 1px;
-      cursor: pointer;
-      user-select: none;
-      transition: 0.2s;
-    }
+/* title */
+h1{
+  font-size:34px;
+  margin-bottom:8px;
+  cursor:pointer;
+  user-select:none;
+  transition:0.2s;
+}
 
-    h1:active {
-      transform: scale(0.95);
-    }
+h1:active{
+  transform:scale(0.95);
+}
 
-    .subtitle {
-      color: #aaa;
-      margin-bottom: 30px;
-      font-size: 14px;
-    }
+.subtitle{
+  color:#aaa;
+  font-size:14px;
+  margin-bottom:20px;
+}
 
-    .card {
-      background: #1c1c1c;
-      padding: 20px;
-      border-radius: 18px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    }
+/* card */
+.card{
+  background:#1c1c1c;
+  padding:20px;
+  border-radius:18px;
+  box-shadow:0 10px 30px rgba(0,0,0,0.5);
+}
 
-    button {
-      width: 100%;
-      padding: 14px;
-      margin: 10px 0;
-      border: none;
-      border-radius: 14px;
-      font-size: 16px;
-      font-weight: bold;
-      cursor: pointer;
-      transition: 0.2s;
-    }
+/* buttons */
+button{
+  width:100%;
+  padding:14px;
+  margin:10px 0;
+  border:none;
+  border-radius:14px;
+  font-size:16px;
+  font-weight:bold;
+  cursor:pointer;
+  transition:0.2s;
+}
 
-    .btn-player {
-      background: #5865f2;
-      color: white;
-    }
+.btn-player{
+  background:#5865f2;
+  color:white;
+}
 
-    .btn-player:hover {
-      background: #4752c4;
-    }
+.btn-player:hover{
+  background:#4752c4;
+}
 
-    .btn-gm {
-      background: #f39c12;
-      color: black;
-    }
+.btn-gm{
+  background:#f39c12;
+  color:black;
+}
 
-    .btn-gm:hover {
-      background: #d98c10;
-    }
+.btn-gm:hover{
+  background:#d98c10;
+}
 
-    .footer {
-      margin-top: 20px;
-      font-size: 12px;
-      color: #666;
-    }
+/* footer */
+.footer{
+  margin-top:15px;
+  font-size:12px;
+  color:#666;
+}
 
-    /* glow effect */
-    .glow {
-      text-shadow: 0 0 10px #5865f2, 0 0 20px #5865f2;
-    }
+.hint{
+  font-size:11px;
+  color:#444;
+  margin-top:10px;
+}
 
-    /* secret hint */
-    .hint {
-      margin-top: 15px;
-      font-size: 11px;
-      color: #444;
-    }
-  </style>
+/* glow */
+.glow{
+  text-shadow:0 0 10px #5865f2,0 0 20px #5865f2;
+}
+
+/* modal */
+.modal{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.7);
+  display:none;
+  justify-content:center;
+  align-items:center;
+}
+
+.modal-box{
+  background:#222;
+  padding:20px;
+  border-radius:16px;
+  width:90%;
+  max-width:320px;
+}
+
+.modal-box input{
+  width:100%;
+  padding:12px;
+  border-radius:10px;
+  border:none;
+  margin-top:10px;
+  background:#111;
+  color:white;
+}
+
+.modal-box button{
+  margin-top:10px;
+}
+
+.small{
+  font-size:12px;
+  color:#aaa;
+}
+</style>
+
 </head>
 
 <body>
@@ -112,27 +153,23 @@
   <h1 id="title">🐺 Werewolf Online</h1>
 
   <div class="subtitle">
-    เกมล่าหมาป่าออนไลน์แบบเรียลไทม์
+    เกมล่าหมาป่าแบบเรียลไทม์
   </div>
 
   <div class="card">
 
     <a href="player.html">
-      <button class="btn-player">
-        🎮 เข้าเป็นผู้เล่น
-      </button>
+      <button class="btn-player">🎮 เข้าเป็นผู้เล่น</button>
     </a>
 
     <a href="host-create.html">
-      <button class="btn-gm">
-        🧠 เข้าเป็น GM
-      </button>
+      <button class="btn-gm">🧠 เข้าเป็น GM</button>
     </a>
 
   </div>
 
   <div class="hint">
-    💡 (ลองกดหัวเกมเร็ว ๆ)
+    💡 ลองกดหัวเกม 3 ครั้งเร็ว ๆ
   </div>
 
   <div class="footer">
@@ -141,34 +178,78 @@
 
 </div>
 
+<!-- MODAL ADMIN -->
+<div class="modal" id="modal">
+
+  <div class="modal-box">
+
+    <h3>🔐 Admin Access</h3>
+
+    <div class="small">
+      ใส่รหัสเพื่อเข้าสู่โหมดแอดมิน
+    </div>
+
+    <input type="password" id="adminPass" placeholder="รหัสแอดมิน">
+
+    <button onclick="checkPass()">เข้าสู่ระบบ</button>
+
+    <button onclick="closeModal()" style="background:#333;">
+      ปิด
+    </button>
+
+  </div>
+
+</div>
+
 <script>
-  // ===== SECRET ADMIN TRIGGER =====
-  let click = 0;
-  let last = 0;
 
-  document.getElementById("title").addEventListener("click", () => {
+let click = 0;
+let last = 0;
 
-    const now = Date.now();
+document.getElementById("title").addEventListener("click", () => {
 
-    if (now - last > 1000) {
-      click = 0;
-    }
+  const now = Date.now();
 
-    click++;
-    last = now;
+  if(now - last > 800){
+    click = 0;
+  }
 
-    if (click >= 3) {
-      click = 0;
-      document.getElementById("title").classList.add("glow");
+  click++;
+  last = now;
 
-      setTimeout(() => {
-        document.getElementById("title").classList.remove("glow");
-      }, 1000);
+  if(click >= 3){
+    click = 0;
 
-      alert("🔐 โหมดลับถูกปลดล็อก (ต้องใส่รหัสในเกม)");
-    }
+    document.getElementById("title").classList.add("glow");
 
-  });
+    setTimeout(()=>{
+      document.getElementById("title").classList.remove("glow");
+    },800);
+
+    // เปิด modal
+    document.getElementById("modal").style.display = "flex";
+  }
+
+});
+
+function closeModal(){
+  document.getElementById("modal").style.display = "none";
+}
+
+function checkPass(){
+
+  const pass = document.getElementById("adminPass").value;
+
+  if(pass === "123456"){   // 🔥 เปลี่ยนรหัสตรงนี้
+    alert("เข้าสู่โหมดแอดมินสำเร็จ");
+    location.href = "admin.html";
+  }
+  else{
+    alert("รหัสไม่ถูกต้อง");
+  }
+
+}
+
 </script>
 
 </body>
