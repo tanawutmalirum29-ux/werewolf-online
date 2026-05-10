@@ -3,139 +3,140 @@
 
 <head>
 
-  <meta charset="UTF-8">
+<meta charset="UTF-8">
 
-  <!-- สำคัญมาก -->
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  >
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0"
+>
 
-  <title>Werewolf Game</title>
+<title>Werewolf Game</title>
 
-  <link rel="stylesheet" href="style.css">
+<style>
 
-  <style>
+*{
+  box-sizing:border-box;
 
-    *{
-      box-sizing:border-box;
+  user-select:none;
+  -webkit-user-select:none;
+  -webkit-touch-callout:none;
+}
 
-      /* ปิดการคัดลอก */
-      user-select:none;
-      -webkit-user-select:none;
-      -webkit-touch-callout:none;
-    }
+body{
 
-    body{
+  margin:0;
+  padding:20px;
 
-      margin:0;
+  background:#111;
+  color:white;
 
-      background:#111;
-      color:white;
+  font-family:Arial,sans-serif;
 
-      font-family:Arial,sans-serif;
+  text-align:center;
+}
 
-      min-height:100vh;
+h1{
 
-      display:flex;
-      flex-direction:column;
-      align-items:center;
-      justify-content:center;
+  margin-top:30px;
+  margin-bottom:40px;
 
-      padding:20px;
-      text-align:center;
-    }
+  font-size:42px;
+}
 
-    h1{
+.menu{
 
-      margin-bottom:40px;
+  width:100%;
+  max-width:500px;
 
-      font-size:clamp(
-        32px,
-        6vw,
-        60px
-      );
-    }
+  margin:auto;
+}
 
-    .menu{
+button{
 
-      width:100%;
-      max-width:600px;
-    }
+  width:100%;
 
-    button{
+  padding:18px;
 
-      width:100%;
+  margin-bottom:15px;
 
-      padding:20px;
+  border:none;
 
-      margin-bottom:18px;
+  border-radius:16px;
 
-      border:none;
+  background:#5865f2;
 
-      border-radius:18px;
+  color:white;
 
-      background:#5865f2;
+  font-size:22px;
 
-      color:white;
+  font-weight:bold;
 
-      font-size:clamp(
-        18px,
-        3vw,
-        28px
-      );
+  cursor:pointer;
+}
 
-      font-weight:bold;
+button:active{
 
-      cursor:pointer;
+  opacity:0.8;
+}
 
-      transition:0.2s;
-    }
+.hidden{
+  display:none;
+}
 
-    button:active{
+.room-card{
 
-      transform:scale(0.97);
-    }
+  background:#1e1e1e;
 
-    .hidden{
-      display:none;
-    }
+  padding:15px;
 
-    .room-card{
+  border-radius:14px;
 
-      background:#1e1e1e;
+  margin-bottom:12px;
 
-      padding:18px;
+  font-size:20px;
+}
 
-      border-radius:18px;
+.delete-btn{
 
-      margin-bottom:15px;
+  background:#ed4245;
 
-      font-size:20px;
-    }
+  margin-top:10px;
+}
 
-    .delete-btn{
+a{
 
-      background:#ed4245;
+  text-decoration:none;
+}
 
-      margin-top:12px;
-    }
+#secretPanel{
 
-    a{
+  width:100%;
+  max-width:600px;
 
-      text-decoration:none;
-      width:100%;
-    }
+  margin:auto;
+  margin-top:30px;
+}
 
-    #secretPanel{
+/* มือถือ */
 
-      width:100%;
-      max-width:700px;
+@media (max-width:600px){
 
-      margin-top:30px;
-    }
+  h1{
+    font-size:32px;
+  }
 
-  </style>
+  button{
+    font-size:18px;
+    padding:16px;
+  }
+
+  .room-card{
+    font-size:16px;
+  }
+
+}
+
+</style>
 
 </head>
 
@@ -181,7 +182,6 @@
 const socket = io();
 
 let tapCount = 0;
-
 let tapTimer = null;
 
 const trigger =
@@ -191,16 +191,14 @@ document.getElementById(
 
 trigger.addEventListener(
   "click",
-  ()=>{
+  function(){
 
     tapCount++;
 
-    clearTimeout(
-      tapTimer
-    );
+    clearTimeout(tapTimer);
 
     tapTimer =
-    setTimeout(()=>{
+    setTimeout(function(){
 
       tapCount = 0;
 
@@ -211,7 +209,6 @@ trigger.addEventListener(
       openSecretPanel();
 
       tapCount = 0;
-
     }
 
   }
@@ -233,7 +230,7 @@ function openSecretPanel(){
 
 socket.on(
   "allRooms",
-  (rooms)=>{
+  function(rooms){
 
     const roomList =
     document.getElementById(
@@ -248,39 +245,28 @@ socket.on(
       "ไม่มีห้อง";
 
       return;
-
     }
 
-    rooms.forEach(room=>{
+    rooms.forEach(function(room){
 
-      roomList.innerHTML += `
+      roomList.innerHTML +=
+      '<div class="room-card">' +
 
-        <div class="room-card">
+      '<div>ห้อง: <b>' +
+      room.roomCode +
+      '</b></div>' +
 
-          <div>
-            ห้อง:
-            <b>${room.roomCode}</b>
-          </div>
+      '<div>ผู้เล่น: ' +
+      room.players.length +
+      '</div>' +
 
-          <div>
-            ผู้เล่น:
-            ${room.players.length}
-          </div>
+      '<button class="delete-btn" onclick="deleteRoom(\'' +
+      room.roomCode +
+      '\')">' +
 
-          <button
-            class="delete-btn"
-            onclick="
-              deleteRoom(
-                '${room.roomCode}'
-              )
-            "
-          >
-            ยุบห้อง
-          </button>
+      'ยุบห้อง</button>' +
 
-        </div>
-
-      `;
+      '</div>';
 
     });
 
@@ -291,10 +277,14 @@ function deleteRoom(roomCode){
 
   const confirmDelete =
   confirm(
-    "ยุบห้อง " + roomCode + " ?"
+    "ยุบห้อง " +
+    roomCode +
+    " ?"
   );
 
-  if(!confirmDelete) return;
+  if(!confirmDelete){
+    return;
+  }
 
   socket.emit(
     "closeRoom",
