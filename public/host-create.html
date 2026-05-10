@@ -299,6 +299,7 @@ function setupRoleSelect(){
         ${role}
       </option>
     `;
+
   });
 
 }
@@ -317,6 +318,7 @@ function addRole(){
   }else{
 
     roleCounts[role]++;
+
   }
 
   renderRoles();
@@ -330,6 +332,7 @@ function changeRole(role,value){
   if(roleCounts[role] <= 0){
 
     delete roleCounts[role];
+
   }
 
   renderRoles();
@@ -388,6 +391,7 @@ function renderRoles(){
       </div>
 
     `;
+
   }
 
   updateTotal();
@@ -401,6 +405,7 @@ function updateTotal(){
   for(let role in roleCounts){
 
     total += roleCounts[role];
+
   }
 
   document.getElementById(
@@ -419,6 +424,7 @@ function loadDeck(){
   for(let role in roleCounts){
 
     delete roleCounts[role];
+
   }
 
   if(selected !== "custom"){
@@ -428,6 +434,7 @@ function loadDeck(){
     for(let role in deck){
 
       roleCounts[role] = deck[role];
+
     }
 
   }
@@ -441,12 +448,13 @@ function createRoom(){
   const roomCode =
     document.getElementById(
       "roomCode"
-    ).value;
+    ).value.trim();
 
   if(!roomCode){
 
     alert("กรอกรหัสห้อง");
     return;
+
   }
 
   let finalRoles = [];
@@ -462,33 +470,26 @@ function createRoom(){
       finalRoles.push(role);
 
     }
+
   }
 
   if(finalRoles.length <= 0){
 
     alert("ต้องมีอย่างน้อย 1 อาชีพ");
     return;
+
   }
 
   socket.emit("createRoom",{
 
-  roomCode: roomCode,
+    roomCode: roomCode,
+    owner: socket.id,
+    roles: finalRoles
 
-  owner: socket.id,
-
-  roles: finalRoles
-
-});
-if(rooms[data.roomCode]){
-
-  socket.emit(
-    "errorMessage",
-    "มีห้องนี้อยู่แล้ว"
-  );
-
-  return;
+  });
 
 }
+
 socket.on(
   "errorMessage",
   (msg)=>{
@@ -497,24 +498,23 @@ socket.on(
 
   }
 );
-const roomCode =
-document.getElementById(
-  "roomCode"
-).value.trim();
 
-socket.on("roomCreated",(serverRoom)=>{
+socket.on(
+  "roomCreated",
+  (serverRoom)=>{
 
-  room = serverRoom;
+    room = serverRoom;
 
-  sessionStorage.setItem(
-    "roomCode",
-    room.roomCode
-  );
+    sessionStorage.setItem(
+      "roomCode",
+      room.roomCode
+    );
 
-  location.href =
-    "host-lobby.html";
+    location.href =
+      "host-lobby.html";
 
-});
+  }
+);
 
 setupRoleSelect();
 
