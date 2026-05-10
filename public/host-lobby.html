@@ -403,17 +403,9 @@ function closeRoom(){
 
 }
 
-window.addEventListener(
-  "beforeunload",
-  ()=>{
-
-    socket.emit(
-      "hostLeave",
-      roomCode
-    );
-
-  }
-);
+window.addEventListener("beforeunload", ()=>{
+  // อย่าส่ง hostLeave
+});
 
 </script>
 
