@@ -1,196 +1,21 @@
 <!DOCTYPE html>
 <html>
-
 <head>
-  <title>Werewolf Player</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <style>
-    *{box-sizing:border-box;}
-
-    body{
-      margin:0;
-      padding:20px;
-      background:#111;
-      color:white;
-      font-family:Arial;
-    }
-
-    input,button{
-      width:100%;
-      padding:15px;
-      border:none;
-      border-radius:14px;
-      margin-bottom:12px;
-      font-size:16px;
-    }
-
-    input{background:#1e1e1e;color:white;}
-
-    button{
-      background:#5865f2;
-      color:white;
-      font-weight:bold;
-      cursor:pointer;
-    }
-
-    .hidden{display:none;}
-
-    .card{
-      background:#1a1a1a;
-      border-radius:18px;
-      padding:20px;
-      margin-bottom:20px;
-    }
-
-    .player-card{
-      background:#1e1e1e;
-      padding:12px;
-      border-radius:12px;
-      margin-bottom:8px;
-    }
-
-    .role-box{
-      background:#5865f2;
-      padding:20px;
-      border-radius:18px;
-      text-align:center;
-      margin-bottom:20px;
-    }
-
-    .role-name{font-size:30px;font-weight:bold;}
-  </style>
+  <title>Player</title>
+  <link rel="stylesheet" href="style.css">
 </head>
-
 <body>
 
-<!-- JOIN -->
-<div id="joinPage">
-  <h1>🎮 WEREWOLF</h1>
+<h2>PLAYER</h2>
 
-  <div class="card">
-    <input id="name" placeholder="ชื่อ">
-    <input id="roomCode" placeholder="รหัสห้อง">
-    <button onclick="joinRoom()">เข้าห้อง</button>
-  </div>
-</div>
+<input id="roomId" placeholder="รหัสห้อง">
+<input id="name" placeholder="ชื่อผู้เล่น">
+<button onclick="joinRoom()">เข้าห้อง</button>
 
-<!-- LOBBY -->
-<div id="lobbyPage" class="hidden">
-  <h1>LOBBY</h1>
-  <h2>ห้อง: <span id="roomText"></span></h2>
-  <div id="playerList"></div>
-</div>
-
-<!-- GAME -->
-<div id="gamePage" class="hidden">
-  <div class="role-box">
-    <div id="myRole"></div>
-  </div>
-</div>
+<p id="status"></p>
 
 <script src="/socket.io/socket.io.js"></script>
-
-<script>
-
-const socket = io();
-
-let room = null;
-let playerName = "";
-let joined = false;
-let gameStartedUI = false;
-
-/* =========================
-   JOIN ROOM
-========================= */
-function joinRoom(){
-
-  const name = document.getElementById("name").value.trim();
-  const roomCode = document.getElementById("roomCode").value.trim();
-
-  if(!name || !roomCode){
-    alert("กรอกข้อมูลให้ครบ");
-    return;
-  }
-
-  playerName = name;
-  joined = false;
-
-  socket.emit("joinRoom", { roomCode, name });
-}
-
-/* =========================
-   JOIN SUCCESS (FIXED CORE)
-========================= */
-socket.on("joinSuccess", (data) => {
-
-  joined = true;
-
-  document.getElementById("joinPage").classList.add("hidden");
-  document.getElementById("lobbyPage").classList.remove("hidden");
-
-  document.getElementById("roomText").innerText = data.roomCode;
-
-  // 🔥 ขอ state ใหม่ทันที
-  socket.emit("getRoom", data.roomCode);
-});
-
-/* =========================
-   ROOM DATA (ONLY UPDATE)
-========================= */
-socket.on("roomData", (serverRoom) => {
-
-  if(!serverRoom) return;
-
-  room = serverRoom;
-
-  if(!joined) return;
-
-  const me = room.players.find(p => p.name === playerName);
-
-  if(!me){
-    alert("คุณถูกออกจากห้อง");
-    location.href = "index.html";
-    return;
-  }
-
-  renderLobby();
-
-  if(room.started && !gameStartedUI){
-    gameStartedUI = true;
-    document.getElementById("lobbyPage").classList.add("hidden");
-    document.getElementById("gamePage").classList.remove("hidden");
-  }
-
-  if(gameStartedUI){
-    document.getElementById("myRole").innerText = me.role || "-";
-  }
-});
-
-/* =========================
-   RENDER LOBBY
-========================= */
-function renderLobby(){
-
-  if(!room) return;
-
-  const list = document.getElementById("playerList");
-  list.innerHTML = "";
-
-  room.players.forEach(p => {
-    list.innerHTML += `<div class="player-card">${p.name}</div>`;
-  });
-}
-
-/* =========================
-   ERROR
-========================= */
-socket.on("errorMessage", (msg) => {
-  alert(msg);
-  joined = false;
-});
-
-</script>
+<script src="player.js"></script>
 
 </body>
 </html>
