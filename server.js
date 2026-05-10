@@ -105,23 +105,13 @@ io.on("connection", (socket) => {
       id: socket.id,
       name,
       role: null,
-      alive: true,
-      action: "-",
-      target: null,
-      memory: {
-        killed: false,
-        protected: false,
-        muted: false,
-        poisoned: false,
-        cursed: false,
-        notes: ""
-      }
+      alive: true
     });
   }
 
   socket.join(roomCode);
 
-  // ✅ FIX: ต้องอยู่ใน scope
+  // ✅ สำคัญ: confirm join
   socket.emit("joinSuccess", { roomCode, name });
 
   emitRoom(roomCode);
