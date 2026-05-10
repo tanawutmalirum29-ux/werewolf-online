@@ -302,25 +302,50 @@
 
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
+
 <script>
 
-const room =
-JSON.parse(
-  localStorage.getItem(
-    "currentRoom"
-  )
+const socket = io();
+
+let room = null;
+
+const roomCode =
+sessionStorage.getItem(
+  "roomCode"
 );
 
-if(!room.logs){
+if(!roomCode){
 
-  room.logs = [];
+  alert("ไม่พบห้อง");
+
+  location.href =
+  "index.html";
+
 }
 
-document.getElementById(
-  "roomCode"
-).innerText =
-room.roomCode;
+socket.emit(
+  "getRoom",
+  roomCode
+);
 
+socket.on(
+  "roomData",
+  (serverRoom)=>{
+
+    room = serverRoom;
+
+    document.getElementById(
+      "roomCode"
+    ).innerText =
+    room.roomCode;
+
+    renderPlayers();
+
+    renderLogs();
+
+  }
+);
 function renderPlayers(){
 
   const container =
@@ -624,15 +649,14 @@ function toggleMemory(
   type
 ){
 
-  const player =
-    room.players.find(
-      p=>p.name===name
-    );
-
-  player.memory[type] =
-    !player.memory[type];
-
-  saveRoom();
+  socket.emit(
+    "toggleMemory",
+    {
+      roomCode: room.roomCode,
+      name,
+      type
+    }
+  );
 
 }
 
@@ -641,79 +665,53 @@ function updateNotes(
   value
 ){
 
-  const player =
-    room.players.find(
-      p=>p.name===name
-    );
-
-  player.memory.notes =
-    value;
-
-  localStorage.setItem(
-    "currentRoom",
-    JSON.stringify(room)
+  socket.emit(
+    "updateNotes",
+    {
+      roomCode: room.roomCode,
+      name,
+      value
+    }
   );
 
 }
 
 function killPlayer(name){
 
-  const player =
-    room.players.find(
-      p=>p.name===name
-    );
-
-  player.alive = false;
-
-  addLog(
-    `${name} ถูกฆ่า`
+  socket.emit(
+    "killPlayer",
+    {
+      roomCode: room.roomCode,
+      name
+    }
   );
-
-  saveRoom();
 
 }
 
 function revivePlayer(name){
 
-  const player =
-    room.players.find(
-      p=>p.name===name
-    );
-
-  player.alive = true;
-
-  addLog(
-    `${name} ถูกชุบชีวิต`
+  socket.emit(
+    "revivePlayer",
+    {
+      roomCode: room.roomCode,
+      name
+    }
   );
-
-  saveRoom();
 
 }
 
 function setPhase(phase){
 
-  room.phase = phase;
-
-  addLog(
-    `เปลี่ยนเป็น${phase}`
+  socket.emit(
+    "setPhase",
+    {
+      roomCode: room.roomCode,
+      phase
+    }
   );
 
-  saveRoom();
-
 }
 
-function addLog(text){
-
-  room.logs.unshift({
-
-    text,
-
-    time:new Date()
-    .toLocaleTimeString()
-
-  });
-
-}
 
 function renderLogs(){
 
@@ -740,26 +738,6 @@ function renderLogs(){
   });
 
 }
-
-function saveRoom(){
-
-  localStorage.setItem(
-
-    "currentRoom",
-
-    JSON.stringify(room)
-
-  );
-
-  renderPlayers();
-
-  renderLogs();
-
-}
-
-renderPlayers();
-
-renderLogs();
 
 </script>
 
