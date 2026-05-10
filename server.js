@@ -6,47 +6,63 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "*"
-  }
+  cors: { origin: "*" }
 });
 
 app.use(express.static("public"));
 
+/* =========================
+   MEMORY STORE
+========================= */
 const rooms = {};
 
+const ADMIN_PASSWORD = "123456";
+
+/* =========================
+   HELPERS
+========================= */
 function emitRoom(roomCode) {
-
-  if (!rooms[roomCode]) return;
-
-  io.to(roomCode).emit(
-    "roomData",
-    rooms[roomCode]
-  );
-
+  const room = rooms[roomCode];
+  if (!room) return;
+  io.to(roomCode).emit("roomData", room);
 }
 
+function deleteRoom(roomCode, reason = "unknown") {
+  if (!rooms[roomCode]) return;
+
+  io.to(roomCode).emit("roomClosed");
+
+  delete rooms[roomCode];
+
+  console.log(`🧨 Room deleted (${reason}):`, roomCode);
+}
+
+function cleanupRoom(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  if (room.players.length === 0) {
+    deleteRoom(roomCode, "empty");
+  }
+}
+
+/* =========================
+   SOCKET
+========================= */
 io.on("connection", (socket) => {
 
   console.log("User connected:", socket.id);
 
-  // =========================
-  // CREATE ROOM (FIXED)
-  // =========================
+  /* =========================
+     CREATE ROOM
+  ========================= */
   socket.on("createRoom", (data) => {
 
     if (!data?.roomCode) return;
 
-    // กันห้องซ้ำ
     if (rooms[data.roomCode]) {
-
-      socket.emit(
-        "errorMessage",
-        "มีห้องนี้อยู่แล้ว"
-      );
-
+      socket.emit("errorMessage", "มีห้องนี้อยู่แล้ว");
       return;
-
     }
 
     rooms[data.roomCode] = {
@@ -60,44 +76,26 @@ io.on("connection", (socket) => {
 
     socket.join(data.roomCode);
 
-    socket.emit(
-      "roomCreated",
-      rooms[data.roomCode]
-    );
+    socket.emit("roomCreated", rooms[data.roomCode]);
 
     console.log("Room created:", data.roomCode);
-
   });
 
-  // =========================
-  // JOIN ROOM
-  // =========================
+  /* =========================
+     JOIN ROOM
+  ========================= */
   socket.on("joinRoom", ({ roomCode, name }) => {
 
     const room = rooms[roomCode];
+    if (!room) return socket.emit("errorMessage", "ไม่พบห้อง");
 
-    if (!room) {
+    let player = room.players.find(p => p.name === name);
 
-      socket.emit(
-        "errorMessage",
-        "ไม่พบห้อง"
-      );
-
-      return;
-
-    }
-
-    const already = room.players.find(
-      p => p.name === name
-    );
-
-    if (already) {
-
-      already.id = socket.id;
+    if (player) {
+      player.id = socket.id;
       socket.join(roomCode);
       emitRoom(roomCode);
       return;
-
     }
 
     room.players.push({
@@ -107,7 +105,6 @@ io.on("connection", (socket) => {
       alive: true,
       action: "-",
       target: null,
-
       memory: {
         killed: false,
         protected: false,
@@ -119,94 +116,64 @@ io.on("connection", (socket) => {
     });
 
     socket.join(roomCode);
-
     emitRoom(roomCode);
-
   });
 
-  // =========================
-  // GET ROOM
-  // =========================
+  /* =========================
+     GET ROOM
+  ========================= */
   socket.on("getRoom", (roomCode) => {
 
-  const room = rooms[roomCode];
+    const room = rooms[roomCode];
+    if (!room) return;
 
-  if (!room) return;
+    socket.join(roomCode);
+    socket.emit("roomData", room);
+  });
 
-  socket.join(roomCode); // 🔥 เพิ่มบรรทัดนี้
-
-  socket.emit(
-    "roomData",
-    room
-  );
-
-});
-
-  // =========================
-  // START GAME
-  // =========================
+  /* =========================
+     START GAME
+  ========================= */
   socket.on("startGame", (roomCode) => {
 
     const room = rooms[roomCode];
-
     if (!room) return;
 
-    const shuffled = [...room.roles]
-      .sort(() => Math.random() - 0.5);
+    const shuffled = [...room.roles].sort(() => Math.random() - 0.5);
 
-    room.players.forEach((player, index) => {
+    room.players.forEach((player, i) => {
 
-      player.role =
-        shuffled[index] || "ชาวบ้าน";
+      player.role = shuffled[i] || "ชาวบ้าน";
 
       if (player.role === "นักล่าหัว") {
 
         const targets = room.players.filter(
-          p =>
-            p.name !== player.name &&
-            p.role !== "หมาป่า"
+          p => p.name !== player.name && p.role !== "หมาป่า"
         );
 
-        if (targets.length > 0) {
-
+        if (targets.length) {
           player.target =
-            targets[
-              Math.floor(
-                Math.random() * targets.length
-              )
-            ].name;
-
+            targets[Math.floor(Math.random() * targets.length)].name;
         }
-
       }
 
     });
 
     room.started = true;
-
     emitRoom(roomCode);
-
   });
 
-  // =========================
-  // GAME ACTIONS
-  // =========================
+  /* =========================
+     GAME ACTIONS
+  ========================= */
   socket.on("setAction", ({ roomCode, name, action }) => {
-
     const room = rooms[roomCode];
     if (!room) return;
 
-    const player = room.players.find(
-      p => p.name === name
-    );
+    const p = room.players.find(x => x.name === name);
+    if (p) p.action = action;
 
-    if (player) {
-
-      player.action = action;
-      emitRoom(roomCode);
-
-    }
-
+    emitRoom(roomCode);
   });
 
   socket.on("killPlayer", ({ roomCode, name }) => {
@@ -214,23 +181,17 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
     if (!room) return;
 
-    const player = room.players.find(
-      p => p.name === name
-    );
+    const p = room.players.find(x => x.name === name);
+    if (!p) return;
 
-    if (player) {
+    p.alive = false;
 
-      player.alive = false;
+    room.logs.unshift({
+      text: `${name} ถูกฆ่า`,
+      time: new Date().toLocaleTimeString()
+    });
 
-      room.logs.unshift({
-        text: `${name} ถูกฆ่า`,
-        time: new Date().toLocaleTimeString()
-      });
-
-      emitRoom(roomCode);
-
-    }
-
+    emitRoom(roomCode);
   });
 
   socket.on("revivePlayer", ({ roomCode, name }) => {
@@ -238,17 +199,10 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
     if (!room) return;
 
-    const player = room.players.find(
-      p => p.name === name
-    );
+    const p = room.players.find(x => x.name === name);
+    if (p) p.alive = true;
 
-    if (player) {
-
-      player.alive = true;
-      emitRoom(roomCode);
-
-    }
-
+    emitRoom(roomCode);
   });
 
   socket.on("toggleMemory", ({ roomCode, name, type }) => {
@@ -256,19 +210,12 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
     if (!room) return;
 
-    const player = room.players.find(
-      p => p.name === name
-    );
+    const p = room.players.find(x => x.name === name);
+    if (!p) return;
 
-    if (player) {
+    p.memory[type] = !p.memory[type];
 
-      player.memory[type] =
-        !player.memory[type];
-
-      emitRoom(roomCode);
-
-    }
-
+    emitRoom(roomCode);
   });
 
   socket.on("updateNotes", ({ roomCode, name, value }) => {
@@ -276,17 +223,10 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
     if (!room) return;
 
-    const player = room.players.find(
-      p => p.name === name
-    );
+    const p = room.players.find(x => x.name === name);
+    if (p) p.memory.notes = value;
 
-    if (player) {
-
-      player.memory.notes = value;
-      emitRoom(roomCode);
-
-    }
-
+    emitRoom(roomCode);
   });
 
   socket.on("setPhase", ({ roomCode, phase }) => {
@@ -302,106 +242,85 @@ io.on("connection", (socket) => {
     });
 
     emitRoom(roomCode);
-
   });
 
+  /* =========================
+     KICK
+  ========================= */
   socket.on("kickPlayer", ({ roomCode, name }) => {
 
     const room = rooms[roomCode];
     if (!room) return;
 
-    const kickedPlayer = room.players.find(
-      p => p.name === name
-    );
+    const target = room.players.find(p => p.name === name);
 
-    if (kickedPlayer) {
-
-      io.to(kickedPlayer.id).emit("kicked");
-
+    if (target) {
+      io.to(target.id).emit("kicked");
     }
 
-    room.players = room.players.filter(
-      p => p.name !== name
-    );
+    room.players = room.players.filter(p => p.name !== name);
 
     emitRoom(roomCode);
+    cleanupRoom(roomCode);
+  });
+
+  /* =========================
+     END GAME (IMPORTANT)
+  ========================= */
+  socket.on("endGame", (roomCode) => {
+    deleteRoom(roomCode, "endGame");
+  });
+
+  /* =========================
+     ADMIN LOGIN
+  ========================= */
+  socket.on("adminLogin", (pass) => {
+
+    if (pass === ADMIN_PASSWORD) {
+      socket.isAdmin = true;
+      socket.emit("adminLoginSuccess");
+      socket.emit("adminRooms", rooms);
+    } else {
+      socket.emit("errorMessage", "รหัสไม่ถูกต้อง");
+    }
 
   });
 
-  // =========================
-  // CLOSE ROOM
-  // =========================
-  socket.on("closeRoom", (roomCode) => {
-
-    if (!rooms[roomCode]) return;
-
-    io.to(roomCode).emit("roomClosed");
-
-    delete rooms[roomCode];
-
+  socket.on("getAllRooms", () => {
+    if (!socket.isAdmin) return;
+    socket.emit("adminRooms", rooms);
   });
 
-  socket.on("hostLeave", (roomCode) => {
-
-    if (!rooms[roomCode]) return;
-
-    io.to(roomCode).emit("roomClosed");
-
-    delete rooms[roomCode];
-
+  socket.on("adminDeleteRoom", (roomCode) => {
+    if (!socket.isAdmin) return;
+    deleteRoom(roomCode, "admin");
   });
 
-  // =========================
-  // DISCONNECT CLEANUP
-  // =========================
+  /* =========================
+     DISCONNECT
+  ========================= */
   socket.on("disconnect", () => {
 
-  for(const roomCode in rooms){
+    for (const roomCode in rooms) {
 
-    const room = rooms[roomCode];
-    if(!room) continue;
+      const room = rooms[roomCode];
 
-    room.players = room.players.filter(
-      p => p.id !== socket.id
-    );
+      room.players = room.players.filter(
+        p => p.id !== socket.id
+      );
 
-    emitRoom(roomCode);
+      emitRoom(roomCode);
+      cleanupRoom(roomCode);
+    }
 
-    cleanupRoom(roomCode);
-
-  }
-
-});
-
-socket.on("endGame", (roomCode) => {
-
-  const room = rooms[roomCode];
-  if (!room) return;
-
-  io.to(roomCode).emit("roomClosed");
-
-  delete rooms[roomCode];
-
-  console.log("Room deleted (game ended):", roomCode);
+    console.log("User disconnected:", socket.id);
+  });
 
 });
-function cleanupRoom(roomCode){
 
-  const room = rooms[roomCode];
-  if (!room) return;
-
-  if(room.players.length === 0){
-    delete rooms[roomCode];
-    console.log("Room auto removed:", roomCode);
-  }
-
-}
-
-server.listen(
-  process.env.PORT || 3000,
-  () => {
-
-    console.log("Server running on port 3000");
-
-  }
-);
+/* =========================
+   START SERVER
+========================= */
+server.listen(process.env.PORT || 3000, () => {
+  console.log("Server running on port 3000");
+});
