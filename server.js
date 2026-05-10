@@ -129,16 +129,18 @@ io.on("connection", (socket) => {
   // =========================
   socket.on("getRoom", (roomCode) => {
 
-    if (rooms[roomCode]) {
+  const room = rooms[roomCode];
 
-      socket.emit(
-        "roomData",
-        rooms[roomCode]
-      );
+  if (!room) return;
 
-    }
+  socket.join(roomCode); // 🔥 เพิ่มบรรทัดนี้
 
-  });
+  socket.emit(
+    "roomData",
+    room
+  );
+
+});
 
   // =========================
   // START GAME
