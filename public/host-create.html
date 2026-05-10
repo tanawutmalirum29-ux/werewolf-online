@@ -234,7 +234,13 @@
 สร้างห้อง
 </button>
 
+<script src="/socket.io/socket.io.js"></script>
+
 <script>
+
+const socket = io();
+
+let room = null;
 
 const allRoles = [
 
@@ -289,11 +295,9 @@ function setupRoleSelect(){
   allRoles.forEach(role=>{
 
     select.innerHTML += `
-
       <option value="${role}">
         ${role}
       </option>
-
     `;
   });
 
@@ -441,10 +445,7 @@ function createRoom(){
 
   if(!roomCode){
 
-    alert(
-      "กรอกรหัสห้อง"
-    );
-
+    alert("กรอกรหัสห้อง");
     return;
   }
 
@@ -465,39 +466,33 @@ function createRoom(){
 
   if(finalRoles.length <= 0){
 
-    alert(
-      "ต้องมีอย่างน้อย 1 อาชีพ"
-    );
-
+    alert("ต้องมีอย่างน้อย 1 อาชีพ");
     return;
   }
 
-  const roomData = {
+  socket.emit("createRoom",{
 
-    roomCode,
+    roomCode: roomCode,
 
-    roles:finalRoles,
+    roles: finalRoles
 
-    players:[],
+  });
 
-    started:false,
+}
 
-    logs:[]
+socket.on("roomCreated",(serverRoom)=>{
 
-  };
+  room = serverRoom;
 
-  localStorage.setItem(
-
-    "currentRoom",
-
-    JSON.stringify(roomData)
-
+  sessionStorage.setItem(
+    "roomCode",
+    room.roomCode
   );
 
   location.href =
     "host-lobby.html";
 
-}
+});
 
 setupRoleSelect();
 
