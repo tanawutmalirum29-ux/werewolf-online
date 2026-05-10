@@ -15,7 +15,6 @@ app.use(express.static("public"));
    MEMORY STORE
 ========================= */
 const rooms = {};
-
 const ADMIN_PASSWORD = "123456";
 
 /* =========================
@@ -31,7 +30,6 @@ function deleteRoom(roomCode, reason = "unknown") {
   if (!rooms[roomCode]) return;
 
   io.to(roomCode).emit("roomClosed");
-
   delete rooms[roomCode];
 
   console.log(`🧨 Room deleted (${reason}):`, roomCode);
@@ -54,7 +52,7 @@ io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
   /* =========================
-     CREATE ROOM
+     CREATE ROOM (FIXED)
   ========================= */
   socket.on("createRoom", (data) => {
 
@@ -74,9 +72,13 @@ io.on("connection", (socket) => {
       players: []
     };
 
-    socket.join(data.roomCode);
+    // ❌ ไม่ join host ตรงนี้ (ลด confusion)
+    // socket.join(data.roomCode);
 
-    socket.emit("roomCreated", rooms[data.roomCode]);
+    // ✔ ส่งแค่ roomCode พอ (กัน bug object เพี้ยน)
+    socket.emit("roomCreated", {
+      roomCode: data.roomCode
+    });
 
     console.log("Room created:", data.roomCode);
   });
@@ -118,29 +120,37 @@ io.on("connection", (socket) => {
     socket.join(roomCode);
     emitRoom(roomCode);
   });
-socket.on("joinRoomAsSpectator", (roomCode) => {
-  const room = rooms[roomCode];
-  if (!room) return;
-
-  socket.join(roomCode);
-  socket.emit("roomData", room);
-});
 
   /* =========================
-     GET ROOM
+     SPECTATOR (FIXED SAFE)
+  ========================= */
+  socket.on("joinRoomAsSpectator", (roomCode) => {
+
+    const room = rooms[roomCode];
+    if (!room) {
+      socket.emit("roomData", null);
+      return;
+    }
+
+    socket.join(roomCode);
+    socket.emit("roomData", room);
+  });
+
+  /* =========================
+     GET ROOM (FIXED STABLE)
   ========================= */
   socket.on("getRoom", (roomCode) => {
-  const room = rooms[roomCode];
-  if (!room) {
-    socket.emit("roomData", null);
-    return;
-  }
 
-  socket.join(roomCode);
+    const room = rooms[roomCode];
 
-  // ใช้ helper ตัวเดียวกัน
-  socket.emit("roomData", room);
-});
+    if (!room) {
+      socket.emit("roomData", null);
+      return;
+    }
+
+    socket.join(roomCode);
+    socket.emit("roomData", room);
+  });
 
   /* =========================
      START GAME
@@ -153,11 +163,9 @@ socket.on("joinRoomAsSpectator", (roomCode) => {
     const shuffled = [...room.roles].sort(() => Math.random() - 0.5);
 
     room.players.forEach((player, i) => {
-
       player.role = shuffled[i] || "ชาวบ้าน";
 
       if (player.role === "นักล่าหัว") {
-
         const targets = room.players.filter(
           p => p.name !== player.name && p.role !== "หมาป่า"
         );
@@ -167,7 +175,6 @@ socket.on("joinRoomAsSpectator", (roomCode) => {
             targets[Math.floor(Math.random() * targets.length)].name;
         }
       }
-
     });
 
     room.started = true;
@@ -276,14 +283,14 @@ socket.on("joinRoomAsSpectator", (roomCode) => {
   });
 
   /* =========================
-     END GAME (IMPORTANT)
+     END GAME
   ========================= */
   socket.on("endGame", (roomCode) => {
     deleteRoom(roomCode, "endGame");
   });
 
   /* =========================
-     ADMIN LOGIN
+     ADMIN
   ========================= */
   socket.on("adminLogin", (pass) => {
 
