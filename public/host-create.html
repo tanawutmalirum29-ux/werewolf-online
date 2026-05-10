@@ -472,13 +472,35 @@ function createRoom(){
 
   socket.emit("createRoom",{
 
-    roomCode: roomCode,
+  roomCode: roomCode,
 
-    roles: finalRoles
+  owner: socket.id,
 
-  });
+  roles: finalRoles
+
+});
+if(rooms[data.roomCode]){
+
+  socket.emit(
+    "errorMessage",
+    "มีห้องนี้อยู่แล้ว"
+  );
+
+  return;
 
 }
+socket.on(
+  "errorMessage",
+  (msg)=>{
+
+    alert(msg);
+
+  }
+);
+const roomCode =
+document.getElementById(
+  "roomCode"
+).value.trim();
 
 socket.on("roomCreated",(serverRoom)=>{
 
