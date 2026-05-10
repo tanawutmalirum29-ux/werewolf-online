@@ -128,7 +128,7 @@
 <div class="top-box">
 
   <div>รหัสห้อง</div>
-  <div class="room-code" id="roomText"></div>
+  <div class="room-code" id="roomText">-</div>
 
   <div class="player-count">
     ผู้เล่น:
@@ -159,35 +159,37 @@ let room = null;
 const roomCode = sessionStorage.getItem("roomCode");
 
 /* =========================
-   SAFE INIT (FIXED)
+   FAIL SAFE
 ========================= */
 if(!roomCode){
   location.href = "index.html";
 }
 
+/* 👉 แสดงทันที ไม่ต้องรอ socket */
+document.getElementById("roomText").innerText = roomCode;
+
 /* =========================
-   IMPORTANT FIX:
-   host must NOT cause empty-room deletion
-   -> force join as spectator
+   CONNECT
 ========================= */
 socket.on("connect", () => {
 
+  console.log("connected:", socket.id);
+
   if(roomCode){
-
-    socket.emit("joinRoomAsSpectator", roomCode);
     socket.emit("getRoom", roomCode);
-
   }
 
 });
 
 /* =========================
-   ROOM DATA (SAFE)
+   ROOM DATA
 ========================= */
 socket.on("roomData", (serverRoom) => {
 
+  console.log("ROOM DATA:", serverRoom);
+
   if(!serverRoom){
-    return; // กัน redirect กระชากตอน reconnect
+    return;
   }
 
   room = serverRoom;
@@ -208,13 +210,15 @@ socket.on("roomData", (serverRoom) => {
 socket.on("roomClosed", () => {
 
   alert("ห้องถูกยุบ");
+
   sessionStorage.removeItem("roomCode");
+
   location.href = "index.html";
 
 });
 
 /* =========================
-   RENDER PLAYERS (SAFE)
+   RENDER PLAYERS
 ========================= */
 function renderPlayers(){
 
@@ -232,9 +236,7 @@ function renderPlayers(){
   playerList.innerHTML = "";
 
   if(players.length === 0){
-    playerList.innerHTML = `
-      <div class="empty">ยังไม่มีผู้เล่นเข้าห้อง</div>
-    `;
+    playerList.innerHTML = `<div class="empty">ยังไม่มีผู้เล่นเข้าห้อง</div>`;
     return;
   }
 
