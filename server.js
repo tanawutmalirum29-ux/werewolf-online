@@ -308,17 +308,7 @@ emitRoom(roomCode);
 
 }
 );
-socket.on(
-  "getAllRooms",
-  ()=>{
 
-    socket.emit(
-      "allRooms",
-      Object.values(rooms)
-    );
-
-  }
-);
 
 server.listen(process.env.PORT || 3000,()=>{
 console.log("Server running");
