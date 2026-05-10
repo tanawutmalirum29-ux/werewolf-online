@@ -206,19 +206,47 @@
 เริ่มเกม
 </button>
 
+<script src="/socket.io/socket.io.js"></script>
+
 <script>
 
-const room =
-JSON.parse(
-  localStorage.getItem(
-    "currentRoom"
-  )
+const socket = io();
+
+let room = null;
+
+const roomCode =
+sessionStorage.getItem(
+  "roomCode"
 );
 
-document.getElementById(
-  "roomText"
-).innerText =
-room.roomCode;
+if(!roomCode){
+
+  alert("ไม่พบห้อง");
+
+  location.href = "index.html";
+
+}
+
+socket.emit(
+  "getRoom",
+  roomCode
+);
+
+socket.on(
+  "roomData",
+  (serverRoom)=>{
+
+    room = serverRoom;
+
+    document.getElementById(
+      "roomText"
+    ).innerText =
+    room.roomCode;
+
+    renderPlayers();
+
+  }
+);
 
 function renderPlayers(){
 
@@ -307,39 +335,30 @@ function startGame(){
     return;
   }
 
-  const shuffledRoles =
-    [...room.roles]
-    .sort(()=>Math.random()-0.5);
-
-  room.players.forEach(
-    (player,index)=>{
-
-      player.role =
-        shuffledRoles[index];
-
-      player.alive = true;
-
-      player.action = "-";
-
-    }
+  socket.emit(
+    "startGame",
+    room.roomCode
   );
-
-  room.started = true;
-
-  localStorage.setItem(
-
-    "currentRoom",
-
-    JSON.stringify(room)
-
-  );
-
-  location.href =
-    "host-game.html";
 
 }
 
-renderPlayers();
+socket.on(
+  "roomData",
+  (serverRoom)=>{
+
+    room = serverRoom;
+
+    renderPlayers();
+
+    if(room.started){
+
+      location.href =
+      "host-game.html";
+
+    }
+
+  }
+);
 
 </script>
 
