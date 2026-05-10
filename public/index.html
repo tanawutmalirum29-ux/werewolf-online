@@ -3,51 +3,98 @@
 
 <head>
 
+  <meta charset="UTF-8">
+
+  <!-- สำคัญมาก -->
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
   <title>Werewolf Game</title>
 
   <link rel="stylesheet" href="style.css">
 
   <style>
 
+    *{
+      box-sizing:border-box;
+
+      /* ปิดการคัดลอก */
+      user-select:none;
+      -webkit-user-select:none;
+      -webkit-touch-callout:none;
+    }
+
     body{
+
+      margin:0;
 
       background:#111;
       color:white;
 
-      font-family:Arial;
+      font-family:Arial,sans-serif;
 
-      padding:30px;
+      min-height:100vh;
+
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+
+      padding:20px;
       text-align:center;
     }
 
     h1{
 
       margin-bottom:40px;
+
+      font-size:clamp(
+        32px,
+        6vw,
+        60px
+      );
+    }
+
+    .menu{
+
+      width:100%;
+      max-width:600px;
     }
 
     button{
 
       width:100%;
 
-      max-width:300px;
+      padding:20px;
 
-      padding:16px;
-
-      margin-bottom:15px;
+      margin-bottom:18px;
 
       border:none;
 
-      border-radius:14px;
+      border-radius:18px;
 
       background:#5865f2;
 
       color:white;
 
-      font-size:18px;
+      font-size:clamp(
+        18px,
+        3vw,
+        28px
+      );
 
       font-weight:bold;
 
       cursor:pointer;
+
+      transition:0.2s;
+    }
+
+    button:active{
+
+      transform:scale(0.97);
     }
 
     .hidden{
@@ -58,18 +105,34 @@
 
       background:#1e1e1e;
 
-      padding:15px;
+      padding:18px;
 
-      border-radius:14px;
+      border-radius:18px;
 
-      margin-bottom:12px;
+      margin-bottom:15px;
+
+      font-size:20px;
     }
 
     .delete-btn{
 
       background:#ed4245;
 
-      margin-top:10px;
+      margin-top:12px;
+    }
+
+    a{
+
+      text-decoration:none;
+      width:100%;
+    }
+
+    #secretPanel{
+
+      width:100%;
+      max-width:700px;
+
+      margin-top:30px;
     }
 
   </style>
@@ -82,17 +145,21 @@
   Werewolf Online
 </h1>
 
-<a href="player.html">
-  <button>
-    เข้าเป็นผู้เล่น
-  </button>
-</a>
+<div class="menu">
 
-<a href="host-create.html">
-  <button>
-    เข้าเป็น GM
-  </button>
-</a>
+  <a href="player.html">
+    <button>
+      เข้าเป็นผู้เล่น
+    </button>
+  </a>
+
+  <a href="host-create.html">
+    <button>
+      เข้าเป็น GM
+    </button>
+  </a>
+
+</div>
 
 <div
   id="secretPanel"
