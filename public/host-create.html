@@ -5,167 +5,120 @@
 
   <title>Werewolf GM</title>
 
-  <meta name="viewport"
-  content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <style>
-
-    *{
-      box-sizing:border-box;
-    }
+    *{box-sizing:border-box;}
 
     body{
-
       background:#111;
       color:white;
-
       font-family:Arial;
-
       padding:20px;
       margin:0;
     }
 
-    h1,h2{
+    h1,h2{margin-top:0;}
 
-      margin-top:0;
-    }
-
-    input,
-    select,
-    button{
-
+    input,select,button{
       width:100%;
-
       padding:14px;
-
       border:none;
-
       border-radius:12px;
-
       margin-bottom:12px;
-
       font-size:16px;
     }
 
-    input,
-    select{
-
+    input,select{
       background:#1e1e1e;
       color:white;
     }
 
     button{
-
       background:#5865f2;
-
       color:white;
-
       cursor:pointer;
-
       font-weight:bold;
     }
 
-    button:hover{
-
-      opacity:0.9;
-    }
+    button:hover{opacity:0.9;}
 
     .top-box{
-
       background:#1a1a1a;
-
       padding:15px;
-
       border-radius:16px;
-
       margin-bottom:20px;
     }
 
     #addRoleBox{
-
       display:flex;
       gap:10px;
     }
 
     #addRoleBox select{
-
       flex:1;
       margin-bottom:0;
     }
 
     #addRoleBox button{
-
       width:auto;
       margin-bottom:0;
     }
 
     .role-card{
-
       background:#1e1e1e;
-
       border-radius:14px;
-
       padding:15px;
-
       margin-bottom:12px;
-
       display:flex;
-
       justify-content:space-between;
-
       align-items:center;
     }
 
     .role-name{
-
       font-size:18px;
       font-weight:bold;
     }
 
     .controls{
-
       display:flex;
       align-items:center;
       gap:10px;
     }
 
     .controls button{
-
       width:45px;
       height:45px;
-
       padding:0;
-
       font-size:22px;
-
       border-radius:10px;
     }
 
     .count{
-
       min-width:30px;
       text-align:center;
       font-size:18px;
     }
 
     .player-count{
-
       background:#1a1a1a;
-
       padding:15px;
-
       border-radius:14px;
-
       text-align:center;
-
       margin-top:20px;
       margin-bottom:20px;
     }
 
     .player-count span{
-
       font-size:28px;
       font-weight:bold;
+    }
+
+    .error{
+      color:#ff4d4d;
+      font-size:14px;
+      margin-top:-8px;
+      margin-bottom:10px;
     }
 
   </style>
@@ -178,28 +131,13 @@
 
 <div class="top-box">
 
-  <input
-    id="roomCode"
-    placeholder="รหัสห้อง"
-  >
+  <input id="roomCode" placeholder="รหัสห้อง">
+  <div id="roomError" class="error"></div>
 
-  <select
-    id="deckSelect"
-    onchange="loadDeck()"
-  >
-
-    <option value="custom">
-      Custom
-    </option>
-
-    <option value="6normal">
-      6 คนธรรมดา
-    </option>
-
-    <option value="6chaos">
-      6 คนปั่น
-    </option>
-
+  <select id="deckSelect" onchange="loadDeck()">
+    <option value="custom">Custom</option>
+    <option value="6normal">6 คนธรรมดา</option>
+    <option value="6chaos">6 คนปั่น</option>
   </select>
 
 </div>
@@ -210,29 +148,18 @@
 
   <select id="roleSelect"></select>
 
-  <button onclick="addRole()">
-    +
-  </button>
+  <button onclick="addRole()">+</button>
 
 </div>
 
 <div id="roleContainer"></div>
 
 <div class="player-count">
-
-  จำนวนผู้เล่น
-
-  <br><br>
-
-  <span id="totalPlayers">
-    0
-  </span>
-
+  จำนวนผู้เล่น<br><br>
+  <span id="totalPlayers">0</span>
 </div>
 
-<button onclick="createRoom()">
-สร้างห้อง
-</button>
+<button onclick="createRoom()">สร้างห้อง</button>
 
 <script src="/socket.io/socket.io.js"></script>
 
@@ -243,285 +170,183 @@ const socket = io();
 let room = null;
 
 const allRoles = [
-
-  "หมาป่า",
-  "ชาวบ้าน",
-  "หมอ",
-  "ผู้หยั่งรู้",
-  "นายพราน",
-  "นักล่าหัว",
-  "คนบ้า",
-  "กามเทพ",
-  "บอดี้การ์ด",
-  "แม่มด"
-
+  "หมาป่า","ชาวบ้าน","หมอ","ผู้หยั่งรู้",
+  "นายพราน","นักล่าหัว","คนบ้า","กามเทพ",
+  "บอดี้การ์ด","แม่มด"
 ];
 
 const decks = {
-
-  "6normal": {
-
+  "6normal":{
     หมาป่า:2,
     ชาวบ้าน:2,
     หมอ:1,
     ผู้หยั่งรู้:1
-
   },
-
-  "6chaos": {
-
+  "6chaos":{
     หมาป่า:1,
     นักล่าหัว:1,
     คนบ้า:1,
     นายพราน:1,
     หมอ:1,
     ผู้หยั่งรู้:1
-
   }
-
 };
 
 const roleCounts = {};
 
+/* =========================
+   ROLE UI
+========================= */
 function setupRoleSelect(){
-
-  const select =
-    document.getElementById(
-      "roleSelect"
-    );
-
+  const select = document.getElementById("roleSelect");
   select.innerHTML = "";
 
   allRoles.forEach(role=>{
-
-    select.innerHTML += `
-      <option value="${role}">
-        ${role}
-      </option>
-    `;
-
+    select.innerHTML += `<option value="${role}">${role}</option>`;
   });
-
 }
 
 function addRole(){
+  const role = document.getElementById("roleSelect").value;
 
-  const role =
-    document.getElementById(
-      "roleSelect"
-    ).value;
-
-  if(!roleCounts[role]){
-
-    roleCounts[role] = 1;
-
-  }else{
-
-    roleCounts[role]++;
-
-  }
+  if(!roleCounts[role]) roleCounts[role] = 1;
+  else roleCounts[role]++;
 
   renderRoles();
-
 }
 
 function changeRole(role,value){
-
   roleCounts[role] += value;
 
   if(roleCounts[role] <= 0){
-
     delete roleCounts[role];
-
   }
 
   renderRoles();
-
 }
 
 function renderRoles(){
 
-  const container =
-    document.getElementById(
-      "roleContainer"
-    );
-
+  const container = document.getElementById("roleContainer");
   container.innerHTML = "";
 
   for(let role in roleCounts){
 
     container.innerHTML += `
-
       <div class="role-card">
 
-        <div class="role-name">
-          ${role}
-        </div>
+        <div class="role-name">${role}</div>
 
         <div class="controls">
 
-          <button
-            onclick="
-            changeRole(
-              '${role}',
-              -1
-            )
-            "
-          >
-            -
-          </button>
+          <button onclick="changeRole('${role}',-1)">-</button>
 
-          <div class="count">
-            ${roleCounts[role]}
-          </div>
+          <div class="count">${roleCounts[role]}</div>
 
-          <button
-            onclick="
-            changeRole(
-              '${role}',
-              1
-            )
-            "
-          >
-            +
-          </button>
+          <button onclick="changeRole('${role}',1)">+</button>
 
         </div>
 
       </div>
-
     `;
-
   }
 
   updateTotal();
-
 }
 
 function updateTotal(){
-
   let total = 0;
+  for(let r in roleCounts) total += roleCounts[r];
 
-  for(let role in roleCounts){
-
-    total += roleCounts[role];
-
-  }
-
-  document.getElementById(
-    "totalPlayers"
-  ).innerText = total;
-
+  document.getElementById("totalPlayers").innerText = total;
 }
 
+/* =========================
+   DECK
+========================= */
 function loadDeck(){
 
-  const selected =
-    document.getElementById(
-      "deckSelect"
-    ).value;
+  const selected = document.getElementById("deckSelect").value;
 
-  for(let role in roleCounts){
-
-    delete roleCounts[role];
-
-  }
+  for(let r in roleCounts) delete roleCounts[r];
 
   if(selected !== "custom"){
-
     const deck = decks[selected];
-
-    for(let role in deck){
-
-      roleCounts[role] = deck[role];
-
-    }
-
+    for(let r in deck) roleCounts[r] = deck[r];
   }
 
   renderRoles();
-
 }
 
+/* =========================
+   SOCKET SAFE CHECK
+========================= */
+socket.on("connect", ()=>{
+  console.log("connected:", socket.id);
+});
+
+/* =========================
+   CREATE ROOM (FIXED DUP CHECK FLOW)
+========================= */
 function createRoom(){
 
-  const roomCode =
-    document.getElementById(
-      "roomCode"
-    ).value.trim();
+  const roomCode = document.getElementById("roomCode").value.trim();
+  const errorBox = document.getElementById("roomError");
+  errorBox.innerText = "";
+
+  if(!socket.connected){
+    alert("ยังเชื่อมต่อ server ไม่สำเร็จ");
+    return;
+  }
 
   if(!roomCode){
-
-    alert("กรอกรหัสห้อง");
+    errorBox.innerText = "กรอกรหัสห้อง";
     return;
-
   }
 
   let finalRoles = [];
 
-  for(let role in roleCounts){
-
-    for(
-      let i = 0;
-      i < roleCounts[role];
-      i++
-    ){
-
-      finalRoles.push(role);
-
+  for(let r in roleCounts){
+    for(let i=0;i<roleCounts[r];i++){
+      finalRoles.push(r);
     }
-
   }
 
   if(finalRoles.length <= 0){
-
     alert("ต้องมีอย่างน้อย 1 อาชีพ");
     return;
-
   }
 
   socket.emit("createRoom",{
-
-    roomCode: roomCode,
-    owner: socket.id,
+    roomCode,
     roles: finalRoles
-
   });
-
 }
 
-socket.on(
-  "errorMessage",
-  (msg)=>{
+/* =========================
+   ROOM CREATED
+========================= */
+socket.on("roomCreated", (data)=>{
 
-    alert(msg);
+  sessionStorage.setItem("roomCode", data.roomCode);
 
-  }
-);
+  location.href = "host-lobby.html";
+});
 
-socket.on(
-  "roomCreated",
-  (serverRoom)=>{
+/* =========================
+   ERROR
+========================= */
+socket.on("errorMessage", (msg)=>{
+  alert(msg);
+});
 
-    room = serverRoom;
-
-    sessionStorage.setItem(
-      "roomCode",
-      room.roomCode
-    );
-
-    location.href =
-      "host-lobby.html";
-
-  }
-);
-
+/* =========================
+   INIT
+========================= */
 setupRoleSelect();
-
 loadDeck();
 
 </script>
 
 </body>
-
 </html>
