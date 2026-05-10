@@ -1,21 +1,508 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Player</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
+<!DOCTYPE html>  <html>  <head>    <title>Werewolf Player</title>  <meta name="viewport"  
+content="width=device-width, initial-scale=1.0">
 
-<h2>PLAYER</h2>
+  <style>  
+  
+    *{  
+      box-sizing:border-box;  
+    }  
+  
+    body{  
+  
+      margin:0;  
+      padding:20px;  
+  
+      background:#111;  
+  
+      color:white;  
+  
+      font-family:Arial;  
+    }  
+  
+    input,  
+    button{  
+  
+      width:100%;  
+  
+      padding:15px;  
+  
+      border:none;  
+  
+      border-radius:14px;  
+  
+      margin-bottom:12px;  
+  
+      font-size:16px;  
+    }  
+  
+    input{  
+  
+      background:#1e1e1e;  
+      color:white;  
+    }  
+  
+    button{  
+  
+      background:#5865f2;  
+  
+      color:white;  
+  
+      font-weight:bold;  
+  
+      cursor:pointer;  
+    }  
+  
+    .card{  
+  
+      background:#1a1a1a;  
+  
+      border-radius:18px;  
+  
+      padding:20px;  
+  
+      margin-bottom:20px;  
+    }  
+  
+    .hidden{  
+  
+      display:none;  
+    }  
+  
+    .player-card{  
+  
+      background:#1e1e1e;  
+  
+      border-radius:14px;  
+  
+      padding:15px;  
+  
+      margin-bottom:10px;  
+    }  
+  
+    .role-box{  
+  
+      background:#5865f2;  
+  
+      padding:20px;  
+  
+      border-radius:18px;  
+  
+      text-align:center;  
+  
+      margin-bottom:20px;  
+    }  
+  
+    .role-name{  
+  
+      font-size:30px;  
+  
+      font-weight:bold;  
+  
+      margin-top:10px;  
+    }  
+  
+    .status{  
+  
+      margin-top:10px;  
+  
+      font-size:15px;  
+  
+      opacity:0.8;  
+    }  
+  
+    .action-box{  
+  
+      background:#1e1e1e;  
+  
+      border-radius:18px;  
+  
+      padding:20px;  
+  
+      margin-top:20px;  
+    }  
+  
+    select{  
+  
+      width:100%;  
+  
+      padding:15px;  
+  
+      border:none;  
+  
+      border-radius:14px;  
+  
+      margin-top:10px;  
+  
+      background:#222;  
+  
+      color:white;  
+    }  
+  
+    #gameStatus{  
+  
+      margin-top:10px;  
+  
+      color:#57f287;  
+    }  
+  
+  </style>  </head>  <body>  <!-- JOIN PAGE -->  <div id="joinPage">    <h1>🎮 WEREWOLF</h1>    <div class="card">  <input  
+  id="name"  
+  placeholder="ชื่อ"  
+>  
 
-<input id="roomId" placeholder="รหัสห้อง">
-<input id="name" placeholder="ชื่อผู้เล่น">
-<button onclick="joinRoom()">เข้าห้อง</button>
+<input  
+  id="roomCode"  
+  placeholder="รหัสห้อง"  
+>  
 
-<p id="status"></p>
+<button onclick="joinRoom()">  
+  เข้าห้อง  
+</button>
 
-<script src="/socket.io/socket.io.js"></script>
-<script src="player.js"></script>
+  </div>  </div>  <!-- LOBBY PAGE -->  <div  
+  id="lobbyPage"  
+  class="hidden"  
+>    <h1>🎮 GAME LOBBY</h1>    <div class="card">  <h2>  
+  ห้อง:  
+  <span id="roomText"></span>  
+</h2>  
 
-</body>
-</html>
+<div id="gameStatus">  
+
+  รอผู้สร้างเริ่มเกม...  
+
+</div>
+
+  </div>    <h2>ผู้เล่น</h2>    <div id="playerList"></div>  </div>  <!-- GAME PAGE -->  <div  
+  id="gamePage"  
+  class="hidden"  
+>    <h1>🎮 GAME</h1>    <div class="role-box">  <div>  
+  บทของคุณ  
+</div>  
+
+<div  
+  class="role-name"  
+  id="myRole"  
+>  
+</div>  
+
+<div  
+  class="status"  
+  id="aliveStatus"  
+>  
+</div>
+
+  </div>    <div class="action-box">  <h2>Action</h2>  
+
+<div id="actionArea"></div>
+
+  </div>  </div>  <script src="/socket.io/socket.io.js"></script>  <script>  
+  
+const socket = io();  
+  
+let room = null;  
+  
+let playerName = "";  
+  
+let gameStartedUI = false;  
+  
+socket.on(  
+  "roomData",  
+  (serverRoom)=>{  
+  
+    room = serverRoom;  
+  
+    if(!gameStartedUI){  
+  
+      renderLobby();  
+  
+      checkGameStart();  
+  
+    }else{  
+  
+      const me =  
+      room.players.find(  
+        p=>p.name===playerName  
+      );  
+  
+      if(me){  
+  
+        updateGameUI(me);  
+  
+      }  
+  
+    }  
+  
+  }  
+);  
+  
+socket.on(  
+  "errorMessage",  
+  (msg)=>{  
+  
+    alert(msg);  
+  
+  }  
+);  
+  
+function joinRoom(){  
+  
+  const name =  
+    document.getElementById(  
+      "name"  
+    ).value;  
+  
+  const roomCode =  
+    document.getElementById(  
+      "roomCode"  
+    ).value;  
+  
+  if(!name || !roomCode){  
+  
+    alert("กรอกข้อมูลให้ครบ");  
+  
+    return;  
+  
+  }  
+  
+  playerName = name;  
+  
+  socket.emit(  
+    "joinRoom",  
+    {  
+      roomCode,  
+      name  
+    }  
+  );  
+  
+  document.getElementById(  
+    "joinPage"  
+  ).classList.add(  
+    "hidden"  
+  );  
+  
+  document.getElementById(  
+    "lobbyPage"  
+  ).classList.remove(  
+    "hidden"  
+  );  
+  
+}  
+  
+function renderLobby(){  
+  
+  if(!room) return;  
+  
+  document.getElementById(  
+    "roomText"  
+  ).innerText =  
+  room.roomCode;  
+  
+  const playerList =  
+    document.getElementById(  
+      "playerList"  
+    );  
+  
+  playerList.innerHTML = "";  
+  
+  room.players.forEach(player=>{  
+  
+    playerList.innerHTML += `  
+  
+      <div class="player-card">  
+  
+        ${player.name}  
+  
+      </div>  
+  
+    `;  
+  
+  });  
+  
+}  
+  
+function checkGameStart(){  
+  
+  if(  
+    room.started  
+    &&  
+    !gameStartedUI  
+  ){  
+  
+    gameStartedUI = true;  
+  
+    startGameView();  
+  
+  }  
+  
+}  
+  
+function startGameView(){  
+  
+  document.getElementById(  
+    "lobbyPage"  
+  ).classList.add(  
+    "hidden"  
+  );  
+  
+  document.getElementById(  
+    "gamePage"  
+  ).classList.remove(  
+    "hidden"  
+  );  
+  
+  const me =  
+    room.players.find(  
+      p=>p.name===playerName  
+    );  
+  
+  updateGameUI(me);  
+  
+}  
+  
+function updateGameUI(me){  
+  
+  document.getElementById(  
+    "myRole"  
+  ).innerText =  
+  me.role;  
+  
+  let statusText =  
+    me.alive  
+    ? "คุณยังมีชีวิต"  
+    : "คุณตายแล้ว";  
+  
+  if(  
+    me.role === "นักล่าหัว"  
+    &&  
+    me.target  
+  ){  
+  
+    statusText += `  
+  
+      <br><br>  
+  
+      🎯 เป้าหมาย:  
+      <b>${me.target}</b>  
+  
+    `;  
+  
+  }  
+  
+  document.getElementById(  
+    "aliveStatus"  
+  ).innerHTML =  
+  statusText;  
+  
+  renderActionUI(me);  
+  
+}  
+  
+function renderActionUI(me){  
+  
+  const area =  
+    document.getElementById(  
+      "actionArea"  
+    );  
+  
+  if(!me.alive){  
+  
+    area.innerHTML =  
+      "คุณตายแล้ว";  
+  
+    return;  
+  
+  }  
+  
+  const skillRoles = [  
+  
+    "หมาป่า",  
+    "หมอ",  
+    "ผู้หยั่งรู้",  
+    "แม่มด"  
+  
+  ];  
+  
+  if(  
+    !skillRoles.includes(  
+      me.role  
+    )  
+  ){  
+  
+    area.innerHTML =  
+      "บทนี้ไม่มีสกิล";  
+  
+    return;  
+  
+  }  
+  
+  let html = `  
+  
+    <select id="targetPlayer">  
+  
+  `;  
+  
+  room.players.forEach(player=>{  
+  
+    if(  
+      player.name !== me.name  
+      &&  
+      player.alive  
+    ){  
+  
+      html += `  
+  
+        <option value="${player.name}">  
+          ${player.name}  
+        </option>  
+  
+      `;  
+  
+    }  
+  
+  });  
+  
+  html += `  
+  
+    </select>  
+  
+    <button  
+      onclick="useSkill()"  
+      style="margin-top:15px;"  
+    >  
+      ใช้สกิล  
+    </button>  
+  
+  `;  
+  
+  area.innerHTML = html;  
+  
+}  
+  
+function useSkill(){  
+  
+  const target =  
+    document.getElementById(  
+      "targetPlayer"  
+    ).value;  
+  
+  const me =  
+    room.players.find(  
+      p=>p.name===playerName  
+    );  
+  
+  socket.emit(  
+    "setAction",  
+    {  
+      roomCode: room.roomCode,  
+      name: playerName,  
+      action:  
+      `${me.role} → ${target}`  
+    }  
+  );  
+  
+  alert("ใช้สกิลแล้ว");  
+  
+}  
+  
+</script>  </body>  </html>
