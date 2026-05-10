@@ -3,118 +3,121 @@
 
 <head>
 
-  <title>Werewolf Lobby</title>
+  <title>Werewolf GM</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <style>
     *{box-sizing:border-box;}
 
     body{
-      margin:0;
-      padding:20px;
       background:#111;
       color:white;
       font-family:Arial;
+      padding:20px;
+      margin:0;
     }
 
-    h1,h2,h3{margin-top:0;}
+    h1,h2{margin-top:0;}
+
+    input,select,button{
+      width:100%;
+      padding:14px;
+      border:none;
+      border-radius:12px;
+      margin-bottom:12px;
+      font-size:16px;
+    }
+
+    input,select{
+      background:#1e1e1e;
+      color:white;
+    }
+
+    button{
+      background:#5865f2;
+      color:white;
+      cursor:pointer;
+      font-weight:bold;
+    }
+
+    button:hover{opacity:0.9;}
 
     .top-box{
       background:#1a1a1a;
-      border-radius:18px;
-      padding:20px;
+      padding:15px;
+      border-radius:16px;
       margin-bottom:20px;
     }
 
-    .room-code{
-      font-size:30px;
-      font-weight:bold;
-      color:#5865f2;
+    #addRoleBox{
+      display:flex;
+      gap:10px;
     }
 
-    .player-count{
-      margin-top:10px;
-      font-size:18px;
-      opacity:0.8;
+    #addRoleBox select{
+      flex:1;
+      margin-bottom:0;
     }
 
-    #playerList{margin-top:20px;}
+    #addRoleBox button{
+      width:auto;
+      margin-bottom:0;
+    }
 
-    .player-card{
+    .role-card{
       background:#1e1e1e;
       border-radius:14px;
-      padding:16px;
+      padding:15px;
       margin-bottom:12px;
       display:flex;
       justify-content:space-between;
       align-items:center;
     }
 
-    .player-left{
-      display:flex;
-      align-items:center;
-      gap:12px;
+    .role-name{
+      font-size:18px;
+      font-weight:bold;
     }
 
-    .avatar{
+    .controls{
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+
+    .controls button{
       width:45px;
       height:45px;
-      border-radius:50%;
-      background:#5865f2;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      font-weight:bold;
+      padding:0;
+      font-size:22px;
+      border-radius:10px;
+    }
+
+    .count{
+      min-width:30px;
+      text-align:center;
       font-size:18px;
     }
 
-    .player-name{
-      font-size:18px;
-      font-weight:bold;
-    }
-
-    .status{
-      color:#57f287;
-      font-size:14px;
-    }
-
-    button{
-      border:none;
-      border-radius:16px;
-      background:#5865f2;
-      color:white;
-      font-size:16px;
-      font-weight:bold;
-      cursor:pointer;
-      padding:14px;
-    }
-
-    button:hover{opacity:0.9;}
-
-    .main-btn{
-      width:100%;
-      margin-top:20px;
-    }
-
-    .kick-btn{
-      background:#ed4245;
-      width:auto;
-      padding:10px 14px;
-      font-size:14px;
-    }
-
-    .danger-btn{
-      background:#ed4245;
-      margin-top:12px;
-      width:100%;
-    }
-
-    .empty{
+    .player-count{
       background:#1a1a1a;
-      padding:20px;
+      padding:15px;
       border-radius:14px;
       text-align:center;
-      opacity:0.7;
+      margin-top:20px;
+      margin-bottom:20px;
+    }
+
+    .player-count span{
+      font-size:28px;
+      font-weight:bold;
+    }
+
+    .error{
+      color:#ff4d4d;
+      font-size:14px;
+      margin-top:-8px;
+      margin-bottom:10px;
     }
 
   </style>
@@ -123,192 +126,238 @@
 
 <body>
 
-<h1>🎮 GAME LOBBY</h1>
+<h1>🎮 GM PANEL</h1>
 
 <div class="top-box">
 
-  <div>รหัสห้อง</div>
-  <div class="room-code" id="roomText">-</div>
+  <input id="roomCode" placeholder="รหัสห้อง">
+  <div id="roomError" class="error"></div>
 
-  <div class="player-count">
-    ผู้เล่น:
-    <span id="playerCount">0</span>
-  </div>
+  <select id="deckSelect" onchange="loadDeck()">
+    <option value="custom">Custom</option>
+    <option value="6normal">6 คนธรรมดา</option>
+    <option value="6chaos">6 คนปั่น</option>
+  </select>
 
 </div>
 
-<h2>ผู้เล่นในห้อง</h2>
+<h2>อาชีพ</h2>
 
-<div id="playerList"></div>
+<div id="addRoleBox">
 
-<button class="main-btn" onclick="startGame()">
-  เริ่มเกม
-</button>
+  <select id="roleSelect"></select>
+  <button onclick="addRole()">+</button>
 
-<button class="danger-btn" onclick="closeRoom()">
-  ยุบห้อง
-</button>
+</div>
+
+<div id="roleContainer"></div>
+
+<div class="player-count">
+  จำนวนผู้เล่น<br><br>
+  <span id="totalPlayers">0</span>
+</div>
+
+<button onclick="createRoom()">สร้างห้อง</button>
 
 <script src="/socket.io/socket.io.js"></script>
 
 <script>
 
 const socket = io();
-let room = null;
 
-const roomCode = sessionStorage.getItem("roomCode");
+const allRoles = [
+  "หมาป่า","ชาวบ้าน","หมอ","ผู้หยั่งรู้",
+  "นายพราน","นักล่าหัว","คนบ้า","กามเทพ",
+  "บอดี้การ์ด","แม่มด"
+];
+
+const decks = {
+  "6normal":{
+    หมาป่า:2,
+    ชาวบ้าน:2,
+    หมอ:1,
+    ผู้หยั่งรู้:1
+  },
+  "6chaos":{
+    หมาป่า:1,
+    นักล่าหัว:1,
+    คนบ้า:1,
+    นายพราน:1,
+    หมอ:1,
+    ผู้หยั่งรู้:1
+  }
+};
+
+const roleCounts = {};
 
 /* =========================
-   FAIL SAFE
+   ROLE SELECT
 ========================= */
-if(!roomCode){
-  location.href = "index.html";
+function setupRoleSelect(){
+  const select = document.getElementById("roleSelect");
+  select.innerHTML = "";
+
+  allRoles.forEach(role=>{
+    select.innerHTML += `<option value="${role}">${role}</option>`;
+  });
 }
 
-/* 👉 FIX: แสดงทันที + กัน null */
-document.getElementById("roomText").innerText = roomCode || "-";
+function addRole(){
+  const role = document.getElementById("roleSelect").value;
+
+  roleCounts[role] = (roleCounts[role] || 0) + 1;
+
+  renderRoles();
+}
+
+function changeRole(role,value){
+
+  roleCounts[role] = (roleCounts[role] || 0) + value;
+
+  if(roleCounts[role] <= 0){
+    delete roleCounts[role];
+  }
+
+  renderRoles();
+}
+
+/* =========================
+   RENDER
+========================= */
+function renderRoles(){
+
+  const container = document.getElementById("roleContainer");
+  container.innerHTML = "";
+
+  for(const role in roleCounts){
+
+    if(!Object.hasOwn(roleCounts, role)) continue;
+
+    container.innerHTML += `
+      <div class="role-card">
+
+        <div class="role-name">${role}</div>
+
+        <div class="controls">
+
+          <button onclick="changeRole('${role}',-1)">-</button>
+
+          <div class="count">${roleCounts[role]}</div>
+
+          <button onclick="changeRole('${role}',1)">+</button>
+
+        </div>
+
+      </div>
+    `;
+  }
+
+  updateTotal();
+}
+
+function updateTotal(){
+  let total = 0;
+  for(const r in roleCounts){
+    if(Object.hasOwn(roleCounts, r)){
+      total += roleCounts[r];
+    }
+  }
+
+  document.getElementById("totalPlayers").innerText = total;
+}
+
+/* =========================
+   DECK
+========================= */
+function loadDeck(){
+
+  const selected = document.getElementById("deckSelect").value;
+
+  for(const r in roleCounts){
+    delete roleCounts[r];
+  }
+
+  if(selected !== "custom"){
+    const deck = decks[selected];
+
+    for(const r in deck){
+      roleCounts[r] = deck[r];
+    }
+  }
+
+  renderRoles();
+}
 
 /* =========================
    CONNECT
 ========================= */
-socket.on("connect", () => {
-
+socket.on("connect", ()=>{
   console.log("connected:", socket.id);
-
-  if(roomCode){
-    socket.emit("getRoom", roomCode);
-  }
-
 });
 
 /* =========================
-   ROOM DATA
+   CREATE ROOM
 ========================= */
-socket.on("roomData", (serverRoom) => {
+function createRoom(){
 
-  console.log("ROOM DATA:", serverRoom);
+  const roomCode = document.getElementById("roomCode").value.trim();
+  const errorBox = document.getElementById("roomError");
 
-  if(!serverRoom){
-    document.getElementById("playerList").innerHTML =
-      `<div class="empty">ไม่พบข้อมูลห้อง</div>`;
+  errorBox.innerText = "";
+
+  if(!roomCode){
+    errorBox.innerText = "กรอกรหัสห้อง";
     return;
   }
 
-  room = serverRoom;
+  let finalRoles = [];
 
-  document.getElementById("roomText").innerText = room.roomCode || roomCode;
-
-  renderPlayers();
-
-  if(room.started){
-    location.href = "host-game.html";
+  for(const r in roleCounts){
+    for(let i=0;i<roleCounts[r];i++){
+      finalRoles.push(r);
+    }
   }
 
-});
-
-/* =========================
-   ROOM CLOSED
-========================= */
-socket.on("roomClosed", () => {
-
-  alert("ห้องถูกยุบ");
-
-  sessionStorage.removeItem("roomCode");
-
-  location.href = "index.html";
-
-});
-
-/* =========================
-   RENDER PLAYERS
-========================= */
-function renderPlayers(){
-
-  const playerList = document.getElementById("playerList");
-
-  if(!room){
-    playerList.innerHTML = "";
+  if(finalRoles.length === 0){
+    alert("ต้องมีอย่างน้อย 1 อาชีพ");
     return;
   }
 
-  const players = room.players || [];
-
-  document.getElementById("playerCount").innerText = players.length;
-
-  playerList.innerHTML = "";
-
-  if(players.length === 0){
-    playerList.innerHTML = `<div class="empty">ยังไม่มีผู้เล่นเข้าห้อง</div>`;
-    return;
-  }
-
-  players.forEach(player => {
-
-    const firstLetter = player.name?.charAt(0) || "?";
-
-    playerList.innerHTML += `
-      <div class="player-card">
-
-        <div class="player-left">
-
-          <div class="avatar">${firstLetter}</div>
-
-          <div>
-            <div class="player-name">${player.name}</div>
-            <div class="status">พร้อมเล่น</div>
-          </div>
-
-        </div>
-
-        <button class="kick-btn"
-          onclick="kickPlayer('${player.name.replace(/'/g, "\\'")}')">
-          เตะ
-        </button>
-
-      </div>
-    `;
-  });
-
-}
-
-/* =========================
-   KICK
-========================= */
-function kickPlayer(name){
-
-  if(!confirm("เตะ " + name + " ?")) return;
-
-  socket.emit("kickPlayer", {
+  socket.emit("createRoom",{
     roomCode,
-    name
+    roles: finalRoles
   });
-
 }
 
 /* =========================
-   START GAME
+   ROOM CREATED
 ========================= */
-function startGame(){
+socket.on("roomCreated", (data)=>{
 
-  if(!room) return;
-
-  if(room.players.length !== room.roles.length){
-    alert("จำนวนผู้เล่นไม่ตรงกับจำนวนอาชีพ");
+  if(!data?.roomCode){
+    alert("สร้างห้องไม่สำเร็จ");
     return;
   }
 
-  socket.emit("startGame", roomCode);
-}
+  sessionStorage.setItem("roomCode", data.roomCode);
+
+  document.getElementById("roomCode").value = "";
+
+  location.href = "host-lobby.html";
+});
 
 /* =========================
-   END GAME
+   ERROR
 ========================= */
-function closeRoom(){
+socket.on("errorMessage", (msg)=>{
+  alert(msg);
+});
 
-  if(!confirm("ต้องการยุบห้อง ?")) return;
-
-  socket.emit("endGame", roomCode);
-}
+/* =========================
+   INIT
+========================= */
+setupRoleSelect();
+loadDeck();
 
 </script>
 
