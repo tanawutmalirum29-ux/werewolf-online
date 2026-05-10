@@ -90,38 +90,42 @@ io.on("connection", (socket) => {
   ========================= */
   socket.on("joinRoom", ({ roomCode, name }) => {
 
-    const room = rooms[roomCode];
-    if (!room) {
-      socket.emit("errorMessage", "ไม่พบห้อง");
-      return;
-    }
+  const room = rooms[roomCode];
+  if (!room) {
+    socket.emit("errorMessage", "ไม่พบห้อง");
+    return;
+  }
 
-    const existing = room.players.find(p => p.name === name);
+  const existing = room.players.find(p => p.name === name);
 
-    if (existing) {
-      existing.id = socket.id;
-    } else {
-      room.players.push({
-        id: socket.id,
-        name,
-        role: null,
-        alive: true,
-        action: "-",
-        target: null,
-        memory: {
-          killed: false,
-          protected: false,
-          muted: false,
-          poisoned: false,
-          cursed: false,
-          notes: ""
-        }
-      });
-    }
+  if (existing) {
+    existing.id = socket.id;
+  } else {
+    room.players.push({
+      id: socket.id,
+      name,
+      role: null,
+      alive: true,
+      action: "-",
+      target: null,
+      memory: {
+        killed: false,
+        protected: false,
+        muted: false,
+        poisoned: false,
+        cursed: false,
+        notes: ""
+      }
+    });
+  }
 
-    socket.join(roomCode);
-    emitRoom(roomCode);
-  });
+  socket.join(roomCode);
+
+  // ✅ FIX: ต้องอยู่ใน scope
+  socket.emit("joinSuccess", { roomCode, name });
+
+  emitRoom(roomCode);
+});
 
   /* =========================
      GET ROOM
