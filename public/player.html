@@ -4,11 +4,9 @@
 <head>
 
   <title>Werewolf Player</title>
-
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <style>
-
     *{box-sizing:border-box;}
 
     body{
@@ -28,10 +26,7 @@
       font-size:16px;
     }
 
-    input{
-      background:#1e1e1e;
-      color:white;
-    }
+    input{background:#1e1e1e;color:white;}
 
     button{
       background:#5865f2;
@@ -40,6 +35,8 @@
       cursor:pointer;
     }
 
+    .hidden{display:none;}
+
     .card{
       background:#1a1a1a;
       border-radius:18px;
@@ -47,13 +44,11 @@
       margin-bottom:20px;
     }
 
-    .hidden{display:none;}
-
     .player-card{
       background:#1e1e1e;
-      border-radius:14px;
-      padding:15px;
-      margin-bottom:10px;
+      padding:12px;
+      border-radius:12px;
+      margin-bottom:8px;
     }
 
     .role-box{
@@ -64,45 +59,7 @@
       margin-bottom:20px;
     }
 
-    .role-name{
-      font-size:30px;
-      font-weight:bold;
-      margin-top:10px;
-    }
-
-    .status{
-      margin-top:10px;
-      font-size:15px;
-      opacity:0.9;
-    }
-
-    .role-description{
-      margin-top:15px;
-      background:#222;
-      border-radius:14px;
-      padding:15px;
-      text-align:left;
-      line-height:1.6;
-      font-size:15px;
-    }
-
-    .action-box{
-      background:#1e1e1e;
-      border-radius:18px;
-      padding:20px;
-      margin-top:20px;
-    }
-
-    select{
-      width:100%;
-      padding:15px;
-      border:none;
-      border-radius:14px;
-      margin-top:10px;
-      background:#222;
-      color:white;
-    }
-
+    .role-name{font-size:30px;font-weight:bold;}
   </style>
 
 </head>
@@ -115,12 +72,9 @@
   <h1>🎮 WEREWOLF</h1>
 
   <div class="card">
-
     <input id="name" placeholder="ชื่อ">
     <input id="roomCode" placeholder="รหัสห้อง">
-
     <button onclick="joinRoom()">เข้าห้อง</button>
-
   </div>
 
 </div>
@@ -128,17 +82,10 @@
 <!-- LOBBY -->
 <div id="lobbyPage" class="hidden">
 
-  <h1>🎮 GAME LOBBY</h1>
+  <h1>LOBBY</h1>
 
-  <div class="card">
+  <h2>ห้อง: <span id="roomText"></span></h2>
 
-    <h2>ห้อง: <span id="roomText"></span></h2>
-
-    <div id="gameStatus">รอผู้สร้างเริ่มเกม...</div>
-
-  </div>
-
-  <h2>ผู้เล่น</h2>
   <div id="playerList"></div>
 
 </div>
@@ -146,22 +93,8 @@
 <!-- GAME -->
 <div id="gamePage" class="hidden">
 
-  <h1>🎮 GAME</h1>
-
   <div class="role-box">
-
-    <div>บทของคุณ</div>
-    <div class="role-name" id="myRole"></div>
-
-    <div class="status" id="aliveStatus"></div>
-
-    <div class="role-description" id="roleDescription"></div>
-
-  </div>
-
-  <div class="action-box">
-    <h2>Action</h2>
-    <div id="actionArea"></div>
+    <div id="myRole"></div>
   </div>
 
 </div>
@@ -184,57 +117,11 @@ const roleDescriptions = {
   "หมาป่า":"ฆ่าคนทุกคืน",
   "ชาวบ้าน":"หาหมาป่า",
   "หมอ":"ป้องกันคน",
-  "ผู้หยั่งรู้":"ตรวจคน",
-  "นายพราน":"ตายแล้วยิงได้",
-  "นักล่าหัว":"มีเป้าหมายลับ",
-  "คนบ้า":"สับสน",
-  "กามเทพ":"ผูกคู่รัก",
-  "บอดี้การ์ด":"กันโจมตี",
-  "แม่มด":"ยาพิษ/ชุบ"
+  "ผู้หยั่งรู้":"ตรวจคน"
 };
 
 /* =========================
-   ROOM UPDATE
-========================= */
-socket.on("roomData", (serverRoom) => {
-
-  if(!serverRoom){
-    return;
-  }
-
-  room = serverRoom;
-
-  if(!joined) return;
-
-  const me = room.players.find(p => p.name === playerName);
-
-  if(!me){
-    alert("คุณถูกออกจากห้อง");
-    location.href = "index.html";
-    return;
-  }
-
-  if(!gameStartedUI){
-    renderLobby();
-    checkGameStart();
-  }else{
-    updateGameUI(me);
-  }
-
-});
-
-/* =========================
-   ERROR (IMPORTANT FIX FLOW)
-========================= */
-socket.on("errorMessage", (msg) => {
-  alert(msg);
-
-  // ❌ FIX: ไม่ให้เข้า lobby ถ้า error
-  joined = false;
-});
-
-/* =========================
-   JOIN ROOM (FIXED)
+   JOIN ROOM
 ========================= */
 function joinRoom(){
 
@@ -249,30 +136,51 @@ function joinRoom(){
   playerName = name;
 
   socket.emit("joinRoom", { roomCode, name });
-
-  // ❌ FIX: รอ server confirm ก่อน
 }
 
 /* =========================
-   CONFIRM JOIN SUCCESS
+   JOIN SUCCESS (IMPORTANT FIX)
+========================= */
+socket.on("joinSuccess", (data) => {
+
+  joined = true;
+
+  document.getElementById("joinPage").classList.add("hidden");
+  document.getElementById("lobbyPage").classList.remove("hidden");
+
+  document.getElementById("roomText").innerText = data.roomCode;
+
+});
+
+/* =========================
+   ROOM UPDATE (ONLY ONE)
 ========================= */
 socket.on("roomData", (serverRoom) => {
 
   if(!serverRoom) return;
 
-  if(!joined){
+  room = serverRoom;
 
-    const me = serverRoom.players.find(p => p.name === playerName);
+  if(!joined) return;
 
-    if(!me) return;
+  const me = room.players.find(p => p.name === playerName);
 
-    joined = true;
+  if(!me){
+    alert("คุณถูกออกจากห้อง");
+    location.href = "index.html";
+    return;
+  }
 
-    document.getElementById("joinPage").classList.add("hidden");
-    document.getElementById("lobbyPage").classList.remove("hidden");
+  renderLobby();
 
-    document.getElementById("roomText").innerText = serverRoom.roomCode;
+  if(room.started && !gameStartedUI){
+    gameStartedUI = true;
+    document.getElementById("lobbyPage").classList.add("hidden");
+    document.getElementById("gamePage").classList.remove("hidden");
+  }
 
+  if(gameStartedUI){
+    document.getElementById("myRole").innerText = me.role || "-";
   }
 
 });
@@ -288,53 +196,18 @@ function renderLobby(){
   list.innerHTML = "";
 
   room.players.forEach(p => {
-
-    list.innerHTML += `
-      <div class="player-card">
-        <b>${p.name}</b>
-      </div>
-    `;
-
+    list.innerHTML += `<div class="player-card">${p.name}</div>`;
   });
 
 }
 
 /* =========================
-   GAME START CHECK
+   ERROR
 ========================= */
-function checkGameStart(){
-
-  if(room.started && !gameStartedUI){
-    gameStartedUI = true;
-    startGameView();
-  }
-
-}
-
-/* =========================
-   GAME VIEW
-========================= */
-function startGameView(){
-
-  document.getElementById("lobbyPage").classList.add("hidden");
-  document.getElementById("gamePage").classList.remove("hidden");
-
-}
-
-/* =========================
-   UPDATE GAME
-========================= */
-function updateGameUI(me){
-
-  document.getElementById("myRole").innerText = me.role || "-";
-
-  document.getElementById("aliveStatus").innerText =
-    me.alive ? "🟢 ยังมีชีวิต" : "🔴 ตายแล้ว";
-
-  document.getElementById("roleDescription").innerText =
-    roleDescriptions[me.role] || "ไม่มีข้อมูล";
-
-}
+socket.on("errorMessage", (msg) => {
+  alert(msg);
+  joined = false;
+});
 
 </script>
 
