@@ -100,6 +100,22 @@ content="width=device-width, initial-scale=1.0">
   
       margin-top:10px;  
     }  
+.role-description{
+
+  margin-top:15px;
+
+  background:#222;
+
+  border-radius:14px;
+
+  padding:15px;
+
+  text-align:left;
+
+  line-height:1.6;
+
+  font-size:15px;
+}
   
     .status{  
   
@@ -190,6 +206,11 @@ content="width=device-width, initial-scale=1.0">
   class="status"  
   id="aliveStatus"  
 >  
+</div>
+<div
+  class="role-description"
+  id="roleDescription"
+>
 </div>
 
   </div>    <div class="action-box">  <h2>Action</h2>  
@@ -360,6 +381,39 @@ function startGameView(){
   
 }  
   
+const roleDescriptions = {
+
+  "หมาป่า":
+  "ทุกคืนสามารถเลือกฆ่าผู้เล่น 1 คน เป้าหมายคือกำจัดทุกคนให้เหลือหมาป่า",
+
+  "ชาวบ้าน":
+  "ไม่มีสกิลพิเศษ ต้องช่วยวิเคราะห์และโหวตหาหมาป่า",
+
+  "หมอ":
+  "ทุกคืนเลือกป้องกันผู้เล่น 1 คนจากการถูกฆ่า",
+
+  "ผู้หยั่งรู้":
+  "ทุกคืนสามารถตรวจสอบผู้เล่น 1 คนเพื่อดูว่าเป็นหมาป่าหรือไม่",
+
+  "นายพราน":
+  "หากตาย สามารถยิงผู้เล่น 1 คนตายตามได้",
+
+  "นักล่าหัว":
+  "มีเป้าหมายลับ หากทำให้เป้าหมายตายจะชนะทันที",
+
+  "คนบ้า":
+  "อยู่ฝ่ายหมาป่าแต่ไม่รู้ว่าใครคือหมาป่า",
+
+  "กามเทพ":
+  "เลือกผู้เล่น 2 คนให้เป็นคู่รัก หากคนหนึ่งตาย อีกคนจะตายตาม",
+
+  "บอดี้การ์ด":
+  "ป้องกันผู้เล่นจากการโจมตีได้ แต่บางกติกาอาจป้องกันตัวเองไม่ได้",
+
+  "แม่มด":
+  "มียาชุบและยาพิษ ใช้ได้อย่างละ 1 ครั้ง"
+};
+
 function updateGameUI(me){  
   
   document.getElementById(  
@@ -393,6 +447,17 @@ function updateGameUI(me){
     "aliveStatus"  
   ).innerHTML =  
   statusText;  
+document.getElementById(
+  "roleDescription"
+).innerHTML =
+
+  "📖 " +
+
+  (
+    roleDescriptions[me.role]
+    ||
+    "ไม่มีคำอธิบาย"
+  );
   
   renderActionUI(me);  
   
