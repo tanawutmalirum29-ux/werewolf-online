@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <title>พิพิธภัณฑ์ปลา</title>
+  <link rel="stylesheet" href="/css/museum.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Kanit&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+<a href="/" class="back-btn">⬅ กลับสู่เกม</a>
+<h1>🏛️ พิพิธภัณฑ์ปลา</h1>
+
+<div class="filter-buttons">
+  <button onclick="filterFish('all')">ทั้งหมด</button>
+  <button onclick="filterFish('common')">คอมมอน</button>
+  <button onclick="filterFish('rare')">แรร์</button>
+  <button onclick="filterFish('epic')">อีปิค</button>
+  <button onclick="filterFish('legendary')">เลเจนดารี</button>
+  <button onclick="filterFish('mythical')">มิธิคอล</button>
+  <button onclick="filterFish('secret')">ซีเคร็ต</button>
+  <button onclick="filterFish('cosmic')">คอสมิก</button>
+</div>
+
+<table id="museumTable">
+  <thead>
+    <tr>
+      <th>ชื่อปลา</th>
+      <th>จำนวนที่ตกได้</th>
+      <th>น้ำหนักมากที่สุด (กก.)</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script src="/js/museum.js"></script>
+
+</body>
+</html>
