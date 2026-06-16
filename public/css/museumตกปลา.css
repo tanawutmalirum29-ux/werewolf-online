@@ -1,0 +1,646 @@
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f4f8fb;
+  margin: 0;
+  padding: 20px;
+}h1 {
+  text-align: center;
+  color: #333;
+  margin-bottom: 20px;
+}#moneyDisplay {
+  position: fixed;
+  top: 10px;
+  right: 20px;
+  background: #ffffff;
+  color: #222;
+  padding: 10px 16px;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  font-weight: bold;
+  z-index: 1000;
+}/* ปุ่มโปรไฟล์ลอย */
+.floating-box {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  background: white;
+  border-radius: 10px;
+  padding: 6px 12px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  font-weight: bold;
+  cursor: pointer;
+  z-index: 1000;
+}/* พื้นหลัง popup */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1001;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.4);
+}/* การ์ดโปรไฟล์ */
+.modal-content.profile-card {
+  background: linear-gradient(135deg, #e0f7fa, #ffffff);
+  margin: 10% auto;
+  padding: 20px;
+  border-radius: 20px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+  font-family: 'Kanit', sans-serif;
+}/* ปุ่มปิด */
+.close {
+  float: right;
+  font-size: 28px;
+  cursor: pointer;
+}/* แถวข้อมูล */
+.profile-row {
+  margin: 10px 0;
+  font-size: 16px;
+}/* XP Bar */
+.xp-container {
+  margin-top: 15px;
+}.xp-bar {
+  background: #ddd;
+  border-radius: 10px;
+  height: 15px;
+  overflow: hidden;
+}.xp-progress {
+  background: #4caf50;
+  height: 100%;
+  width: 0%;
+  transition: width 0.5s ease-in-out;
+}.floating-box {
+  position: fixed;
+  right: 20px;
+  background: #4CAF50;
+  padding: 10px 15px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: white;
+  font-size: 16px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}/* ปุ่มโปรไฟล์ */
+#profileBox {
+  top: 60px;
+}/* ปุ่มเควส */
+#questBox {
+  top: 140px; /* อยู่ต่ำกว่าปุ่มโปรไฟล์ */
+}/* การ์ดเควส */
+.modal-content.quest-card {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  max-width: 400px;
+  margin: 60% auto; /* เดิมอาจจะน้อยเกินไป */
+}table {
+  border-collapse: collapse;
+  width: 100%;
+  background: white;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  border-radius: 8px;
+  overflow: hidden;
+}th, td {
+  padding: 12px 15px;
+  text-align: center;
+  border-bottom: 1px solid #ddd;
+}th {
+  background-color: #4CAF50;
+  color: white;
+  font-weight: bold;
+}tr:hover {
+  background-color: #f1f1f1;
+}.back-btn {
+  display: inline-block;
+  margin-bottom: 15px;
+  padding: 10px 15px;
+
+  /* ใส่ fallback ให้ชัด */
+  background-color: #4CAF50;
+  background-image: linear-gradient(135deg, #4CAF50, #2E7D32);
+
+  color: white;
+  text-decoration: none;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transition: background 0.25s ease, transform 0.1s ease;
+}
+
+.back-btn:hover {
+  background-color: #45a049;
+  background-image: linear-gradient(135deg, #45a049, #1B5E20);
+  transform: translateY(-1px);
+}
+
+.back-btn:active {
+  background-color: #3e8e41;
+  background-image: linear-gradient(135deg, #3e8e41, #1B5E20);
+  transform: translateY(0);
+}
+
+/* ปิด gradient ถ้าโหมดกราฟิกต่ำ */
+@media (prefers-reduced-transparency: reduce) {
+  .back-btn {
+    background-image: none;
+  }
+}/* COMMON – 50%+ */
+.common {
+  position: relative;
+  background: linear-gradient(135deg, #888, #ccc, #aaa);
+  background-size: 200% 200%;
+  animation: commonBG 6s linear infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(255,255,255,0.2), inset 0 0 8px rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.3);
+  text-shadow: 0 0 3px rgba(0,0,0,0.4);
+  overflow: hidden;
+}@keyframes commonBG {
+  0% { background-position: 0% 50%;
+}100% {
+  background-position: 200% 50%;
+}}
+
+/* RARE – 25% */
+.rare {
+  position: relative;
+  background: linear-gradient(135deg, #2b8fd5, #6bbef5, #2b8fd5);
+  background-size: 200% 200%;
+  animation: rareBG 8s linear infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 0 6px rgba(43,143,213,0.4);
+  text-shadow: 0 0 2px #fff;
+  overflow: hidden;
+}@keyframes rareBG {
+  0% { background-position: 0% 50%;
+}100% {
+  background-position: 200% 50%;
+}}
+
+/* EPIC – 16% */
+.epic {
+  position: relative;
+  background: linear-gradient(135deg, #a020f0, #d080ff, #a020f0);
+  background-size: 200% 200%;
+  animation: epicBG 6s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 0 8px rgba(160,32,240,0.5), 0 0 15px rgba(208,128,255,0.3);
+  text-shadow: 0 0 3px #fff, 0 0 6px #d080ff;
+  overflow: hidden;
+}@keyframes epicBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}}
+
+/* LEGENDARY – สีเดิม แต่ใช้ animation ของ mythical */
+.legendary {
+  position: relative;
+  background: linear-gradient(135deg, #ffcc33, #f9a602, #ffd45c);
+  background-size: 250% 250%;
+  animation: mythicalBG 4s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow:
+    0 0 12px rgba(255, 204, 51, 0.65),
+    0 0 22px rgba(255, 212, 92, 0.45),
+    inset 0 0 10px rgba(255,255,255,0.25);
+  text-shadow:
+    0 0 5px #fff,
+    0 0 10px rgba(255, 255, 180, 0.8);
+  overflow: hidden;
+}
+
+@keyframes mythicalBG {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* MYTHICAL – สีเดิม แต่ใช้ animation + shine ของ legendary */
+.mythical {
+  position: relative;
+  background: linear-gradient(135deg, #ff4444, #ff8888, #ffffff);
+  background-size: 250% 250%;
+  animation: legendaryBG 5s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 0 12px rgba(255,68,68,0.6), 0 0 25px rgba(255,136,136,0.4);
+  text-shadow: 0 0 4px #fff, 0 0 10px #ff8888;
+  border: 1px solid rgba(255,255,255,0.2);
+  overflow: hidden;
+}
+
+@keyframes legendaryBG {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.mythical::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(120deg, rgba(255,255,255,0.35), rgba(255,255,255,0));
+  transform: skewX(-20deg);
+  animation: legendaryShine 4s infinite;
+  pointer-events: none;
+}
+
+@keyframes legendaryShine {
+  0% { left: -40%; }
+  100% { left: 120%; }
+}
+
+/* SECRET – 0.1% */
+.secret {
+  position: relative;
+  background: linear-gradient(
+    135deg,
+    #ff00ff,
+    #ff33ff,
+    #ff66ff,
+    #ff99ff,
+    #ffe6ff,
+    #ff99ff,
+    #ff66ff,
+    #ff33ff,
+    #ff00ff
+  );
+  background-size: 500% 500%;
+  animation: secretBG 4.5s ease-in-out infinite, secretGlow 4.5s ease-in-out infinite;
+  color: #fff;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow:
+    0 0 14px rgba(255,0,255,0.7),
+    0 0 28px rgba(255,102,255,0.5),
+    inset 0 0 10px rgba(255,255,255,0.2);
+  text-shadow: 0 0 5px #fff, 0 0 12px #ff66ff;
+  border: 1px solid rgba(255,255,255,0.3);
+  overflow: hidden;
+}
+
+@keyframes secretBG {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes secretGlow {
+  0%, 100% {
+    box-shadow:
+      0 0 12px rgba(255,0,255,0.6),
+      0 0 24px rgba(255,102,255,0.4),
+      inset 0 0 8px rgba(255,255,255,0.15);
+  }
+  50% {
+    box-shadow:
+      0 0 18px rgba(255,0,255,0.8),
+      0 0 36px rgba(255,102,255,0.55),
+      inset 0 0 12px rgba(255,255,255,0.25);
+  }
+}
+/* COSMIC – 0.01% */
+.cosmic {
+  position: relative;
+  background: linear-gradient(
+  135deg,
+  #00ffff,
+  #66ffff,
+  #ffffff,
+  #ffddff,
+  #66ffff,
+  #00ffff
+  );
+  background-size: 400% 400%;
+  animation: cosmicBG 5s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 2px solid rgba(255,255,255,0.4);
+  box-shadow: 0 0 15px rgba(0,255,255,0.8),
+  0 0 30px rgba(255,255,255,0.5),
+  inset 0 0 10px rgba(255,255,255,0.2);
+  text-shadow: 0 0 4px #fff, 0 0 8px cyan, 0 0 15px white;
+  overflow: hidden;
+}@keyframes cosmicBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}}
+
+.low-graphics .common
+.low-graphics .rare,
+.low-graphics .epic,
+.low-graphics .legendary,
+.low-graphics .mythical,
+.low-graphics .secret,
+.low-graphics .cosmic {
+  animation: none !important;
+  background: #888 !important;
+  background-image: none !important;
+  background-size: auto !important;
+  background-position: 0 0 !important;
+  box-shadow: none !important;
+}.low-graphics .common {
+  background: #999999 !important;
+}.low-graphics .rare {
+  background: #2b8fd5 !important;
+}.low-graphics .epic {
+  background: #a020f0 !important;
+}.low-graphics .legendary {
+  background: #f9a602 !important;
+}.low-graphics .mythical {
+  background: #ff4444 !important;
+}.low-graphics .secret {
+  background: #ff00ff !important;
+}.low-graphics .cosmic {
+  background: #00ffff !important;
+}
+.filter-buttons {
+  text-align: center;
+  margin-bottom: 15px;
+}
+/* Base Style */
+.filter-buttons button {
+  position: relative;
+  overflow: hidden;
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  box-shadow: inset 0 1px rgba(255,255,255,0.3), 0 4px 8px rgba(0,0,0,0.2);
+}
+
+/* Rarity Colors */
+.filter-buttons button[data-rarity="all"] {
+  background: linear-gradient(135deg, #777, #999);
+}
+.filter-buttons button[data-rarity="common"] {
+  background: linear-gradient(135deg, #999999, #bbbbbb);
+}
+.filter-buttons button[data-rarity="rare"] {
+  background: linear-gradient(135deg, #2b8fd5, #6bbef5);
+}
+.filter-buttons button[data-rarity="epic"] {
+  background: linear-gradient(135deg, #a020f0, #d080ff);
+}
+.filter-buttons button[data-rarity="legendary"] {
+  background: linear-gradient(135deg, #f9a602, #ffd45c);
+}
+.filter-buttons button[data-rarity="mythical"] {
+  background: linear-gradient(135deg, #ff4444, #ff8888);
+}
+.filter-buttons button[data-rarity="secret"] {
+  background: linear-gradient(135deg, #ff66ff, #ff99ff);
+}
+.filter-buttons button[data-rarity="cosmic"] {
+  background: linear-gradient(135deg, #00ffff, #66ffff);
+}
+
+/* Light Shine Effect */
+.filter-buttons button::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -50%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(120deg, rgba(255,255,255,0.4), rgba(255,255,255,0));
+  transform: skewX(-20deg);
+  animation: shine 3s infinite;
+}
+
+@keyframes shine {
+  0% {
+    left: -50%;
+  }
+  100% {
+    left: 120%;
+  }
+}
+
+/* Hover & Active */
+.filter-buttons button:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+}
+.filter-buttons button:active {
+  transform: scale(1.05); /* ขยายเล็กน้อยให้เด่น */
+  filter: brightness(1.1); /* ทำให้สว่างขึ้น */
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5),
+              0 0 15px rgba(255, 255, 255, 0.3); /* เรืองแสงเบาๆ */
+}
+
+/* Low graphics mode: remove animation */
+@media (prefers-reduced-motion: reduce) {
+  .filter-buttons button::after {
+    display: none;
+  }
+}
+.graphics-toggle-btn {
+  position: fixed;
+  top: 130px;
+  right: 10px;
+  z-index: 9999;
+  padding: 8px 14px;
+  background: #222;
+  color: #fff;
+  font-weight: bold;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 5px rgba(0,0,0,0.3);
+  transition: background 0.3s, transform 0.2s;
+}.graphics-toggle-btn:hover {
+  background: #444;
+  transform: scale(1.05);
+}.low-graphics .common::after,
+.low-graphics .rare::after,
+.low-graphics .epic::after,
+.low-graphics .legendary::after,
+.low-graphics .mythical::after,
+.low-graphics .secret::after,
+.low-graphics .cosmic::after {
+  display: none !important;
+}.graphics-toggle-btn {
+  position: fixed;
+  top: 680px;
+  right: 10px;
+  z-index: 9999;
+  padding: 8px 10px;
+  background: #222;
+  color: #fff;
+  font-weight: bold;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 0 5px rgba(0,0,0,0.3);
+  transition: background 0.3s, transform 0.2s;
+}/* COMMON – Medium */
+.medium-graphics .common {
+  background: linear-gradient(135deg, #999, #ccc);
+  color: white;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-weight: bold;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+  text-shadow: 0 0 2px rgba(255,255,255,0.4);
+}/* RARE – Medium */
+.medium-graphics .rare {
+  background: linear-gradient(135deg, #2b8fd5, #6bbef5);
+  background-size: 150% 150%;
+  animation: rareMedBG 10s linear infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+}@keyframes rareMedBG {
+  0% { background-position: 0% 50%;
+}100% {
+  background-position: 150% 50%;
+}}
+
+/* EPIC – Medium */
+.medium-graphics .epic {
+  background: linear-gradient(135deg, #a020f0, #c060ff);
+  background-size: 150% 150%;
+  animation: epicMedBG 9s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+}@keyframes epicMedBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}}
+
+/* LEGENDARY – Medium */
+.medium-graphics .legendary {
+  background: linear-gradient(135deg, #f9a602, #ffd45c);
+  background-size: 150% 150%;
+  animation: legendaryMedBG 8s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+}@keyframes legendaryMedBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}}
+
+/* MYTHICAL – Medium */
+.medium-graphics .mythical {
+  background: linear-gradient(135deg, #ff4444, #ff8888);
+  background-size: 160% 160%;
+  animation: mythicalMedBG 7s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+}@keyframes mythicalMedBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}}
+
+/* SECRET – Medium */
+.medium-graphics .secret {
+  background: linear-gradient(135deg, #ff00ff, #ff66ff);
+  background-size: 170% 170%;
+  animation: secretMedBG 6s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+}@keyframes secretMedBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}}
+
+/* COSMIC – Medium */
+.medium-graphics .cosmic {
+  background: linear-gradient(135deg, #00ffff, #66ffff, #ffffff);
+  background-size: 200% 200%;
+  animation: cosmicMedBG 6s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+}@keyframes cosmicMedBG {
+  0% { background-position: 0% 50%;
+}50% {
+  background-position: 100% 50%;
+}100% {
+  background-position: 0% 50%;
+}
+}
+
+.low-graphics .filter-buttons button::after {
+  display: none !important;
+}
+/* LEGENDARY – Medium Graphics */
+.medium-graphics .legendary {
+  position: relative;
+  background: linear-gradient(
+    135deg,
+    #ffcc33,
+    #f9a602,
+    #ffd45c
+  );
+  background-size: 250% 250%;
+  animation: legendaryBG 5s ease-in-out infinite;
+  color: white;
+  font-weight: bold;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow:
+    0 0 12px rgba(255, 204, 51, 0.65),
+    0 0 22px rgba(255, 212, 92, 0.45),
+    inset 0 0 10px rgba(255,255,255,0.25);
+  text-shadow:
+    0 0 5px #fff,
+    0 0 10px rgba(255, 255, 180, 0.8);
+  overflow: hidden;
+}
+
+/* ปิดเหลี่ยมวิ่งผ่าน */
+.medium-graphics .legendary::after {
+  display: none !important;
+}
