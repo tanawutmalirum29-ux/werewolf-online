@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+
+<meta charset="UTF-8">
+<meta name="ww-build-version" content="__WW_BUILD_VERSION__">
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
+
+<title>Werewolf — ห้องควบคุม</title>
+<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
+<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Charm:wght@400;800&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;500;800&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="css/host.css">
+
+</head>
+<body data-page="host">
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/error-reporter.js?v=3"></script>
+<script src="js/shared.config-client.js?v=1"></script>
+<script src="js/shared.touch-guard.js"></script>
+<script src="js/shared.reset-guard.js"></script>
+<script src="js/shared.server-control.js"></script>
+<script src="js/account.identity.js"></script>
+
+
+<div class="day-night-badge hidden" id="dayNightBadge">
+    <span class="dn-icon" id="dnIcon">🌙</span>
+    <span id="dnText">คืนที่ 1</span>
+</div>
+
+<div class="app">
+
+    <div id="connBanner" class="conn-banner hidden">🔌 ขาดการเชื่อมต่อ กำลังพยายามเชื่อมต่อใหม่...</div>
+
+    <!-- ===== SEAL / ROOM CODE ===== -->
+    <div class="seal-wrap">
+        <div class="host-heading-row">
+            <div>
+                <div class="eyebrow" id="eyebrowText">ห้องควบคุมผู้เล่าเรื่อง</div>
+                <div class="host-title">ผู้เล่าเรื่อง <span class="host-title-accent">Beach Control</span></div>
+            </div>
+            <div class="host-live-pill" id="hostLivePill"><span class="host-live-dot"></span><span id="hostLiveText">พร้อมควบคุม</span></div>
+        </div>
+        <div class="host-room-shell">
+            <div class="seal">
+                <span class="seal-label">ROOM CODE</span>
+                <span class="seal-code" id="room">••••</span>
+                <span class="seal-copy-hint">แตะรหัสเพื่อคัดลอก</span>
+            </div>
+            <div class="host-room-facts" id="hostRoomFacts">
+                <div class="host-fact"><span class="host-fact-icon">👥</span><div><b id="hostFactPlayers">0</b><small>ผู้เล่น</small></div></div>
+                <div class="host-fact"><span class="host-fact-icon">🎭</span><div><b id="hostFactRoles">0</b><small>บทบาท</small></div></div>
+                <div class="host-fact"><span class="host-fact-icon">🔐</span><div><b id="hostFactAccess">เปิด</b><small>การเข้าร่วม</small></div></div>
+                <div class="host-fact"><span class="host-fact-icon">☀️</span><div><b id="hostFactPhase">ก่อนเริ่ม</b><small>ช่วงเกม</small></div></div>
+            </div>
+        </div>
+        <div class="seal-hint">บอกรหัสนี้กับผู้เล่นเพื่อเข้าร่วมห้อง · แตะรหัสเพื่อคัดลอก</div>
+        <div class="seal-actions">
+            <button class="btn btn-tester hidden" id="testerModeBtn" onclick="openTesterPopup()">⚙️ ปรับเงื่อนไขจบเกม</button>
+            <button class="btn btn-tester hidden" id="botManagerBtn" onclick="openBotManagerPopup()">🤖 จัดการบอท</button>
+        </div>
+        <div class="seal-actions">
+            <button class="btn btn-ghost btn-restart-room hidden" id="restartRoomBtn" onclick="restartRoom()">🔄 เริ่มต้นใหม่</button>
+            <button class="btn btn-danger btn-close-room" id="closeRoomBtn" onclick="closeRoomManually()">✕ ปิดห้อง</button>
+            <button class="btn btn-ghost btn-new-room" id="newRoomBtn" onclick="createFreshRoom()">🆕 สร้างห้องใหม่</button>
+            <button class="btn btn-ghost" id="roomSettingsBtn" onclick="openRoomSettings()">⚙️ ตั้งค่าห้อง</button>
+        </div>
+    </div>
+
+    <div class="setup-steps" id="setupSteps" aria-hidden="true">
+        <div class="setup-step is-current"><span>1</span><div><b>ตั้งค่าห้อง</b><small>กติกาและการเข้าร่วม</small></div></div>
+        <div class="setup-step"><span>2</span><div><b>จัดบทบาท</b><small>กำหนดจำนวนใบ</small></div></div>
+        <div class="setup-step"><span>3</span><div><b>สร้างห้อง</b><small>เปิดให้ผู้เล่นเข้า</small></div></div>
+    </div>
+
+    <div class="layout host-workspace">
+
+        <!-- ===== LEFT COLUMN ===== -->
+        <div class="col" id="leftCol">
+
+            <!-- ===== ตั้งค่าห้องก่อนสร้าง (โชว์เฉพาะตอน body.setup-mode — ยังไม่มีห้องจริงบน server) =====
+                 กดสร้างห้องจากเมนู/ปุ่ม "สร้างห้องใหม่" แล้วมาที่นี่ก่อนเสมอ ห้องจะถูกสร้างจริง (ได้รหัสห้อง ผู้เล่นเข้าได้)
+                 ก็ต่อเมื่อกด "✅ สร้างห้อง" ที่แถบล่าง ดู enterSetupMode()/confirmCreateRoom() ใน host.main.js -->
+            <div class="card" id="setupCard">
+                <div class="card-head">
+                    <div>
+                        <h2>🛠️ ตั้งค่าห้องก่อนสร้าง</h2>
+                        <p class="sub">ตอนนี้ <b>ยังไม่มีห้องจริง</b> — ยังไม่มีรหัสห้อง ผู้เล่นเข้าไม่ได้ จนกว่าจะกด "✅ สร้างห้อง" ด้านล่าง ตั้งค่าให้เรียบร้อยก่อนได้เลย (แก้ทีหลังได้จากปุ่ม "⚙️ ตั้งค่าห้อง")</p>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="tester-section">
+                        <div class="tester-section-title"><span class="tester-section-icon">🔒</span><span>รหัสผ่านห้อง (กันแอดมินคนอื่นแย่งคุม)</span></div>
+                        <p class="sub">แอดมิน/จอคนอื่นที่เลือกห้องนี้จากกริด "ห้องที่ยังเปิดอยู่" ต้องใส่รหัสนี้ก่อนถึงจะเข้าคุมได้ ปล่อยว่าง = ไม่ล็อก</p>
+                        <input type="text" id="setupPassInput" class="ww-modal-input" placeholder="ตั้งรหัสผ่านห้อง (ปล่อยว่าง = ไม่ล็อก)" maxlength="20" autocomplete="off">
+                    </div>
+                    <div class="tester-section">
+                        <div class="tester-section-title"><span class="tester-section-icon">🎫</span><span>รหัสห้อง (ฝั่งผู้เล่นเข้าร่วม)</span></div>
+                        <p class="sub">รหัสที่ผู้เล่นต้องกรอกตอนเข้าร่วม (นอกจากโค้ดห้อง) ปล่อยว่าง = ใครรู้โค้ดห้องก็เข้าได้เลย</p>
+                        <input type="text" id="setupJoinCodeInput" class="ww-modal-input" placeholder="ตั้งรหัสห้องฝั่งผู้เล่น (ปล่อยว่าง = ไม่ต้องใช้รหัส)" maxlength="20" autocomplete="off">
+                    </div>
+                    <div class="tester-section">
+                        <div class="tester-section-title"><span class="tester-section-icon">👥</span><span>จำนวนผู้เล่นสูงสุด</span></div>
+                        <p class="sub">ครบแล้วผู้เล่นใหม่จะเข้าไม่ได้ (ไม่นับโฮสต์) ปล่อยว่างหรือใส่ 0 = ไม่จำกัด</p>
+                        <input type="number" id="setupMaxPlayersInput" class="ww-modal-input" placeholder="ไม่จำกัด" min="0" max="999" inputmode="numeric">
+                    </div>
+                    <div class="testerConditionRow room-death-role-row" id="setupRevealDeadRoleRow">
+                        <div>
+                            <div class="tcLabel">☠️ แสดงบทบาทเมื่อผู้เล่นตาย</div>
+                            <div class="tcSub" id="setupRevealDeadRoleSub">เปิดอยู่ — เมื่อผู้เล่นตาย คนอื่นจะเห็นอาชีพที่มุมขวาล่างของการ์ดผู้เล่น (เปลี่ยนได้จนกว่าจะเริ่มเกม)</div>
+                        </div>
+                        <div class="tcToggle on" id="setupRevealDeadRoleToggle" role="switch" aria-checked="true" tabindex="0" onclick="toggleSetupRevealDeadRole()"></div>
+                    </div>
+                    <!-- เฉพาะโหมดผู้ทดสอบ (เหมือนปุ่ม "ปรับเงื่อนไขจบเกม"/"จัดการบอท" ที่โผล่เฉพาะโหมดนี้) -->
+                    <div class="tester-section hidden" id="setupTesterBlock">
+                        <div class="tester-section-title"><span class="tester-section-icon">🧪</span><span>ตัวเลือกโหมดผู้ทดสอบ</span></div>
+                        <div class="testerConditionList" id="setupTesterOptions"></div>
+                    </div>
+                    <div id="setupError" class="setup-error hidden"></div>
+                </div>
+            </div>
+
+            <div class="card host-role-card" id="roleSettingsCard">
+                <div class="card-head">
+                    <div>
+                        <h2>ตั้งค่าบทบาท</h2>
+                        <p class="sub">เลือกบทบาทและจำนวนให้ตรงกับผู้เล่นในห้อง</p>
+                    </div>
+                    <button class="collapse-btn" id="roleCollapseBtn" onclick="toggleRoleCard()" aria-label="ย่อ/ขยายการ์ดตั้งค่าบทบาท" aria-expanded="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="card-body" id="roleCardBody">
+
+                    <div id="quickAddRoles" class="quick-add-roles"></div>
+
+                    <div class="config-summary">
+                        <span>รายการบทบาท</span>
+                        <span>รวม <b id="roleTotal">0</b><span id="rolePlayerWrap">/<b id="rolePlayerCount">0</b></span> ใบ</span>
+                    </div>
+
+                    <div id="roles" class="roleConfigList"></div>
+
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ===== RIGHT COLUMN ===== -->
+        <div class="col" id="rightCol">
+
+            <div class="card host-player-card" id="playerCard">
+                <div class="host-player-card-head">
+                    <div class="host-player-title-wrap">
+                        <div class="host-card-kicker">สนามควบคุม</div>
+                        <h2>ผู้เล่นในห้อง</h2>
+                        <p class="sub">แตะปุ่มสถานะเพื่ออัปเดตให้ผู้เล่นเห็นทันที</p>
+                    </div>
+                    <button
+                        type="button"
+                        class="player-focus-btn"
+                        id="playerFocusBtn"
+                        onclick="togglePlayerFocusMode()"
+                        aria-pressed="false"
+                        aria-expanded="false"
+                        aria-label="ขยายพื้นที่จัดการผู้เล่นเต็มจอ"
+                        title="ขยายพื้นที่จัดการผู้เล่นเต็มจอ"
+                    >
+                        ⛶ เต็มจอ
+                    </button>
+                </div>
+
+                <div class="player-toolbar">
+                    <div class="grid-cols-control" title="ปรับจำนวนคอลัมน์กริดผู้เล่น">
+                        <span class="grid-cols-label">🔲 คอลัมน์:</span>
+                        <div class="grid-cols-presets">
+                            <button type="button" class="gridColsBtn" data-cols="2" onclick="setGridColsPreset(2)">2</button>
+                            <button type="button" class="gridColsBtn" data-cols="4" onclick="setGridColsPreset(4)">4</button>
+                            <button type="button" class="gridColsBtn" data-cols="5" onclick="setGridColsPreset(5)">5</button>
+                            <button type="button" class="gridColsBtn" data-cols="8" onclick="setGridColsPreset(8)">8</button>
+                            <button type="button" class="gridColsBtn" data-cols="15" onclick="setGridColsPreset(15)">15</button>
+                            <button type="button" class="gridColsBtn" data-cols="20" onclick="setGridColsPreset(20)">20</button>
+                        </div>
+                        <input
+                            type="number"
+                            id="gridColsInput"
+                            class="grid-cols-input"
+                            min="1"
+                            max="20"
+                            step="1"
+                            placeholder="กำหนดเอง"
+                            oninput="onGridColsInputChange(this.value)"
+                        >
+                    </div>
+                    <div class="player-filter-chips">
+                        <button class="filterChip active" data-filter="all" onclick="setPlayerFilter('all')">ทั้งหมด</button>
+                        <button class="filterChip" data-filter="alive" onclick="setPlayerFilter('alive')">มีชีวิต</button>
+                        <button class="filterChip" data-filter="dead" onclick="setPlayerFilter('dead')">ตายแล้ว</button>
+                    </div>
+                    <div class="view-toggle-btns">
+                        <button class="viewModeBtn active" id="viewModeGridBtn" onclick="setPlayerViewMode('grid')">🔲 ดูปกติ</button>
+                        <button class="viewModeBtn" id="viewModeSimpleBtn" onclick="setPlayerViewMode('simple')">📃 ดูอย่างง่าย</button>
+                    </div>
+                </div>
+
+                <div id="list" class="players-grid"></div>
+                <div id="listSimple" class="players-simple-list hidden"></div>
+                <div id="playerSearchEmpty" class="empty-note hidden">ไม่พบผู้เล่นที่ตรงกับตัวกรอง</div>
+            </div>
+
+            <div class="card sticky host-chat-card" id="chatCard">
+                <h2>แชท</h2>
+                <p class="sub">ผู้เล่าเรื่องเห็นทุกแชท — รวม, หมาป่า, และส่วนตัว</p>
+
+                <!-- TABS -->
+                <div class="chat-tabs">
+                    <button class="chat-tab active-global" id="tabGlobal" onclick="switchHostTab('global')">
+                        🔵 แชทรวม
+                        <span class="tab-badge" id="badgeGlobal">0</span>
+                    </button>
+                    <button class="chat-tab" id="tabWolf" onclick="switchHostTab('wolf')">
+                        🔴 หมาป่า
+                        <span class="tab-badge" id="badgeWolf">0</span>
+                    </button>
+                </div>
+
+                <!-- INPUT -->
+                <div class="chat-controls">
+                    <div class="chat-input-row">
+                        <input
+                            id="hostMsg"
+                            class="hostMsgInput"
+                            placeholder="พิมพ์ข้อความจากผู้เล่าเรื่อง..."
+                        >
+                        <button class="btn" onclick="sendHostMsg()">ส่ง</button>
+                    </div>
+                </div>
+
+                <!-- CHAT BOXES -->
+                <div id="chatBoxGlobal" class="chat-log chat-box visible"></div>
+                <div id="chatBoxWolf" class="chat-log chat-box"></div>
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+<!-- ===== ป๊อปอัปทั้งหมด (ย้ายออกมาจากข้างใน .app ให้เป็น sibling ระดับราก — ดูคอมเมนต์ที่ .app
+     ใน host.css: .vote-modal-overlay เป็น position:fixed + z-index:200 อยู่แล้ว ไม่ต้องพึ่ง .app
+     เป็น offset parent จึงย้ายมาไว้ตรงนี้ได้ปลอดภัย ทำให้เทียบ stacking กับ .floating-bar (z:60)
+     ที่ระดับรากตรงๆ ป๊อปอัปชนะเสมอ โดยไม่ต้องยก .app ทั้งก้อนขึ้นแล้วไปบังบาร์ล่างเอง) ===== -->
+
+<!-- ===== ROOM PICKER (เลือกห้องที่ยังเปิดอยู่ หรือสร้างห้องใหม่) ===== -->
+<div class="vote-modal-overlay hidden" id="roomPickerOverlay">
+    <div class="vote-modal" id="roomPickerPanel">
+        <div class="vote-panel-title">🗂️ ห้องที่ยังเปิดอยู่</div>
+        <p class="sub" style="margin:-6px 0 14px;">เลือกห้องที่จะเข้าคุม หรือสร้างห้องใหม่</p>
+        <input
+            type="text"
+            id="roomPickerSearchInput"
+            class="roomSearchInput"
+            placeholder="พิมพ์โค้ดห้อง หรือชื่อแอดมินเพื่อค้นหา..."
+            maxlength="24"
+            autocomplete="off"
+            oninput="filterRoomPicker()"
+        >
+        <div id="roomPickerGrid" class="roomPickerGrid"></div>
+        <div id="roomPickerEmpty" class="roomPickerEmpty hidden">ไม่พบห้องที่ตรงกับคำค้นหา</div>
+    </div>
+</div>
+
+<!-- ===== ROOM SETTINGS (ตั้งรหัสห้อง / รหัสห้องฝั่งผู้เล่น / จำนวนผู้เล่นสูงสุด) ===== -->
+<div class="vote-modal-overlay hidden" id="roomSettingsOverlay">
+    <div class="vote-modal vote-modal-fixed-close tester-modal" id="roomSettingsPanel">
+        <button class="vote-modal-close" onclick="closeRoomSettings()">✕</button>
+        <div class="vote-modal-scroll">
+
+            <div class="tester-section">
+                <div class="tester-section-title"><span class="tester-section-icon">🔒</span><span>รหัสผ่านห้อง (กันแอดมินคนอื่นแย่งคุม)</span></div>
+                <p class="sub">ถ้าตั้งรหัสผ่านไว้ แอดมิน/จอคนอื่นที่กดเลือกห้องนี้จากกริด "ห้องที่ยังเปิดอยู่" จะต้องใส่รหัสผ่านนี้ให้ถูกก่อนถึงจะเข้าคุมห้องได้ (คนละอย่างกับ "รหัสห้อง" ด้านบนที่บอกผู้เล่นไว้เข้าร่วมเกม) ปล่อยว่างไว้ = ไม่ต้องใส่รหัสผ่าน</p>
+                <input type="text" id="roomSettingsPassInput" class="ww-modal-input" placeholder="ตั้งรหัสผ่านห้อง (ปล่อยว่าง = ไม่ล็อก)" maxlength="20" autocomplete="off">
+            </div>
+
+            <!-- "ชื่อแอดมินคุมห้อง" เคยตั้ง/แก้ได้จากตรงนี้ — เอาออกแล้ว เพราะเป็นช่องโหว่: โฮสต์คนอื่น
+                 ที่ล็อกอินเข้าห้องคนอื่น (ไม่ใช่เจ้าของ) จะเห็นชื่อของห้องนั้นดึงมาโชว์ในช่องนี้ กด
+                 "บันทึก" เฉยๆ (แค่จะแก้อย่างอื่น) ก็จะดันไปเขียนทับชื่อถาวรของเครื่องตัวเองด้วยชื่อของ
+                 ห้องคนอื่นโดยไม่ตั้งใจ — ย้ายจุดตั้งชื่อไปให้กรอกที่หน้าแรกของเว็บ (index.html) แทน
+                 ตั้งครั้งเดียวต่อเครื่อง แก้ทีหลังก็กลับไปแก้ที่หน้าแรกได้เลย ไม่ผูกกับห้องไหนห้องหนึ่ง -->
+
+            <div class="tester-section">
+                <div class="tester-section-title"><span class="tester-section-icon">🎫</span><span>รหัสห้อง (ฝั่งผู้เล่นเข้าร่วม)</span></div>
+                <p class="sub">คนละอย่างกับ "รหัสผ่านห้อง" ด้านบน — รหัสนี้บอกให้ผู้เล่นกรอกตอนเข้าร่วมห้อง (นอกเหนือจากโค้ดห้องที่เห็นบนสุด) ปล่อยว่างไว้ = ใครรู้โค้ดห้องก็เข้าร่วมได้เลยไม่ต้องมีรหัสเพิ่ม</p>
+                <input type="text" id="roomSettingsJoinCodeInput" class="ww-modal-input" placeholder="ตั้งรหัสห้องฝั่งผู้เล่น (ปล่อยว่าง = ไม่ต้องใช้รหัส)" maxlength="20" autocomplete="off">
+            </div>
+
+            <div class="tester-section">
+                <div class="tester-section-title"><span class="tester-section-icon">👥</span><span>จำนวนผู้เล่นสูงสุด</span></div>
+                <p class="sub">เมื่อครบจำนวนนี้แล้ว ผู้เล่นใหม่จะเข้าร่วมห้องนี้ไม่ได้อีก (ไม่นับโฮสต์) ปล่อยว่างหรือใส่ 0 = ไม่จำกัดจำนวน</p>
+                <input type="number" id="roomSettingsMaxPlayersInput" class="ww-modal-input" placeholder="ไม่จำกัด" min="0" max="999" inputmode="numeric">
+            </div>
+
+            <div class="testerConditionRow room-death-role-row" id="roomSettingsRevealDeadRoleRow">
+                <div>
+                    <div class="tcLabel">☠️ แสดงบทบาทเมื่อผู้เล่นตาย</div>
+                    <div class="tcSub" id="roomSettingsRevealDeadRoleSub">เปิดอยู่ — เมื่อผู้เล่นตาย คนอื่นจะเห็นอาชีพที่มุมขวาล่างของการ์ดผู้เล่น (เปลี่ยนได้จนกว่าจะเริ่มเกม)</div>
+                </div>
+                <div class="tcToggle on" id="roomSettingsRevealDeadRoleToggle" role="switch" aria-checked="true" tabindex="0" onclick="toggleRoomRevealDeadRole()"></div>
+            </div>
+
+            <button class="btn btn-add-bot btn-add-bot-action" onclick="saveRoomSettings()">💾 บันทึกการตั้งค่า</button>
+            <div id="roomSettingsStatus" class="sub" style="margin-top:8px;text-align:center;"></div>
+
+        </div>
+    </div>
+</div>
+
+<!-- ===== MODE POPUP (โหวต / หมาป่าเลือกฆ่า) — แยกจากกริดผู้เล่นหลัก ===== -->
+<div class="vote-modal-overlay hidden" id="modePopupOverlay">
+    <div class="vote-modal" id="modePopupPanel">
+        <button class="vote-modal-close" onclick="closeModePopupByUser()">✕</button>
+        <div class="vote-panel-title" id="modePopupTitle">📋 การโหวต</div>
+        <div class="modePopupCountdown hidden" id="modePopupCountdown"></div>
+        <p class="sub" id="modePopupInfo" style="margin:-6px 0 14px;"></p>
+        <div id="modePopupList" class="modePopupList"></div>
+    </div>
+</div>
+
+<!-- ===== TESTER MODE (เปิด/ปิดเงื่อนไขจบเกมแยกรายข้อ) ===== -->
+<div class="vote-modal-overlay hidden" id="testerOverlay">
+    <div class="vote-modal vote-modal-fixed-close tester-modal" id="testerPanel">
+        <button class="vote-modal-close" onclick="closeTesterPopup()">✕</button>
+        <div class="vote-modal-scroll">
+            <div class="tester-section">
+                <div class="tester-section-title"><span class="tester-section-icon">⚙️</span><span>ปรับเงื่อนไขจบเกม</span></div>
+                <p class="sub">ปิดเงื่อนไขจบเกมข้อใดไว้ได้ — เกมจะไม่จบจากเงื่อนไขนั้นแม้เข้าเงื่อนไขจริง</p>
+                <button class="btn-add-bot" style="margin-bottom:12px;" onclick="setAllWinConditions(false)">⛔ ปิดเงื่อนไขการชนะทั้งหมด</button>
+                <div id="testerConditionList" class="testerConditionList"></div>
+            </div>
+
+            <div class="tester-section">
+                <div class="tester-section-title"><span class="tester-section-icon">🗳️</span><span>นับเวลาโหวต</span></div>
+                <p class="sub">ปิดได้ทั้งก่อนเปิดโหวตหรือระหว่างเปิดโหวตอยู่ — ปิดไว้แล้วโหวตจะไม่หมดเวลาเอง ต้องกดปิดโหวตเองเท่านั้น</p>
+                <div id="testerVoteTimerRow" class="testerConditionList"></div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<!-- ===== BOT MANAGER (แยกออกมาจากป๊อปอัป "ปรับเงื่อนไขจบเกม" ให้เป็นป๊อปอัปของตัวเองต่างหาก) ===== -->
+<div class="vote-modal-overlay hidden" id="botManagerOverlay">
+    <div class="vote-modal vote-modal-fixed-close tester-modal" id="botManagerPanel">
+        <button class="vote-modal-close" onclick="closeBotManagerPopup()">✕</button>
+        <div class="vote-modal-scroll">
+            <div class="tester-section">
+                <div class="tester-section-title"><span class="tester-section-icon">🤖</span><span>จัดการบอท</span></div>
+                <p class="sub">เพิ่มบอทมานั่งแทนผู้เล่นจริง เพื่อให้แจกบทได้ครบตามจำนวน — กด "🎭 เข้าสิง" ที่การ์ดผู้เล่นในกริดหลักเพื่อเปิดหน้าจอของบอทตัวนั้นเป็นป๊อปอัปแล้วเล่นแทนได้เหมือนผู้เล่นปกติ</p>
+                <button class="btn-add-bot btn-add-bot-action" onclick="addBot()"><span class="btn-add-bot-icon">+</span>เพิ่มบอท</button>
+                <button class="btn-add-bot btn-add-bot-action" style="margin-top:8px;" onclick="addBotsToFillAllRoles()"><span class="btn-add-bot-icon">+</span>เพิ่มบอทให้ครบเท่าจำนวนอาชีพทั้งหมดในเกม</button>
+
+                <div id="botAIMasterRow" class="testerConditionRow" style="margin-top:12px;">
+                    <div>
+                        <div class="tcLabel">🧠 บอทเล่นเองอัตโนมัติ (ทั้งห้อง)</div>
+                        <div class="tcSub" id="botAIMasterSub">บอทที่ไม่มีคนเข้าสิงจะเล่นเอง (กัด/โหวต/ใช้สกิล)</div>
+                    </div>
+                    <div class="tcToggle" id="botAIMasterToggle" onclick="toggleRoomBotAI()"></div>
+                </div>
+
+                <div id="botList" class="testerConditionList" style="margin-top:12px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== GAME OVER SUMMARY (สรุปผลเกม) ===== -->
+<div class="vote-modal-overlay hidden" id="gameOverOverlay">
+    <div class="vote-modal gameover-modal" id="gameOverPanel">
+        <button class="vote-modal-close" onclick="closeGameOverByUser()">✕</button>
+        <div class="gameover-title" id="gameOverTitle">🏁 ทีม...ชนะ</div>
+        <p class="sub" style="margin:-6px 0 14px;">สรุปผลเกมรอบนี้ — ใครชนะ/แพ้ตามทีมของตัวเอง</p>
+        <div id="gameOverList" class="gameOverList"></div>
+        <hr class="divider">
+        <div class="gameover-progress" id="gameOverProgress">รอผู้เล่นกด "ดำเนินการต่อ"... (0/0)</div>
+        <p class="sub" style="margin:10px 0 14px;">ปิดป๊อปอัปนี้แล้วไปที่การ์ด "ตั้งค่าบทบาท" เพื่อแก้ไขจำนวนบทบาทได้ถ้าต้องการ แล้วกด "🌙 เริ่มเกม" ที่นั่นเพื่อเริ่มรอบใหม่</p>
+        <button class="btn btn-ghost btn-block" onclick="goEditRolesAfterGameOver()">✏️ ไปแก้ไขบทบาท / เริ่มเกมใหม่</button>
+    </div>
+</div>
+
+<!-- ===== FLOATING BAR ===== -->
+<div class="floating-bar">
+    <div class="floating-context" id="floatingContext">
+        <div class="floating-context-kicker" id="floatingPhaseTitle">เตรียมเกม</div>
+        <div class="floating-context-copy" id="floatingPhaseHint">ตั้งค่าห้องและบทบาทให้พร้อมก่อนเปิดเกม</div>
+    </div>
+    <button class="btn btn-create-room setup-only" id="createRoomBtn" onclick="confirmCreateRoom()">
+        ✅ สร้างห้อง
+    </button>
+    <button class="btn btn-ghost setup-only" id="cancelSetupBtn" onclick="cancelSetup()">
+        ← ยกเลิก
+    </button>
+    <button class="btn btn-start-game" id="startGameBtn" onclick="startGame()">
+        🌙 เริ่มเกม
+    </button>
+    <button class="btn btn-night hidden" id="startNightBtn" onclick="startNight()">
+        🌙 เริ่มช่วงกลางคืน
+    </button>
+    <button class="btn btn-resolve hidden" id="resolveBtn" onclick="resolveNight()">
+        🌅 สรุปผลรอบนี้
+    </button>
+    <button class="btn btn-vote hidden" id="voteBtn" onclick="toggleVoteMode()">
+        🗳️ เปิดโหมดโหวต
+    </button>
+    <button class="btn btn-ghost hidden" id="focusRestartBtn" onclick="restartRoom()">
+        🔄 เริ่มต้นใหม่
+    </button>
+    <button class="btn btn-reopen-popup hidden" id="reopenGameOverBtn" onclick="reopenGameOverPopup()">
+        🏁 เปิดสรุปผลเกมอีกครั้ง
+    </button>
+    <button class="btn btn-reopen-popup hidden" id="reopenPopupBtn" onclick="showModePopup()">
+        📋 เปิดป๊อปอัปอีกครั้ง
+    </button>
+</div>
+
+<script src="js/fluid-layout.js"></script>
+<script src="js/ww-ui.js"></script>
+<script src="js/host.main.js"></script>
+
+<!-- ===== ป้ายเวอร์ชัน (แสดงผลอย่างเดียว) ===== -->
+<!-- ป้ายเวอร์ชันมุมซ้ายบน — ขาวจาง ๆ ดึงค่ามาจาก /api/config (appVersion) ให้ตรงกับเลข
+     "Running version" ที่เห็นในหน้า Environment overview ของ AWS Elastic Beanstalk
+     (เติมโดย shared.server-control.js) หน้านี้ "ไม่มีระบบแจ้ง/ตรวจอัปเดตเลย" — ไม่มีแบนเนอร์ ไม่ reload ไม่ redirect เพราะ version เปลี่ยน
+     การแจ้งอัปเดตอยู่ที่หน้า index.html เท่านั้น (ดู js/index.auto-update.js) -->
+<div id="wwVersionBadge" style="
+    position:fixed; top:8px; left:10px;
+    font-size:11px; color:rgba(255,255,255,.35);
+    z-index:99998; pointer-events:none; user-select:none;
+    font-family:monospace; letter-spacing:.5px;
+"></div>
+
+</body>
+</html>

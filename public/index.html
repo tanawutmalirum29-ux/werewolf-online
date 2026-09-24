@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="ww-build-version" content="__WW_BUILD_VERSION__">
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+<title>Werewolf — Lobby</title>
+
+<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
+<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+<meta property="og:title" content="เกมหมาป่าออนไลน์ — Werewolf Online">
+<meta property="og:description" content="เล่นเกมหมาป่ากับเพื่อนออนไลน์ได้ทุกที่">
+<meta property="og:image" content="__WW_IMAGE_BASE__/cover-1200x630.png">
+<meta property="og:type" content="website">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="css/index.css">
+</head>
+
+<body data-page="index">
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/error-reporter.js?v=3"></script>
+<script src="js/shared.config-client.js?v=1"></script>
+<script src="js/shared.touch-guard.js"></script>
+<script src="js/shared.reset-guard.js"></script>
+<script src="js/shared.server-control.js"></script>
+<script src="js/account.identity.js"></script>
+<script src="js/ww-ui.js"></script>
+
+<!-- ป้ายชื่อของ Game Account — กดเพื่อเปิด Profile / สถิติ / เปลี่ยนชื่อ -->
+<div class="name-badge hidden" id="nameBadge" onclick="openStatsModal()">
+    <span class="name-badge-icon">👤</span>
+    <span class="name-badge-text" id="nameBadgeText"></span>
+</div>
+
+<!-- ป็อปอัปสถิติผู้เล่น (กดที่ป้ายชื่อมุมขวาบนเพื่อเปิด) — ชื่อ / อัตราชนะรวม / อัตราชนะแยกตามทีม
+     ที่กางดูรายอาชีพย่อยได้อีกที ดึงข้อมูลจาก /api/player-stats (ดู openStatsModal ใน index.main.js) -->
+<!-- บัญชีเดิมถูกลบ/หาไม่พบ: ห้ามสร้างใหม่อัตโนมัติ ต้องให้ผู้ใช้เริ่มบัญชีใหม่เองและตั้งชื่อใหม่ -->
+<div class="modal-overlay hidden" id="accountRecreateOverlay">
+    <div class="modal-box account-recreate-box">
+        <h3>บัญชีเดิมใช้ไม่ได้แล้ว</h3>
+        <p class="account-recreate-copy">บัญชีเดิมถูกลบหรือไม่พบในระบบแล้ว<br>บัญชีใหม่จะได้รับ <b>Account ID ใหม่</b> และต้องตั้งชื่อใหม่ก่อนเริ่มเล่น</p>
+        <input type="text" id="accountRecreateName" maxlength="24" autocomplete="off" placeholder="ชื่อบัญชีใหม่">
+        <div class="name-error" id="accountRecreateError"></div>
+        <div class="modal-actions">
+            <button class="modal-confirm" id="accountRecreateButton" onclick="startNewAccountAfterDeletion()" style="flex:1">สร้างบัญชีใหม่</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay hidden" id="statsModal" onclick="if(event.target===this) closeStatsModal()">
+    <div class="modal-box stats-modal-box" role="dialog" aria-modal="true" aria-labelledby="statsModalTitle">
+        <div class="profile-modal-head">
+            <div class="profile-avatar" aria-hidden="true">👤</div>
+            <div class="profile-heading">
+                <div class="profile-kicker">PROFILE</div>
+                <h3 id="statsModalTitle">โปรไฟล์</h3>
+                <div class="stats-modal-name" id="statsModalName">กำลังโหลดข้อมูลบัญชี…</div>
+            </div>
+            <button class="profile-edit-name-btn" id="profileEditNameBtn" type="button" onclick="openRenameAccountPrompt()" aria-label="เปลี่ยนชื่อบัญชี" title="เปลี่ยนชื่อ">✏️</button>
+        </div>
+
+        <div id="statsModalBody">
+            <div class="stats-loading">กำลังโหลด…</div>
+        </div>
+        <div class="modal-actions profile-modal-actions">
+            <button class="modal-confirm" onclick="closeStatsModal()" style="flex:1">ปิดโปรไฟล์</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+
+    <div class="seal">
+        <span class="seal-wolf">🐺</span>
+        <span class="seal-eyebrow">Night Falls</span>
+        <span class="seal-title">Werewolf</span>
+    </div>
+
+    <p class="sub">
+        ระบบจัดการเกมล่ามนุษย์หมาป่า<br>
+        Host คุมเกม &nbsp;·&nbsp; Player เล่นผ่านมือถือ
+    </p>
+
+    <!-- ===== ชื่อของคุณ ===== -->
+    <!-- ตั้งได้ "ครั้งแรกครั้งเดียว" เท่านั้น พอตั้งแล้วช่องนี้จะถูกซ่อนไป (ดู refreshNameUI() ใน
+         index.main.js) เปลี่ยนไปโชว์เป็นป้ายอ่านอย่างเดียวที่มุมขวาบนแทน (#nameBadge ด้านบน)
+         แก้ทีหลังไม่ได้จากหน้านี้อีกแล้ว ต้องให้แอดมินแก้ให้ผ่าน admin.html เท่านั้น -->
+    <div class="name-field" id="nameField">
+        <input
+            type="text"
+            id="displayNameInput"
+            placeholder="ชื่อของคุณ"
+            maxlength="24"
+            autocomplete="off"
+        >
+        <div class="name-error" id="displayNameError"></div>
+    </div>
+
+    <button class="btn btn-host" onclick="openHostModal()">
+        <span class="btn-icon">🎮</span>
+        สร้างห้อง — ควบคุมเกม
+    </button>
+
+    <button class="btn btn-player" onclick="player()">
+        <span class="btn-icon">👤</span>
+        เข้าร่วมห้อง — ผู้เล่น
+    </button>
+
+    <div class="footer">Trust nobody. Night starts.</div>
+
+</div>
+
+<script src="js/index.main.js"></script>
+
+<!-- ป้ายเวอร์ชันมุมซ้ายบน — ขาวจาง ๆ ดึงค่ามาจาก /api/config (appVersion) ให้ตรงกับเลข
+     "Running version" ที่เห็นในหน้า Environment overview ของ AWS Elastic Beanstalk -->
+<div id="wwVersionBadge" style="
+    position:fixed; top:8px; left:10px;
+    font-size:11px; color:rgba(255,255,255,.35);
+    z-index:99998; pointer-events:none; user-select:none;
+    font-family:monospace; letter-spacing:.5px;
+"></div>
+<!-- ===== UPDATE GATE (fullscreen) — index.html คือ "จุดเดียว" ที่แจ้งเตือนอัปเดต =====
+     host.html / player.html ไม่มีระบบแจ้ง/ตรวจอัปเดตเลย (ผู้เล่นที่กำลังเล่นเล่นต่อได้ ไม่มี popup/reload/redirect)
+     พอผู้เล่นกลับมาหน้านี้เอง: เทียบ version จาก /api/config (hash เนื้อหาไฟล์เกมจริง) กับ baseline ที่จำไว้ในเครื่อง — ดู index.auto-update.js
+     ถ้าไม่ตรงจะบังทั้งหน้าจอด้วย overlay นี้ กดที่อื่นไม่ได้ ไม่มี reload อัตโนมัติ ต้องให้ผู้ใช้กดปุ่มเองเท่านั้น -->
+<div id="wwUpdateOverlay" style="
+    position:fixed; inset:0; z-index:999999;
+    background:rgba(4,12,16,.92); backdrop-filter:blur(4px);
+    align-items:center; justify-content:center; padding:20px; box-sizing:border-box;
+">
+    <div style="
+        width:100%; max-width:360px; background:#0e3742; color:#fff8ec;
+        border-radius:22px; padding:30px 26px; text-align:center;
+        box-shadow:0 12px 40px rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.08);
+    ">
+        <div style="font-family:'Charm','IBM Plex Sans Thai',serif; font-weight:700; font-size:24px; margin:0 0 12px;">มีอัปเดตเกมใหม่</div>
+        <p style="font-size:15px; line-height:1.6; color:rgba(255,255,255,.82); margin:0 0 22px;">เกมเวอร์ชันใหม่พร้อมใช้งานแล้ว<br>กรุณาอัปเดตเกมก่อนเริ่มเล่น</p>
+        <button onclick="wwApplyUpdate()" style="
+            width:100%; padding:14px; border:none; border-radius:10px;
+            background:#5eead4; color:#04211d; font-size:15.5px; font-weight:700;
+            font-family:inherit; cursor:pointer;
+        ">🔄 อัปเดตเกมเพื่อเล่น</button>
+    </div>
+</div>
+<style>
+/* display ต้องกำหนดใน stylesheet (ไม่ใช่ inline) — inline "display:none" จะชนะ rule ".show" เสมอ ทำให้ overlay ไม่เคยโผล่ (บั๊กเดิมที่ทำให้ไม่มีใครเห็นปุ่มอัปเดต) */
+#wwUpdateOverlay{ display:none; }
+#wwUpdateOverlay.show{ display:flex; }
+body.ww-update-lock{ overflow:hidden; }
+</style>
+<script src="js/index.auto-update.js"></script>
+
+</body>
+</html>

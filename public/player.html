@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+
+<meta charset="UTF-8">
+<meta name="ww-build-version" content="__WW_BUILD_VERSION__">
+<!-- interactive-widget=resizes-visual: บอกเบราว์เซอร์ว่าตอนคีย์บอร์ดเด้งขึ้น ให้ย่อแค่
+     "visual viewport" (พื้นที่มองเห็นจริง) เท่านั้น ห้ามย่อ layout viewport ตาม (ค่าที่ทำให้หน่วย
+     vh/dvh/svh ทั้งหน้ายุบ/ดันเลย์เอาต์ทั้งหมดขึ้นไปตอนคีย์บอร์ดเปิด — บั๊กที่ผู้ใช้รายงาน) เลย์เอาต์หลัก
+     (.app ฯลฯ) จะนิ่งไม่ขยับเลยตอนคีย์บอร์ดเปิด/ปิด ส่วนช่องพิมพ์แชทลอยขึ้นไปเหนือคีย์บอร์ดเองแยกต่างหาก
+     ด้วย JS (ดู VisualViewport listener ท้าย public/js/player.main.js) -->
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
+
+<title>Werewolf — ผู้เล่น</title>
+<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
+<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="css/player.css">
+
+</head>
+<body data-page="player" class="lobby-beach">
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/error-reporter.js?v=3"></script>
+<script src="js/shared.config-client.js?v=1"></script>
+<script src="js/shared.touch-guard.js"></script>
+<script src="js/shared.reset-guard.js"></script>
+<script src="js/shared.server-control.js"></script>
+<script src="js/account.identity.js"></script>
+
+
+<div class="scene-layer" id="sceneLayer">
+    <div class="scene-stars"></div>
+    <div class="scene-disc"></div>
+</div>
+
+<div class="app">
+
+<!-- โหมดผู้ทดสอบ: เดิมมีแบนเนอร์เต็มความกว้าง + ปุ่ม "กลับหน้าโฮสต์ (คืนความเป็นบอท)" ลอยอยู่บนสุด
+     กินพื้นที่จอถาวร — ตัดออกทั้งคู่แล้ว แทนที่ด้วย:
+     • ไอคอน 🧪 หน้าปุ่มกรองผู้เล่น "ทั้งหมด" (ดู #allFilterTesterIcon ด้านล่าง) บอกว่ากำลังอยู่โหมดผู้ทดสอบ
+       แบบไม่กินพื้นที่แถวเพิ่ม (ดูการ toggle ที่ TESTER_MODE init ใน player.main.js)
+     • การคืนความเป็นบอท (เดิมกดปุ่มนี้) เปลี่ยนเป็นดับเบิลแทป/ดับเบิลคลิกที่การ์ดตัวเองในกริดผู้เล่นแทน
+       (ดู releaseBotAndReturn ถูกเรียกจาก dblclick listener บน #players ใน player.main.js) -->
+
+<div id="connBanner" class="conn-banner hidden">🔌 ขาดการเชื่อมต่อ กำลังพยายามเชื่อมต่อใหม่...</div>
+
+<!-- JOIN CARD : BEACH LOBBY -->
+<div class="card" id="joinCard">
+    <div class="lobby-hero">
+        <div class="lobby-kicker"><span class="lobby-kicker-dot"></span> BEACH LOBBY</div>
+        <div class="lobby-title-row">
+            <div>
+                <h2>เลือกห้อง แล้วลงชายหาด</h2>
+                <p class="sub" id="joinSub">กำลังดูห้องที่พร้อมให้เข้าร่วม...</p>
+            </div>
+            <div class="lobby-sun" aria-hidden="true">☀️</div>
+        </div>
+    </div>
+
+    <!-- ชื่อผู้เล่นตั้งจากหน้าแรกของเกม (index.html) เท่านั้น ไม่มีให้แก้จากหน้านี้ -->
+    <input type="text" id="name" class="hidden" readonly tabindex="-1" aria-hidden="true">
+    <div class="player-name-display hidden" id="playerNameDisplay"></div>
+
+    <div class="lobby-statusbar" id="playerLobbyStatus" aria-live="polite">
+        <span class="lobby-status-dot" id="playerLobbyStatusDot"></span>
+        <div class="lobby-status-copy">
+            <span class="lobby-status-label">สถานะห้อง</span>
+            <span class="lobby-status-text" id="playerLobbyStatusText">กำลังค้นหา...</span>
+        </div>
+        <span class="lobby-status-live">LIVE</span>
+    </div>
+
+    <section class="lobby-room-panel" aria-label="ห้องที่แนะนำ">
+        <div class="lobby-section-head">
+            <div>
+                <div class="lobby-section-kicker">ROOM / ห้องที่จะเข้าร่วม</div>
+                <div class="lobby-section-title">ห้องที่พร้อมที่สุด</div>
+            </div>
+            <span class="lobby-room-badge" id="playerLobbyRoomBadge">กำลังค้นหา</span>
+        </div>
+
+        <div class="lobby-feature-room" id="playerLobbyFeatureRoom">
+            <div class="lobby-feature-topline">
+                <span class="lobby-feature-icon" id="playerLobbyRoomIcon">🏖️</span>
+                <span class="lobby-feature-state" id="playerLobbyRoomState">รอห้องเปิด</span>
+            </div>
+            <div class="lobby-room-code" id="playerLobbyRoomCode">— — —</div>
+            <div class="lobby-room-host" id="playerLobbyRoomHost">กำลังตรวจสอบห้องที่เปิดอยู่</div>
+            <div class="lobby-room-meta" id="playerLobbyRoomMeta">
+                <span>👥 <b id="playerLobbyRoomPlayers">—</b></span>
+                <span>🔐 <b id="playerLobbyRoomAccess">ไม่ระบุ</b></span>
+            </div>
+            <div class="lobby-capacity-track" id="playerLobbyCapacityTrack" aria-hidden="true"><span id="playerLobbyCapacityBar"></span></div>
+        </div>
+
+        <div class="lobby-room-controls">
+            <div class="lobby-field" id="roomField">
+                <label for="room">โค้ดห้อง</label>
+                <input id="room" placeholder="เช่น ABC123" autocomplete="off" autocapitalize="characters" spellcheck="false">
+            </div>
+            <div class="lobby-field" id="codeField">
+                <label for="joinCode">รหัสเข้าห้อง <span>ถ้าผู้เล่าเรื่องตั้งไว้</span></label>
+                <input id="joinCode" placeholder="กรอกรหัสที่ผู้เล่าเรื่องบอก" maxlength="20" autocomplete="off" spellcheck="false">
+            </div>
+        </div>
+
+        <button class="lobby-room-picker-btn" id="playerRoomPickerTrigger" onclick="openPlayerRoomPicker()" type="button">
+            <span class="lobby-picker-icon">🗺️</span>
+            <span class="lobby-picker-copy">
+                <strong>ค้นหาห้องที่เปิดอยู่</strong>
+                <small>ดูห้องทั้งหมด แล้วแตะเลือกได้ทันที</small>
+            </span>
+            <span class="lobby-picker-arrow">›</span>
+        </button>
+    </section>
+
+    <button class="lobby-join-btn" id="joinBtn" onclick="join()" type="button">
+        <span class="lobby-join-icon">🏄</span>
+        <span>เข้าร่วมเกม</span>
+        <span class="lobby-join-arrow">→</span>
+    </button>
+
+    <div class="join-waiting hidden" id="joinWaiting">
+        <span class="lobby-wait-spinner"></span>
+        <span>กำลังรอผู้เล่าเรื่องเปิดห้อง — พอพร้อมแล้วจะเข้าร่วมให้อัตโนมัติ</span>
+    </div>
+
+    <div class="lobby-footnote">
+        <span>🌴</span> ห้องที่เริ่มเกมแล้วจะไม่รับผู้เล่นใหม่
+    </div>
+</div>
+
+
+<!-- GAME INFO CARD (hidden ตลอด — ย้ายไปอยู่ใน popup แล้ว) -->
+<div id="gameInfoCard" class="hidden">
+    <div id="gameRoomLabel"></div>
+    <div id="gamePlayerName"></div>
+    <div id="rolesInGame"></div>
+</div>
+
+<!-- (role/realRole/huntInfo/roleInfo เก็บ hidden ไว้ให้ JS ยังใช้ได้) -->
+<div id="role" class="hidden"></div>
+<div id="realRole" class="hidden"></div>
+<div id="huntInfo" class="hidden"></div>
+<div id="roleInfo" class="hidden"></div>
+
+<div id="selectInfo" class="small"></div>
+
+<!-- ROLES-IN-GAME PANEL (จอกว้างมาก ๆ เท่านั้น — โผล่เป็นคอลัมน์ซ้ายสุด คู่กับกริดผู้เล่นตรงกลาง
+     และแชทขวาสุด ดู @media (min-width:1400px) ใน player.css. เนื้อหาก๊อปมาจากลิสต์เดียวกับ
+     #popupRolesInGame (ดู showGameInfo ใน player.main.js) จอแคบกว่านี้ element นี้ไม่แสดงผล
+     (ไม่มี CSS ให้ fixed) ดูบทได้ผ่านป๊อปอัปเดิมตามปกติ -->
+<div class="card hidden" id="rolesPanelCard">
+    <h3>บทในเกมรอบนี้</h3>
+    <div id="rolesInGamePanel"></div>
+</div>
+
+<div class="card hidden" id="playersCard">
+
+    <div class="players-card-head">
+        <h3 id="phaseTitle" title="ผู้เล่นในห้อง">
+            <span id="phaseIcon"></span>
+            <span id="phaseText">ผู้เล่นในห้อง</span>
+        </h3>
+        <div class="player-filter-chips">
+            <button class="filterChip active" data-filter="all" onclick="setPlayerFilter('all')"><span id="allFilterTesterIcon" class="hidden">🧪 </span>ทั้งหมด</button>
+            <button class="filterChip" data-filter="alive" onclick="setPlayerFilter('alive')">มีชีวิต</button>
+            <button class="filterChip" data-filter="dead" onclick="setPlayerFilter('dead')">ตายแล้ว</button>
+        </div>
+    </div>
+    <!-- บรรทัดรายละเอียดเสริมของช่วง/โหมดปัจจุบัน (เช่น จำนวนโหวตที่ต้องการ + เวลานับถอยหลัง)
+         อยู่ตรงนี้เสมอ (ไม่ถูกซ่อน/โชว์สลับ) กันไม่ให้กริดผู้เล่นด้านล่างขยับ -->
+    <p class="sub" id="playersSub">
+        <span id="playersSubThreshold"></span>
+        <span id="playersSubCountdown" style="font-weight:700;"></span>
+    </p>
+
+    <div id="players"></div>
+
+</div>
+
+<div id="chatCard" class="hidden">
+
+    <div class="chatTabs" id="chatTabs">
+        <div class="chatTab active" id="tabGlobal" onclick="switchChatTab('global')">
+            🔵 แชทรวม
+            <span class="tab-badge zero" id="badgeGlobal">0</span>
+        </div>
+        <div class="chatTab hidden" id="tabWolf" onclick="switchChatTab('wolf')">
+            🔴 แชทหมาป่า
+            <span class="tab-badge zero" id="badgeWolf">0</span>
+        </div>
+        <div class="chatTab hidden" id="tabInstigator" onclick="switchChatTab('instigator')">
+            🎭 แชททีมยุยง
+            <span class="tab-badge zero" id="badgeInstigator">0</span>
+        </div>
+        <div class="chatTab hidden" id="tabCult" onclick="switchChatTab('cult')">
+            🔯 แชทลัทธิ
+            <span class="tab-badge zero" id="badgeCult">0</span>
+        </div>
+        <div class="chatTab hidden" id="tabBandit" onclick="switchChatTab('bandit')">
+            🗡️ แชททีมโจร
+            <span class="tab-badge zero" id="badgeBandit">0</span>
+        </div>
+    </div>
+
+    <div id="chatBoxGlobal"></div>
+    <div id="chatBoxWolf" class="hidden"></div>
+    <div id="chatBoxInstigator" class="hidden"></div>
+    <div id="chatBoxCult" class="hidden"></div>
+    <div id="chatBoxBandit" class="hidden"></div>
+
+    <div class="chatRow" id="chatRow">
+
+        <div id="silencedNotice" class="silenced-notice">
+            🤐 คุณถูกใบ้ในรอบนี้ — พิมพ์ข้อความไม่ได้
+        </div>
+
+        <div class="chatInputRow" id="chatInputRow">
+            <input
+                id="chatInput"
+                placeholder="พิมพ์ข้อความ..."
+                maxlength="200"
+            >
+
+            <button
+                class="sendBtn"
+                onclick="sendChat()"
+            >
+                ส่ง
+            </button>
+        </div>
+
+    </div>
+
+</div>
+
+</div><!-- end .app -->
+
+<!-- BOTTOM BAR (outside .app so it sticks to viewport bottom) -->
+<div id="bottomBar" class="hidden">
+    <button id="maskBtn" onclick="openRolePopup()" title="ดูบทของคุณ">🎭</button>
+    <div id="barRoleText">
+        <div id="barRoleName">ยังไม่ได้รับบท</div>
+        <div id="barRoleSub">แตะหน้ากากเพื่อดูรายละเอียด</div>
+    </div>
+    <div id="barHuntBadge" class="hidden"></div>
+    <div id="barIllusionBadge" class="hidden"></div>
+    <button id="shieldBtn" class="hidden" onclick="toggleShieldMode()" title="วางโล่ป้องกันการประหาร">
+        <span id="shieldIcon">🛡️</span><span id="shieldCount">1</span>
+    </button>
+    <button id="pawBtn" class="hidden" onclick="toggleWolfCubMode()" title="เลือกเป้าลากตายไว้ล่วงหน้า — ถ้าคุณตาย คนที่เลือกไว้จะตายตามไปด้วย (ใช้ได้ตลอดเวลา เปลี่ยนเป้าได้ไม่จำกัด)">
+        🐾
+    </button>
+    <button id="mouthBtn" class="hidden" onclick="toggleLoudmouthMode()" title="เลือกเป้าไว้ล่วงหน้า — ถ้าคุณตาย บทบาทจริงของคนที่เลือกไว้จะถูกเปิดเผยให้ทุกคนเห็นทันที (ใช้ได้ตลอดเวลา เปลี่ยนเป้าได้ไม่จำกัด คืนแรกใช้ไม่ได้)">
+        👄
+    </button>
+    <button id="curseBtn" class="hidden" onclick="toggleCurseMode()" title="ร่ายเวทใส่เป้าหมาย (เลือกได้ตอนกลางวัน เปลี่ยนเป้าได้ไม่จำกัด)">
+        🪄<span id="curseDot"></span>
+    </button>
+    <button id="cultRecruitBtn" class="hidden" onclick="toggleCultRecruitMode()" title="ชักชวนผู้เล่นเข้าร่วมลัทธิ (เลือกได้เฉพาะตอนกลางคืน เปลี่ยนใจได้จนกว่าจะถึงเช้า)">
+        🔯
+    </button>
+    <button id="cultSacrificeBtn" class="hidden" onclick="toggleCultSacrificeMode()" title="สังเวยสมาชิกลัทธิ 1 คน เพื่อฆ่าผู้เล่นอีกคนหนึ่ง (เลือกได้เฉพาะตอนกลางคืน แตะสมาชิกก่อน แล้วค่อยแตะเป้าที่จะฆ่า)">
+        🕯️
+    </button>
+    <button id="gunBtn" class="hidden" onclick="toggleGunMode()" title="ใช้ปืนยิง (มีนัดเดียว ใช้ได้ตอนกลางวัน วันละ 1 ความสามารถ)">
+        🔫<span id="gunCount">1</span>
+    </button>
+    <button id="peekBtn" class="hidden" onclick="togglePeekMode()" title="ดูบทบาทผู้เล่น (ดูได้คนเดียว เห็นเฉพาะคุณ ใช้ได้ตอนกลางวัน วันละ 1 ความสามารถ)">
+        📣<span id="peekCount">1</span>
+    </button>
+    <button id="holyWaterBtn" class="hidden" onclick="toggleHolyWaterMode()" title="ปาน้ำมนต์ (มีขวดเดียวตลอดเกม ใช้ได้เฉพาะตอนกลางวัน — โดนหมาป่าคือหมาป่าตาย โดนคนอื่นคือคุณตายแทน)">
+        🫙<span id="holyWaterCount">1</span>
+    </button>
+    <button id="illusionKillBtn" class="hidden" onclick="illusionKillDisguised()" title="ฆ่าผู้เล่นทุกคนที่คุณปลอมบทไว้พร้อมกัน (ใช้ได้เฉพาะตอนกลางวัน — พวกเขาจะปรากฏเป็นนักเล่นกลให้ทุกคนเห็น)">
+        🔥<span id="illusionKillCount">0</span>
+    </button>
+    <button id="protectBtn" class="hidden" onclick="toggleProtectMode()" title="เลือกยาป้องกัน ป้องกันคนที่เลือกจากการถูกเล็งฆ่าคืนนี้ (ขวดเดียวตลอดเกม เปลี่ยนเป้าได้ทุกคืนจนกว่าจะเคยกันสำเร็จ ใช้ได้เฉพาะตอนกลางคืน)">
+        🧪<span id="protectCount">1</span>
+    </button>
+    <button id="poisonBtn" class="hidden" onclick="togglePoisonMode()" title="โยนยาพิษ (มีขวดเดียวตลอดเกม ใช้แล้วตายทันที ใช้ได้เฉพาะตอนกลางคืน)">
+        ☠️<span id="poisonCount">1</span>
+    </button>
+    <button id="oracleBtn" class="hidden" onclick="confirmGiveUpOracleSense()" title="สละลางสังหรณ์ กลายเป็นหมาป่าธรรมดาที่ร่วมล่าได้ (กดได้ทั้งวันทั้งคืน ย้อนกลับไม่ได้)">
+        👁️
+    </button>
+    <button id="mayorBtn" class="hidden" onclick="confirmRevealMayor()" title="เปิดเผยตัวเป็นนายก — ใช้ได้ครั้งเดียวตลอดเกม ย้อนกลับไม่ได้ (กดได้ทั้งวันทั้งคืน โหวตของคุณจะนับเป็น 2 เสียงหลังจากนี้)">
+        🤠
+    </button>
+</div>
+
+<!-- ROLE REVEAL ANIMATION OVERLAY -->
+<div id="roleRevealOverlay" class="hidden">
+    <div class="reveal-stars" id="revealStars"></div>
+    <div id="revealLabel">✦ บทบาทของคุณคือ ✦</div>
+    <div id="revealSlotBox">
+        <span id="revealSlotText">—</span>
+    </div>
+    <div id="revealDesc"></div>
+    <div id="revealHuntBox">
+        <div id="revealHuntIcon">🎯</div>
+        <div id="revealHuntLabel">เป้าหมายของคุณ</div>
+        <div id="revealHuntName">
+            <span id="revealHuntNameText"></span>
+            <span class="crosshair">
+                <span class="crosshair-ring"></span>
+                <span class="crosshair-dot"></span>
+            </span>
+        </div>
+    </div>
+</div>
+
+<!-- ป้ายบอกกลางวัน/กลางคืน — ย้ายมาอยู่หลัง .app (เดิมอยู่ก่อน .app ทำให้ใช้ตัวเลือก
+     ".app.game-visible ~ #dayNightBadge" ของ CSS โหมดไอแพดแนวนอนไม่ได้ เพราะ ~ เลือกได้แค่
+     sibling ที่ตามหลังเท่านั้น — ย้ายมาไว้ตรงนี้เพื่อให้ปรับตำแหน่งเฉพาะโหมดไอแพดแนวนอนได้
+     โดยไม่กระทบตำแหน่งเดิม (มุมขวาบน) ในโหมดมือถือ/จอปกติ -->
+<div class="day-night-badge hidden" id="dayNightBadge">
+    <span class="dn-icon" id="dnIcon">🌙</span>
+    <span id="dnText">คืนที่ 1</span>
+</div>
+
+<!-- ROLE POPUP OVERLAY -->
+<div id="rolePopupOverlay" class="hidden" onclick="closeRolePopup()"></div>
+
+<!-- ROLE POPUP -->
+<div id="rolePopup" class="hidden">
+    <div id="rolePopupHeader">
+        <div>
+            <div class="eyebrow" style="margin-bottom:4px;">บทของคุณ</div>
+            <div id="popupRoleName">—</div>
+            <div id="popupRoleCount" class="popup-role-count"></div>
+        </div>
+        <button id="rolePopupClose" onclick="closeRolePopup()">✕</button>
+    </div>
+    <div id="rolePopupBody">
+        <div id="popupRealRole" class="hidden"></div>
+        <div id="popupHuntInfo" class="hidden"></div>
+        <div id="popupRoleDesc"></div>
+        <div id="popupCultInfo" class="hidden"></div>
+        <div class="popup-divider"></div>
+        <div class="eyebrow" style="margin-bottom:8px;">บทในเกมรอบนี้</div>
+        <div id="popupRolesInGame"></div>
+    </div>
+</div>
+
+<!-- GAME OVER OVERLAY (สรุปผลเกม แพ้/ชนะ) -->
+<div id="gameOverOverlay" class="hidden">
+    <div class="gameover-box" id="gameOverBox">
+        <div class="gameover-icon" id="gameOverIcon">🏆</div>
+        <img id="gameOverRoleIcon" class="gameover-role-icon hidden" alt="">
+        <div class="gameover-roleName" id="gameOverRoleName"></div>
+        <div class="gameover-result" id="gameOverResult">ชนะ</div>
+        <div class="gameover-titleLine" id="gameOverTitleLine">ทีม...ชนะ</div>
+        <div id="gameOverRoleList" class="gameOverList"></div>
+        <button class="gameover-continue-btn" id="gameOverContinueBtn" onclick="confirmContinue()">
+            ดำเนินการต่อ <span id="gameOverCountdown">(5)</span>
+        </button>
+        <div class="gameover-waiting hidden" id="gameOverWaiting">
+            ✅ พร้อมแล้ว — รอผู้เล่นคนอื่น... (<span id="gameOverReadyCount">0</span>/<span id="gameOverTotalCount">0</span>)
+        </div>
+    </div>
+</div>
+
+<!-- ===== RESUME PREVIOUS GAME / ROOM ===== -->
+<div class="ww-modal-overlay hidden" id="playerResumeOverlay">
+    <div class="ww-modal-box playerResumeBox" role="dialog" aria-modal="true" aria-labelledby="playerResumeTitle">
+        <div class="playerResumeIcon" id="playerResumeIcon" aria-hidden="true">🎮</div>
+        <div class="playerResumeKicker">PREVIOUS GAME</div>
+        <div class="playerResumeTitle" id="playerResumeTitle">กลับเข้าสู่เกมเดิมไหม?</div>
+        <div class="playerResumeSub" id="playerResumeSub">กำลังตรวจสอบห้องเดิม...</div>
+        <div class="playerResumeRoomCard">
+            <div class="playerResumeRoomCode" id="playerResumeRoomCode">———</div>
+            <div class="playerResumeRoomHost" id="playerResumeRoomHost">ผู้เล่าเรื่อง —</div>
+            <div class="playerResumeRoomMeta" id="playerResumeRoomMeta">🎮 เกมกำลังดำเนินอยู่</div>
+        </div>
+        <div class="playerResumeNotice" id="playerResumeNotice">
+            ถ้าเลือก <b>หาห้องใหม่</b> ขณะที่เกมเดิมยังไม่จบ ระบบจะบันทึกว่าคุณหนีออกจากเกมทันที
+        </div>
+        <div class="playerResumeActions">
+            <button type="button" class="playerResumeNewBtn" id="playerResumeNewBtn" onclick="chooseNewPlayerRoom()">หาห้องใหม่</button>
+            <button type="button" class="playerResumeContinueBtn" id="playerResumeContinueBtn" onclick="resumePreviousPlayerRoom()">กลับเข้าเกมเดิม</button>
+        </div>
+    </div>
+</div>
+
+<!-- ===== ROOM PICKER (ผู้เล่นเลือกห้องจากรายการที่เปิดอยู่ทั้งหมด — คู่กับกริด
+     "ห้องที่ยังเปิดอยู่" ฝั่งโฮสต์ แต่ตัดข้อมูลที่ไม่เกี่ยวกับผู้เล่นออก เช่น hasPassword/
+     hostConnected และปุ่มกดจะพาไปเข้าร่วมห้องแทนเข้าคุม — ดู openPlayerRoomPicker ใน
+     player.main.js) ===== -->
+<div class="ww-modal-overlay hidden" id="playerRoomPickerOverlay">
+    <div class="ww-modal-box playerRoomPickerBox" role="dialog" aria-modal="true" aria-labelledby="playerRoomPickerTitle">
+        <div class="playerRoomPickerHeader">
+            <div>
+                <div class="playerRoomPickerKicker">BEACH LOBBY</div>
+                <div class="playerRoomPickerTitle" id="playerRoomPickerTitle">ค้นหาห้องที่จะเล่น</div>
+                <div class="playerRoomPickerSub">เลือกห้องจากสถานะจริงของเซิร์ฟเวอร์</div>
+            </div>
+            <button class="playerRoomPickerClose" id="playerRoomPickerCloseBtn" onclick="closePlayerRoomPicker()" type="button" aria-label="ปิดหน้าค้นหาห้อง">×</button>
+        </div>
+
+        <div class="playerRoomPickerToolbar">
+            <div class="playerRoomSearchWrap">
+                <span class="playerRoomSearchIcon" aria-hidden="true">⌕</span>
+                <input
+                    type="text"
+                    id="playerRoomSearchInput"
+                    class="roomSearchInput"
+                    placeholder="ค้นหาด้วยโค้ดห้องหรือชื่อผู้เล่าเรื่อง"
+                    maxlength="24"
+                    autocomplete="off"
+                >
+                <button class="playerRoomSearchClear hidden" id="playerRoomSearchClear" onclick="clearPlayerRoomSearch()" type="button" aria-label="ล้างคำค้น">×</button>
+            </div>
+            <button class="playerRoomRefresh" id="playerRoomRefreshBtn" onclick="refreshPlayerRoomPicker()" type="button" aria-label="รีเฟรชรายการห้อง">↻</button>
+        </div>
+
+        <div class="playerRoomPickerSummary">
+            <span id="playerRoomPickerCount">0 ห้อง</span>
+            <span>แตะห้องที่ต้องการเพื่อเลือก</span>
+        </div>
+
+        <div id="playerRoomPickerGrid" class="roomPickerGrid"></div>
+        <div id="playerRoomPickerEmpty" class="roomPickerEmpty hidden">
+            <div class="roomPickerEmptyIcon">🏝️</div>
+            <strong>ยังไม่พบห้อง</strong>
+            <span id="playerRoomPickerEmptyText">ลองค้นหาด้วยโค้ดอื่น หรือรอให้มีห้องเปิดใหม่</span>
+        </div>
+    </div>
+</div>
+
+<script src="js/fluid-layout.js"></script>
+<script src="js/ww-ui.js"></script>
+<script src="js/player.main.js"></script>
+
+<!-- ===== ป้ายเวอร์ชัน (แสดงผลอย่างเดียว) ===== -->
+<!-- ป้ายเวอร์ชันมุมซ้ายบน — ขาวจาง ๆ ดึงค่ามาจาก /api/config (appVersion) ให้ตรงกับเลข
+     "Running version" ที่เห็นในหน้า Environment overview ของ AWS Elastic Beanstalk
+     (เติมโดย shared.server-control.js) หน้านี้ "ไม่มีระบบแจ้ง/ตรวจอัปเดตเลย" — ไม่มีแบนเนอร์ ไม่ reload ไม่ redirect เพราะ version เปลี่ยน
+     การแจ้งอัปเดตอยู่ที่หน้า index.html เท่านั้น (ดู js/index.auto-update.js) -->
+<div id="wwVersionBadge" style="
+    position:fixed; top:8px; left:10px;
+    font-size:11px; color:rgba(255,255,255,.35);
+    z-index:99998; pointer-events:none; user-select:none;
+    font-family:monospace; letter-spacing:.5px;
+"></div>
+
+</body>
+</html>

@@ -1,0 +1,2846 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="ww-admin-release" content="__WW_ADMIN_RELEASE__">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Admin — บัญชีในระบบ</title>
+<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
+<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+<meta name="robots" content="noindex, nofollow">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+    --bg:#0a0d14;
+    --panel:#12172380;
+    --panel-solid:#141a26;
+    --line:rgba(255,255,255,.07);
+    --ink:#dbe0ec;
+    --ink-dim:#8993a8;
+    --moon:#7c5cff;
+    --moon-soft:rgba(124,92,255,.16);
+    --wolf:#ef4444;
+    --safe:#22c55e;
+    --safe-soft:rgba(34,197,94,.14);
+    --mark:#fbbf24;
+    --mark-soft:rgba(251,191,36,.14);
+    --r-sm:10px;
+    --r-md:16px;
+    --r-lg:22px;
+}
+*{ box-sizing:border-box; }
+html{ overflow-x:hidden; }
+body{
+    margin:0;
+    min-height:100vh;
+    background:
+        radial-gradient(ellipse 900px 500px at 18% -10%, rgba(124,92,255,.16), transparent 60%),
+        radial-gradient(ellipse 800px 500px at 100% 0%, rgba(239,68,68,.10), transparent 55%),
+        var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans Thai","Noto Sans Thai",sans-serif;
+    line-height:1.55;
+    padding:20px 14px 60px;
+}
+.wrap{ max-width:720px; margin:0 auto; }
+h1{
+    font-size:19px;
+    margin:0 0 4px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+.sub{
+    color:var(--ink-dim);
+    font-size:13px;
+    margin:0 0 20px;
+}
+.toolbar{
+    display:flex;
+    gap:10px;
+    align-items:center;
+    margin-bottom:16px;
+}
+.btn{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    padding:10px 16px;
+    border:none;
+    border-radius:var(--r-sm);
+    background:linear-gradient(135deg,#7c5cff,#5b3df0);
+    color:#fff;
+    font-weight:600;
+    font-size:13.5px;
+    cursor:pointer;
+    transition:transform .15s, filter .15s;
+    font-family:inherit;
+}
+.btn:hover{ filter:brightness(1.08); transform:translateY(-1px); }
+.btn:disabled{ opacity:.5; cursor:default; transform:none; }
+.btn-ghost{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--ink);
+    box-shadow:none;
+}
+.status{
+    font-size:12.5px;
+    color:var(--ink-dim);
+}
+.status.live::before{
+    content:"●";
+    color:var(--safe);
+    margin-right:5px;
+}
+.status.down::before{
+    content:"●";
+    color:var(--wolf);
+    margin-right:5px;
+}
+.empty{
+    text-align:center;
+    padding:50px 20px;
+    color:var(--ink-dim);
+    font-size:14px;
+    border:1px dashed var(--line);
+    border-radius:var(--r-md);
+}
+.room-group{
+    margin-bottom:18px;
+}
+.room-label{
+    font-size:12px;
+    color:var(--ink-dim);
+    font-weight:600;
+    letter-spacing:.03em;
+    margin:0 0 8px 2px;
+    display:flex;
+    align-items:center;
+    gap:6px;
+}
+.room-label .code{
+    font-family:"JetBrains Mono",monospace;
+    background:var(--moon-soft);
+    color:#c9bcff;
+    padding:2px 8px;
+    border-radius:6px;
+}
+.account-card{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--r-md);
+    padding:12px 14px;
+    margin-bottom:8px;
+    backdrop-filter:blur(10px);
+}
+.account-info{
+    min-width:0;
+    flex:1;
+}
+.account-name{
+    font-weight:600;
+    font-size:14.5px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.tags{
+    display:flex;
+    gap:6px;
+    margin-top:5px;
+    flex-wrap:wrap;
+}
+.tag{
+    font-size:10.5px;
+    padding:2px 8px;
+    border-radius:20px;
+    font-weight:600;
+    white-space:nowrap;
+}
+.tag-host{
+    background:var(--moon-soft);
+    color:#c9bcff;
+}
+.tag-tester{
+    background:var(--mark-soft);
+    color:var(--mark);
+}
+.account-actions{
+    flex-shrink:0;
+}
+.rename-btn{
+    background:transparent;
+    border:1px solid var(--line);
+    color:var(--ink);
+    border-radius:var(--r-sm);
+    padding:8px 12px;
+    font-size:13px;
+    cursor:pointer;
+    font-family:inherit;
+}
+.rename-btn:hover{
+    border-color:var(--moon);
+    color:#c9bcff;
+}
+
+/* prompt modal */
+.overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(5,7,12,.7);
+    backdrop-filter:blur(4px);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+    z-index:50;
+}
+.overlay.hidden{ display:none; }
+.overlay-close-float{
+    position:fixed; top:max(12px, env(safe-area-inset-top)); right:12px; z-index:60;
+    width:42px; height:42px; border-radius:50%; border:1px solid rgba(255,255,255,.16);
+    background:rgba(13,18,32,.94); color:var(--ink); font-size:25px; line-height:1;
+    display:grid; place-items:center; cursor:pointer; box-shadow:0 8px 24px rgba(0,0,0,.35);
+    backdrop-filter:blur(10px);
+}
+.overlay-close-float:hover{ border-color:var(--moon); color:#c9bcff; }
+.modal-box{
+    background:var(--panel-solid);
+    border:1px solid var(--line);
+    border-radius:var(--r-lg);
+    padding:20px;
+    width:100%;
+    max-width:340px;
+}
+.modal-box h3{ margin:0 0 12px; font-size:15px; }
+.modal-box input{
+    width:100%;
+    padding:11px 12px;
+    border-radius:var(--r-sm);
+    border:1px solid var(--line);
+    background:#0d1220;
+    color:var(--ink);
+    font-size:14px;
+    font-family:inherit;
+    margin-bottom:14px;
+}
+.modal-box input:focus{ outline:none; border-color:var(--moon); }
+.modal-actions{
+    display:flex;
+    gap:8px;
+    justify-content:flex-end;
+}
+
+/* tabs */
+.tabs{
+    display:flex;
+    gap:4px;
+    margin-bottom:16px;
+    border-bottom:1px solid var(--line);
+    overflow-x:auto;
+    overflow-y:hidden;
+    flex-wrap:nowrap;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+}
+.tabs::-webkit-scrollbar{ display:none; }
+.tab-btn{
+    background:transparent;
+    border:none;
+    color:var(--ink-dim);
+    font-family:inherit;
+    font-size:13.5px;
+    font-weight:600;
+    padding:10px 10px 12px;
+    cursor:pointer;
+    border-bottom:2px solid transparent;
+    margin-bottom:-1px;
+    white-space:nowrap;
+    flex:0 0 auto;
+}
+.tab-btn.active{
+    color:var(--ink);
+    border-bottom-color:var(--moon);
+}
+.tab-panel{ display:none; }
+.tab-panel.active{ display:block; }
+
+/* search */
+.search-box{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    padding:9px 12px;
+    margin-bottom:14px;
+}
+.search-box input{
+    flex:1;
+    background:transparent;
+    border:none;
+    outline:none;
+    color:var(--ink);
+    font-size:14px;
+    font-family:inherit;
+}
+.search-box input::placeholder{ color:var(--ink-dim); }
+
+/* player registry cards */
+.player-card{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--r-md);
+    padding:12px 14px;
+    margin-bottom:8px;
+    backdrop-filter:blur(10px);
+    cursor:pointer;
+}
+.player-card:hover{ border-color:var(--moon); }
+.player-meta{
+    font-size:12px;
+    color:var(--ink-dim);
+    margin-top:4px;
+}
+.player-count{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11.5px;
+    background:var(--moon-soft);
+    color:#c9bcff;
+    padding:2px 8px;
+    border-radius:20px;
+    white-space:nowrap;
+    flex-shrink:0;
+}
+
+/* all player directory / account management */
+#tab-all .directory-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;}
+.directory-note{font-size:11.5px;color:var(--ink-dim);line-height:1.5;}
+#tab-all.active #allPlayersContent{display:grid;grid-template-columns:1fr;gap:10px;align-items:stretch;}
+#tab-all.active #allPlayersContent .empty{grid-column:1 / -1;}
+.directory-card{position:relative;display:flex;flex-direction:column;justify-content:space-between;gap:12px;min-height:122px;background:linear-gradient(145deg,rgba(255,255,255,.045),rgba(255,255,255,.02));border:1px solid var(--line);border-radius:var(--r-md);padding:14px;cursor:pointer;transition:border-color .15s,transform .15s,background .15s;}
+.directory-card:hover{border-color:rgba(124,92,255,.55);transform:translateY(-1px);background:linear-gradient(145deg,rgba(124,92,255,.09),rgba(255,255,255,.025));}
+.directory-card:focus-visible{outline:2px solid var(--moon);outline-offset:2px;}
+.directory-top{display:flex;align-items:flex-start;gap:10px;min-width:0;}
+.directory-avatar{width:38px;height:38px;flex:0 0 38px;border-radius:12px;display:grid;place-items:center;background:var(--moon-soft);color:#d8d0ff;font-size:20px;}
+.directory-main{min-width:0;flex:1;}
+.directory-name{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.directory-sub{font-size:11px;color:var(--ink-dim);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.directory-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}
+.directory-tag{font-size:10px;padding:2px 7px;border-radius:20px;background:#0d1220;border:1px solid var(--line);color:var(--ink-dim);}
+.directory-tag.online{background:var(--safe-soft);color:var(--safe);border-color:rgba(34,197,94,.2);}
+.directory-tag.suspended{background:rgba(245,158,11,.12);color:var(--mark);border-color:rgba(245,158,11,.2);}
+.directory-tag.deleted{background:rgba(239,68,68,.12);color:var(--wolf);border-color:rgba(239,68,68,.2);}
+.directory-tag.legacy{background:rgba(255,255,255,.05);color:var(--ink-dim);}
+.directory-bottom{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}
+.directory-stat{background:#0d1220;border:1px solid var(--line);border-radius:9px;padding:6px 7px;min-width:0;}
+.directory-stat b{display:block;font-size:13px;font-family:"JetBrains Mono",monospace;}
+.directory-stat span{display:block;font-size:9.5px;color:var(--ink-dim);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.directory-arrow{position:absolute;right:12px;top:12px;color:var(--ink-dim);font-size:13px;}
+.account-detail-modal .modal-box,.account-detail-modal{max-width:500px;}
+.account-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.account-detail-name{font-size:18px;font-weight:800;line-height:1.25;}
+.account-detail-id{font:10px "JetBrains Mono",monospace;color:var(--ink-dim);margin-top:4px;word-break:break-all;}
+.account-detail-close{border:1px solid var(--line);background:transparent;color:var(--ink-dim);border-radius:9px;width:34px;height:34px;cursor:pointer;}
+.account-detail-status{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px;}
+.account-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:0 0 12px;}
+.account-kpi{background:#0d1220;border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;}
+.account-kpi b{display:block;font-size:16px;font-family:"JetBrains Mono",monospace;}
+.account-kpi span{font-size:9.5px;color:var(--ink-dim);}
+.account-detail-section{background:#0d1220;border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:10px;}
+.account-detail-section h4{margin:0 0 7px;font-size:12px;color:var(--ink-dim);}
+.account-detail-meta{display:grid;grid-template-columns:1fr 1fr;gap:7px 12px;font-size:11.5px;}
+.account-detail-meta b{color:var(--ink);font-weight:600;}
+.account-detail-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px;}
+.account-detail-actions .btn{width:100%;}
+.account-detail-actions .wide{grid-column:1 / -1;}
+.account-event-list{max-height:220px;overflow:auto;}
+.account-event{padding:8px 0;border-bottom:1px solid var(--line);font-size:11.5px;}
+.account-event:last-child{border-bottom:none;}
+.account-event-time{font-size:10px;color:var(--ink-dim);margin-bottom:2px;}
+.directory-banner{margin:0 0 12px;padding:9px 11px;border:1px dashed rgba(124,92,255,.3);border-radius:11px;background:rgba(124,92,255,.07);font-size:11.5px;color:var(--ink-dim);line-height:1.55;}
+@media (min-width:700px){#tab-all.active #allPlayersContent{grid-template-columns:1fr 1fr;}}
+@media (min-width:1050px){#tab-all.active #allPlayersContent{grid-template-columns:repeat(3,1fr);}}
+
+/* history modal */
+.hist-modal .modal-box{ max-width:460px; max-height:82vh; display:flex; flex-direction:column; }
+.hist-summary{
+    display:flex;
+    gap:16px;
+    flex-wrap:wrap;
+    background:#0d1220;
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    padding:10px 12px;
+    margin-bottom:14px;
+    font-size:12.5px;
+}
+.hist-summary b{ display:block; font-size:15px; color:var(--ink); }
+.hist-list{ overflow-y:auto; }
+.hist-item{
+    border-left:2px solid var(--line);
+    padding:2px 0 12px 12px;
+    margin-left:4px;
+    position:relative;
+    font-size:13px;
+}
+.hist-item::before{
+    content:"";
+    position:absolute;
+    left:-5px; top:4px;
+    width:8px; height:8px;
+    border-radius:50%;
+    background:var(--ink-dim);
+}
+.hist-item.win::before{ background:var(--safe); }
+.hist-item.lose::before{ background:var(--wolf); }
+.hist-item.leave::before{ background:var(--mark); }
+.hist-time{ color:var(--ink-dim); font-size:11px; }
+.hist-empty{ color:var(--ink-dim); font-size:13px; padding:10px 0; }
+
+/* tools tab / danger zone */
+.btn-danger{
+    background:linear-gradient(135deg,#ef4444,#b91c1c);
+}
+.tool-card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--r-md);
+    padding:16px;
+    margin-bottom:12px;
+    backdrop-filter:blur(10px);
+}
+.tool-card.danger{ border-color:rgba(239,68,68,.35); }
+.tool-title{ font-size:14.5px; font-weight:700; margin:0 0 6px; }
+.tool-desc{ font-size:12.5px; color:var(--ink-dim); line-height:1.6; margin:0 0 12px; }
+.tool-result{ margin-top:12px; font-size:12.5px; line-height:1.6; word-break:break-word; }
+.tool-result.ok{ color:var(--safe); }
+.tool-result.err{ color:var(--wolf); }
+.modal-note{ font-size:12.5px; color:var(--ink-dim); line-height:1.6; margin:0 0 12px; }
+.modal-err{ color:var(--wolf); font-size:12.5px; margin:8px 0 0; min-height:1em; word-break:break-word; }
+
+/* เปิด/ปิดเซิร์ฟเวอร์ + บังคับรีโหลด */
+.btn-safe{ background:linear-gradient(135deg,#22c55e,#15803d); }
+.tool-actions{ display:flex; gap:8px; flex-wrap:wrap; }
+.tool-actions .btn{ flex:1 1 150px; }
+.srv-pill{
+    display:inline-block;
+    font-size:11.5px;
+    font-weight:700;
+    padding:2px 10px;
+    border-radius:20px;
+    margin-left:8px;
+    vertical-align:middle;
+    background:var(--moon-soft);
+    color:#c9bcff;
+}
+.srv-pill.open{ background:var(--safe-soft); color:var(--safe); }
+.srv-pill.closed{ background:rgba(239,68,68,.16); color:var(--wolf); }
+.srv-pill.closing{ background:rgba(245,158,11,.18); color:var(--mark); }
+.tool-actions .btn.hidden{ display:none; }
+.modal-field{ margin:0 0 2px; }
+.modal-field label{ display:block; font-size:12px; color:var(--ink-dim); margin:0 0 4px; }
+.modal-box select{
+    width:100%;
+    padding:11px 12px;
+    border-radius:var(--r-sm);
+    border:1px solid var(--line);
+    background:#0d1220;
+    color:var(--ink);
+    font-size:14px;
+    font-family:inherit;
+    margin-bottom:14px;
+}
+.modal-box select:focus{ outline:none; border-color:var(--moon); }
+.modal-box{ max-height:92vh; overflow-y:auto; }
+.tool-result.warn{ color:var(--mark); }
+
+/* ช่องเลือกวันที่/เวลา (ปิด/เปิดเซิร์ฟเวอร์) */
+.modal-box input[type="datetime-local"]{ color-scheme:dark; }
+.modal-field-hint{ font-size:11px; color:var(--ink-dim); margin:-10px 0 10px; }
+.nudge-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    margin:-6px 0 14px;
+}
+.chip{
+    padding:5px 10px;
+    border-radius:20px;
+    border:1px solid var(--line);
+    background:transparent;
+    color:var(--ink-dim);
+    font-size:11px;
+    font-family:inherit;
+    cursor:pointer;
+    white-space:nowrap;
+    line-height:1.4;
+}
+.chip:hover{ border-color:var(--moon); color:#c9bcff; }
+.chip-clear{ color:var(--wolf); border-color:rgba(239,68,68,.3); }
+.chip-clear:hover{ border-color:var(--wolf); color:var(--wolf); }
+
+/* เข้าโหมดผู้ทดสอบ (ย้ายมาจากหน้าแรก index.html) */
+.tester-role-pick{ display:flex; gap:8px; margin:0 0 12px; }
+.tester-role-btn{
+    flex:1;
+    padding:10px 8px;
+    border-radius:var(--r-sm);
+    border:1px solid var(--line);
+    background:transparent;
+    color:var(--ink-dim);
+    font-size:13px;
+    font-weight:600;
+    font-family:inherit;
+    cursor:pointer;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:3px;
+    transition:border-color .2s, background .2s, color .2s;
+}
+.tester-role-btn .role-icon{ font-size:20px; line-height:1; }
+.tester-role-btn.selected{
+    border-color:var(--moon);
+    background:var(--moon-soft);
+    color:#c9bcff;
+}
+.tester-name-input{
+    width:100%;
+    padding:11px 12px;
+    border-radius:var(--r-sm);
+    border:1px solid var(--line);
+    background:#0d1220;
+    color:var(--ink);
+    font-size:14px;
+    font-family:inherit;
+    margin:0 0 12px;
+}
+.tester-name-input:focus{ outline:none; border-color:var(--moon); }
+
+
+
+/* account management v8 */
+.stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:16px}
+.stat-box{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:13px 14px;backdrop-filter:blur(10px)}
+.stat-box .num{font:700 22px/1 "JetBrains Mono",monospace;color:var(--ink)}
+.stat-box .label{font-size:11.5px;color:var(--ink-dim);margin-top:5px}
+.account-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.manage-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:13px;cursor:pointer;min-width:0}
+.manage-card:hover{border-color:var(--moon)}
+.manage-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.manage-name{font-size:15px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.manage-meta{font-size:11.5px;color:var(--ink-dim);margin-top:5px}
+.manage-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.mini-tag{font-size:10px;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,.06);color:var(--ink-dim)}
+.mini-tag.online{background:var(--safe-soft);color:var(--safe)}
+.mini-tag.warn{background:var(--mark-soft);color:var(--mark)}
+.mini-tag.bad{background:rgba(239,68,68,.14);color:#f87171}
+.card-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.card-actions button{padding:7px 9px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink);font:600 11px inherit;cursor:pointer}
+.card-actions button:hover{border-color:var(--moon);color:#c9bcff}
+.card-actions .danger-action{color:#f87171;border-color:rgba(239,68,68,.25)}
+.room-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.room-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:13px}
+.room-card .room-code{font:700 15px "JetBrains Mono",monospace;color:#c9bcff}
+.room-card .room-meta{font-size:11.5px;color:var(--ink-dim);margin-top:5px}
+.detail-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:12px}
+.detail-id{font:11px "JetBrains Mono",monospace;color:var(--ink-dim);word-break:break-all}
+.detail-section{background:#0d1220;border:1px solid var(--line);border-radius:var(--r-sm);padding:11px;margin-top:10px}
+.detail-section h4{margin:0 0 8px;font-size:12.5px}
+.detail-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.detail-stats div{font-size:11px;color:var(--ink-dim)}
+.detail-stats b{display:block;font:700 16px "JetBrains Mono",monospace;color:var(--ink)}
+.detail-actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px}
+.detail-actions button{padding:9px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--ink);font:600 12px inherit;cursor:pointer}
+.detail-actions button:hover{border-color:var(--moon)}
+.detail-actions .danger-action{border-color:rgba(239,68,68,.3);color:#f87171}
+@media(max-width:480px){.account-grid,.room-grid{grid-template-columns:1fr}.stat-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ---- responsive: เบรกพอยต์อ้างอิงจาก README (ห้ามเดาเอง) ----
+   มือถือ: max-width 480px · ไอแพด: 481–1279px · จอใหญ่กว่านั้นถือเป็นเดสก์ท็อป ----------------- */
+@media (max-width:480px){
+    body{ padding:16px 10px 50px; }
+    .modal-box{ padding:16px; }
+    .tool-actions .btn{ flex:1 1 100%; }
+    .chip{ flex:1 1 calc(50% - 6px); text-align:center; }
+}
+@media (min-width:481px) and (max-width:1279px){
+    .wrap{ max-width:760px; }
+    .modal-box{ max-width:440px; }
+    /* #tab-tools.active (ไม่ใช่ #tab-tools เฉยๆ) — ต้องมี .active คู่กันเสมอ ไม่งั้น id selector
+       ชนะ .tab-panel{display:none} ทำให้แท็บนี้โผล่ค้างอยู่ใต้แท็บอื่นตลอด ไม่ว่าจะกดแท็บไหนอยู่ก็ตาม */
+    #tab-tools.active{ display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
+    #tab-tools .tool-card{ margin-bottom:0; }
+    #tab-tools .tool-card.danger{ grid-column:1 / -1; }
+    /* บัญชี/ผู้เล่น: จัดเป็น 2 คอลัมน์เหมือนกัน กันการ์ดยืดเต็มความกว้างจอโล่งๆ */
+    #tab-live.active .room-group{ display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; align-items:start; margin-bottom:20px; }
+    #tab-live.active .room-label{ grid-column:1 / -1; margin-bottom:2px; }
+    #tab-live.active .account-card{ margin-bottom:0; }
+    #tab-all.active #allPlayersContent{ display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; }
+    #tab-all.active .player-card{ margin-bottom:0; }
+    #tab-all.active #allPlayersContent .empty{ grid-column:1 / -1; }
+}
+@media (min-width:1280px){
+    .wrap{ max-width:860px; }
+    .modal-box{ max-width:460px; }
+    #tab-tools.active{ display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+    #tab-tools .tool-card{ margin-bottom:0; }
+    #tab-tools .tool-card.danger{ grid-column:1 / -1; }
+    #tab-live.active .room-group{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px 14px; align-items:start; margin-bottom:22px; }
+    #tab-live.active .room-label{ grid-column:1 / -1; margin-bottom:2px; }
+    #tab-live.active .account-card{ margin-bottom:0; }
+    #tab-all.active #allPlayersContent{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px 14px; }
+    #tab-all.active .player-card{ margin-bottom:0; }
+    #tab-all.active #allPlayersContent .empty{ grid-column:1 / -1; }
+}
+
+.all-player-card, .overview-player-card { cursor:pointer; }
+.all-player-card:focus, .overview-player-card:focus { outline:2px solid var(--accent); outline-offset:2px; }
+
+
+/* ============================================================
+   DIAGNOSTICS CENTER
+   ============================================================ */
+.diagnostics-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;}
+.diag-kpi{background:#0d1220;border:1px solid var(--line);border-radius:11px;padding:10px;text-align:center;}
+.diag-kpi b{display:block;font:700 16px "JetBrains Mono",monospace;}
+.diag-kpi span{display:block;font-size:9.5px;color:var(--ink-dim);margin-top:2px;}
+.diag-toolbar{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px;}
+.diag-list{display:grid;gap:8px;}
+.diag-event{background:#0d1220;border:1px solid var(--line);border-radius:11px;padding:10px 11px;}
+.diag-event.server{border-left:3px solid var(--wolf);}
+.diag-event.client{border-left:3px solid var(--moon);}
+.diag-event.permission{border-left:3px solid var(--mark);}
+.diag-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+.diag-kind{font-size:12px;font-weight:700;word-break:break-word;}
+.diag-time{font-size:10px;color:var(--ink-dim);white-space:nowrap;}
+.diag-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;}
+.diag-tag{font-size:9.5px;color:var(--ink-dim);border:1px solid var(--line);background:#111726;border-radius:20px;padding:2px 7px;}
+.diag-msg{font-size:11.5px;line-height:1.55;margin-top:7px;white-space:pre-wrap;word-break:break-word;color:#dbe0ec;}
+.diag-stack{margin-top:7px;background:#090d16;border:1px solid var(--line);border-radius:8px;padding:7px;font:10px/1.5 "JetBrains Mono",monospace;color:#aeb7c8;white-space:pre-wrap;overflow:auto;max-height:150px;}
+.diag-section{margin:0 0 14px;}
+.diag-section-title{font-size:13px;font-weight:700;margin:0 0 8px;}
+.perm-list{display:grid;gap:7px;}
+.perm-row{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,1.6fr) auto;gap:8px;align-items:start;background:#0d1220;border:1px solid var(--line);border-radius:9px;padding:8px 10px;}
+.perm-action{font:600 11px "JetBrains Mono",monospace;word-break:break-word;}
+.perm-reason{font-size:11px;color:var(--ink-dim);line-height:1.45;}
+.perm-count{font:700 11px "JetBrains Mono",monospace;color:var(--mark);white-space:nowrap;}
+.diag-permission{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.24);}
+ .diag-copy-row{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap;margin-top:9px;}
+.diag-copy-btn,.diag-share-btn{font-size:11px;padding:6px 9px;}
+.diag-share-btn{border-color:rgba(34,197,94,.24);background:rgba(34,197,94,.07);}
+.diag-trace-tag{font:10px "JetBrains Mono",monospace;color:#b9c2d8;opacity:.9;word-break:break-all;}
+.diag-location{font-size:10.5px;color:var(--ink-dim);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.diag-analysis{margin-top:8px;padding:9px;border:1px solid rgba(124,92,255,.18);border-radius:10px;background:rgba(124,92,255,.05);}
+.diag-analysis-title{font-size:10px;font-weight:800;letter-spacing:.03em;margin-bottom:5px;color:#e6e1ff;}
+.diag-chain{display:grid;gap:5px;margin-top:6px;}
+.diag-chain-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px;align-items:start;font-size:10.5px;line-height:1.45;}
+.diag-chain-num{font:700 10px "JetBrains Mono",monospace;color:#9d8cff;min-width:18px;}
+.diag-chain-stage{font:700 10px "JetBrains Mono",monospace;color:#cfd5e7;}
+.diag-chain-evidence{color:#aab4c9;}
+.diag-next{margin-top:7px;color:#b8c4da;font-size:10.5px;line-height:1.5;}
+.diag-code{font:10px/1.45 "JetBrains Mono",monospace;white-space:pre-wrap;overflow:auto;background:#090d16;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:8px;}
+.ww-toast-container{position:fixed;left:50%;bottom:max(18px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:100000;pointer-events:none;width:min(92vw,560px);display:flex;justify-content:center;}
+.ww-toast{width:fit-content;max-width:100%;padding:11px 15px;border:1px solid rgba(255,255,255,.12);border-radius:13px;background:rgba(13,18,32,.97);color:#eef2ff;box-shadow:0 12px 35px rgba(0,0,0,.38);font-size:13px;line-height:1.5;text-align:center;opacity:0;transform:translateY(12px);transition:opacity .18s,transform .18s;backdrop-filter:blur(12px);}
+.ww-toast.show{opacity:1;transform:translateY(0);}
+.ww-toast-info{border-color:rgba(124,92,255,.35);}
+.ww-toast-error{border-color:rgba(239,68,68,.42);}
+.ww-toast-success{border-color:rgba(34,197,94,.38);}
+.ww-modal-overlay{position:fixed;inset:0;z-index:100001;background:rgba(5,7,12,.72);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:18px;}
+.ww-modal-box{width:min(92vw,460px);max-height:88vh;overflow:auto;background:var(--panel-solid);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 18px 55px rgba(0,0,0,.5);}
+.ww-modal-msg{font-size:14px;line-height:1.65;white-space:pre-wrap;word-break:break-word;}
+.ww-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;}
+.ww-modal-btn{min-width:90px;padding:9px 13px;border:1px solid var(--line);border-radius:9px;background:#0d1220;color:var(--ink);font:600 13px inherit;cursor:pointer;}
+.ww-modal-ok{background:linear-gradient(135deg,#7c5cff,#5b3df0);color:#fff;border-color:transparent;}
+.ww-modal-danger{background:linear-gradient(135deg,#ef4444,#b91c1c);}
+.ww-modal-cancel{background:transparent;}
+.ww-modal-input{width:100%;margin-top:12px;padding:10px 11px;border:1px solid var(--line);border-radius:9px;background:#0d1220;color:var(--ink);outline:none;font:14px inherit;}
+.ww-modal-actions-col{flex-direction:column;align-items:stretch;}
+@media(max-width:560px){.diagnostics-summary{grid-template-columns:1fr 1fr}.perm-row{grid-template-columns:1fr}.perm-count{justify-self:start;}.diag-time{font-size:9px;}}
+.admin-auth-overlay{position:fixed;inset:0;z-index:200000;background:rgba(4,7,12,.84);backdrop-filter:blur(9px);display:flex;align-items:center;justify-content:center;padding:18px;}
+.admin-auth-overlay.hidden{display:none;}
+.admin-auth-box{width:min(94vw,430px);background:linear-gradient(180deg,rgba(20,26,38,.98),rgba(13,18,30,.98));border:1px solid rgba(124,92,255,.30);border-radius:20px;padding:22px;box-shadow:0 24px 80px rgba(0,0,0,.55);}
+.admin-auth-box h2{margin:0 0 6px;font-size:20px;}
+.admin-auth-desc{margin:0 0 16px;color:var(--ink-dim);font-size:13px;line-height:1.6;}
+.admin-auth-methods{display:grid;gap:10px;}
+.admin-auth-input{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:11px;background:#0b1020;color:var(--ink);font:14px inherit;outline:none;}
+.admin-auth-input:focus{border-color:rgba(124,92,255,.55);box-shadow:0 0 0 3px rgba(124,92,255,.12);}
+.admin-auth-btn{width:100%;min-height:44px;border:0;border-radius:11px;cursor:pointer;font:700 13.5px inherit;display:inline-flex;align-items:center;justify-content:center;gap:8px;}
+.admin-auth-primary{background:linear-gradient(135deg,#7c5cff,#5b3df0);color:#fff;}
+.admin-auth-google{background:#fff;color:#202124;}
+.admin-auth-secondary{background:transparent;border:1px solid var(--line);color:var(--ink-dim);}
+.admin-auth-divider{display:flex;align-items:center;gap:9px;color:#68738a;font-size:11px;margin:2px 0;}
+.admin-auth-divider:before,.admin-auth-divider:after{content:"";height:1px;flex:1;background:var(--line);}
+.admin-auth-error{min-height:20px;margin:4px 0 0;color:#ff8e8e;font-size:12.5px;white-space:pre-wrap;}
+.admin-auth-hint{margin:14px 0 0;color:#667089;font-size:11px;line-height:1.55;}
+.admin-auth-email{margin-top:10px;font:11px "JetBrains Mono",monospace;color:#aeb8cc;word-break:break-all;}
+
+
+/* ============================================================
+   admin refresh / hero redesign
+   ============================================================ */
+body[data-page="admin"]{
+    padding:18px 14px 56px;
+    background:
+        radial-gradient(ellipse 920px 420px at 16% -8%, rgba(124,92,255,.22), transparent 58%),
+        radial-gradient(ellipse 760px 380px at 96% 4%, rgba(34,197,94,.10), transparent 50%),
+        linear-gradient(180deg, #080b15 0%, #0a0d17 38%, #090b14 100%);
+}
+.wrap.admin-wrap{
+    max-width:1120px;
+}
+.admin-hero{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:16px;
+    padding:18px 18px 16px;
+    margin-bottom:14px;
+    border:1px solid rgba(255,255,255,.09);
+    border-radius:26px;
+    background:linear-gradient(180deg, rgba(19,24,40,.90), rgba(12,16,29,.84));
+    box-shadow:0 18px 60px rgba(0,0,0,.28);
+    backdrop-filter:blur(16px);
+}
+.admin-hero-main{ min-width:0; flex:1; }
+.eyebrow{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding:4px 10px;
+    border-radius:999px;
+    border:1px solid rgba(124,92,255,.22);
+    background:rgba(124,92,255,.10);
+    color:#bdafff;
+    font-size:10.5px;
+    font-weight:800;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    margin-bottom:10px;
+}
+.hero-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+    flex-wrap:wrap;
+}
+.hero-meta{
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:8px;
+    flex-wrap:wrap;
+    min-width:0;
+}
+.admin-hero h1{
+    margin:0;
+    font-size:clamp(22px, 2.2vw, 30px);
+    line-height:1.15;
+    letter-spacing:.01em;
+}
+.admin-hero .sub{
+    margin:10px 0 0;
+    max-width:78ch;
+    color:#aeb8d2;
+    font-size:13px;
+}
+.version-chip,
+.viewport-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    white-space:nowrap;
+    padding:10px 14px;
+    border-radius:999px;
+    border:1px solid rgba(124,92,255,.20);
+    background:rgba(124,92,255,.12);
+    color:#e8e1ff;
+    font:700 12px/1 "JetBrains Mono", monospace;
+    letter-spacing:.02em;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+}
+.viewport-chip{
+    border-color:rgba(34,197,94,.18);
+    background:rgba(34,197,94,.08);
+    color:#c8f6d5;
+}
+.viewport-chip::before{
+    content:"↔";
+    color:var(--safe);
+    font-size:13px;
+    line-height:1;
+}
+.copy-command-btn{
+    padding:9px 12px;
+    min-height:40px;
+    white-space:nowrap;
+}
+.copy-command-btn:focus-visible,
+.viewport-chip:focus-visible{
+    outline:2px solid rgba(124,92,255,.85);
+    outline-offset:2px;
+}
+.version-chip::before{
+    content:"●";
+    color:var(--safe);
+    font-size:13px;
+    line-height:1;
+}
+.version-chip.pending::before{ color:var(--mark); }
+.version-chip.error::before{ color:var(--wolf); }
+.admin-tabs{
+    position:sticky;
+    top:10px;
+    z-index:25;
+    padding:8px 8px 0;
+    margin-bottom:16px;
+    border-radius:18px 18px 16px 16px;
+    border:1px solid rgba(255,255,255,.08);
+    background:rgba(8,11,19,.72);
+    backdrop-filter:blur(16px);
+    box-shadow:0 14px 48px rgba(0,0,0,.22);
+}
+.admin-tabs .tab-btn{
+    padding:11px 13px 12px;
+    border-radius:14px 14px 0 0;
+    border-bottom:2px solid transparent;
+    color:#9ca8c8;
+}
+.admin-tabs .tab-btn:hover{ color:#d7def8; }
+.admin-tabs .tab-btn.active{
+    color:#f6f7ff;
+    background:rgba(124,92,255,.12);
+    border-bottom-color:var(--moon);
+}
+.stat-grid{
+    grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:12px;
+    margin-bottom:16px;
+}
+.stat-box{
+    padding:14px 16px;
+    border-radius:18px;
+    background:linear-gradient(180deg, rgba(17,22,36,.98), rgba(13,18,32,.98));
+    box-shadow:0 10px 30px rgba(0,0,0,.18);
+}
+.stat-box .num{ font-size:24px; }
+.tool-card,
+.manage-card,
+.account-card,
+.diag-event,
+.diag-kpi,
+.room-group,
+.empty,
+.search-box{
+    border-radius:18px;
+}
+.tool-card{
+    padding:18px;
+    margin-bottom:14px;
+    background:linear-gradient(180deg, rgba(17,22,36,.98), rgba(12,17,28,.98));
+    box-shadow:0 12px 30px rgba(0,0,0,.18);
+}
+.tool-title{ font-size:15px; }
+.tool-desc{ color:#aeb8d2; }
+.btn{
+    border-radius:12px;
+    min-height:42px;
+}
+.btn-ghost{
+    background:rgba(255,255,255,.01);
+}
+.search-box{ background:rgba(13,18,32,.96); }
+.diagnostics-summary{ gap:10px; }
+.diag-kpi{ background:rgba(13,18,32,.96); border-radius:14px; }
+@media (max-width: 820px){
+    .admin-hero{ flex-direction:column; }
+    .hero-row{ align-items:flex-start; width:100%; }
+    .hero-meta{ width:100%; justify-content:flex-start; }
+    .version-chip,
+    .viewport-chip{ flex:0 1 auto; max-width:100%; }
+    .admin-tabs{ top:8px; }
+}
+@media (max-width: 470px){
+    .hero-meta{ gap:7px; }
+    .version-chip,
+    .viewport-chip,
+    .copy-command-btn{ font-size:11px; }
+    .version-chip,
+    .viewport-chip{ padding:9px 11px; }
+    .copy-command-btn{ min-height:38px; padding:8px 10px; }
+}
+
+
+.player-account-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start;}
+.player-account-group{background:rgba(18,23,35,.62);border:1px solid var(--line);border-radius:14px;padding:12px;min-width:0;}
+.player-account-group.google{border-color:rgba(82,145,255,.28);}
+.player-account-group.temporary{border-color:rgba(255,193,92,.24);}
+.player-account-group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;}
+.player-account-group-title{font-size:13px;font-weight:800;}
+.player-account-group-count{font:700 10px "JetBrains Mono",monospace;color:var(--ink-dim);background:#0d1220;border:1px solid var(--line);padding:4px 7px;border-radius:999px;}
+.player-account-group-note{font-size:10px;color:var(--ink-dim);line-height:1.45;margin:-4px 0 10px;}
+.player-account-group .account-grid{grid-template-columns:1fr;}
+.player-type-badge.google{color:#9cc4ff;border-color:rgba(82,145,255,.3);background:rgba(82,145,255,.08);}
+.player-type-badge.temporary{color:#ffd18a;border-color:rgba(255,193,92,.3);background:rgba(255,193,92,.08);}
+@media(max-width:820px){.player-account-groups{grid-template-columns:1fr;}}
+
+</style>
+</head>
+<body data-page="admin">
+
+<div class="wrap admin-wrap">
+    <section class="admin-hero" aria-labelledby="adminHeroTitle">
+        <div class="admin-hero-main">
+            <div class="eyebrow">ADMIN CONSOLE</div>
+            <div class="hero-row">
+                <h1 id="adminHeroTitle">🛠️ ศูนย์จัดการผู้เล่น</h1>
+                <div class="hero-meta" aria-label="ข้อมูลหน้าแอดมิน">
+                    <div class="version-chip" id="runningVersionChip" title="Running version">กำลังโหลด...</div>
+                    <div class="viewport-chip" id="adminViewportChip" role="status" aria-live="polite" title="ขนาดพื้นที่หน้าเว็บที่กำลังใช้งาน (Viewport CSS pixels)">📐 กำลังวัด...</div>
+                    <button class="btn btn-ghost copy-command-btn" id="copyAdminCommandBtn" type="button" title="คัดลอกคำสั่งเต็มสำหรับนำไปใช้สั่งแก้ไฟล์">📋 คัดลอกคำสั่ง</button>
+                </div>
+            </div>
+            <p class="sub" id="pageSub">จัดการห้อง ผู้เล่น และเครื่องมือทดสอบจากที่เดียว — บัญชีจริงกับโหมดทดลองแยกกันชัดเจน</p>
+        </div>
+    </section>
+
+    <div class="tabs admin-tabs">
+        <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">📊 ภาพรวม</button>
+        <button class="tab-btn" data-tab="all" onclick="switchTab('all')">👥 บัญชีผู้เล่น</button>
+        <button class="tab-btn" data-tab="live" onclick="switchTab('live')">🟢 ออนไลน์</button>
+        <button class="tab-btn" data-tab="rooms" onclick="switchTab('rooms')">🏠 ห้อง</button>
+        <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')">⚙️ จัดการระบบ</button>
+        <button class="tab-btn" data-tab="diagnostics" onclick="switchTab('diagnostics')">🩺 ปัญหา / บั๊ก</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-overview">
+        <div class="stat-grid">
+            <div class="stat-box"><div class="num" id="sumAccounts">-</div><div class="label">บัญชีผู้เล่นจริง</div></div>
+            <div class="stat-box"><div class="num" id="sumGoogleAccounts">-</div><div class="label">บัญชี Google</div></div>
+            <div class="stat-box"><div class="num" id="sumTemporaryAccounts">-</div><div class="label">บัญชีชั่วคราว</div></div>
+            <div class="stat-box"><div class="num" id="sumOnline">-</div><div class="label">บัญชีออนไลน์</div></div>
+            <div class="stat-box"><div class="num" id="sumRoomSessions">-</div><div class="label">session ในห้อง</div></div>
+            <div class="stat-box"><div class="num" id="sumRooms">-</div><div class="label">ห้องทั้งหมด</div></div>
+            <div class="stat-box"><div class="num" id="sumTesters">-</div><div class="label">ห้องทดลอง</div></div>
+        </div>
+        <div class="tool-card">
+            <h3 class="tool-title">🧭 ศูนย์ควบคุม</h3>
+            <p class="tool-desc">หน้านี้แยก <b>บัญชีจริง</b>, <b>session ทดลอง</b> และ <b>บอท</b> ออกจากกัน บัญชีจริงใช้ accountId เป็นตัวตนหลัก จึงเปลี่ยนชื่อได้แม้เจ้าของบัญชีออฟไลน์</p>
+            <div class="tool-actions">
+                <button class="btn" onclick="switchTab('all')">👥 เปิดบัญชีทั้งหมด</button>
+                <button class="btn btn-ghost" onclick="switchTab('rooms')">🏠 ดูห้องทั้งหมด</button>
+                <button class="btn btn-ghost" onclick="refreshDashboard()">🔄 รีเฟรชข้อมูล</button>
+            </div>
+        </div>
+        <div id="overviewRecent"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-live">
+        <div class="toolbar">
+            <button class="btn" id="refreshBtn" onclick="loadAccounts()">🔄 รีเฟรช</button>
+            <span class="status" id="connStatus">กำลังเชื่อมต่อ...</span>
+        </div>
+        <div id="content"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-all">
+        <div class="directory-banner">👤 <b>ผู้เล่นทั้งหมด</b> แสดงบัญชีจริงที่บันทึกไว้ รวมผู้เล่นข้อมูลเก่าจากระบบเดิมด้วย · 🧪 ผู้ทดสอบและ 🤖 บอทจะไม่ถูกบันทึกเป็นบัญชีจริงและจะไม่โผล่ในรายการนี้</div>
+        <div class="directory-head">
+            <div class="directory-note" id="directoryCount">กำลังโหลด...</div>
+            <button class="btn btn-ghost" onclick="loadAllPlayers()">🔄 รีเฟรช</button>
+        </div>
+        <div class="search-box">
+            <span>🔎</span>
+            <input type="text" id="playerSearch" placeholder="ค้นหาชื่อปัจจุบันหรือชื่อเดิม...">
+        </div>
+        <div id="allPlayersContent"><div class="empty">กำลังโหลด...</div></div>
+    </div>
+
+    <div class="tab-panel" id="tab-rooms">
+        <div class="toolbar"><button class="btn" onclick="loadRooms()">🔄 รีเฟรช</button><span class="status" id="roomStatus">-</span></div>
+        <div id="roomsContent"><div class="empty">กำลังโหลด...</div></div>
+    </div>
+
+    <div class="tab-panel" id="tab-tools">
+        <div class="tool-card">
+            <h3 class="tool-title">🚦 เปิด / ปิดเซิร์ฟเวอร์ <span class="srv-pill" id="srvPill">กำลังเช็ค...</span></h3>
+            <p class="tool-desc">
+                ปิด = ทุกคนที่เล่นอยู่จะเห็นหน้าจอ “เซิร์ฟเวอร์กำลังปิด” เต็มจอทันที และเข้าเกมไม่ได้เลยแม้กดรีเฟรช/เปิดเว็บใหม่ จนกว่าจะกดเปิด<br>
+                • หน้าแอดมินนี้ยังใช้งานได้ตามปกติ (ไว้กดเปิดคืน)<br>
+                • <b>ปิดทุกห้องปกติที่กำลังเล่น/รออยู่</b> (ไม่นับแพ้/ชนะ/“ออกเกม” และไม่เข้าประวัติของใครเลย) · <b>ยกเว้น “ห้องผู้ทดสอบ”</b> (ห้อง/บอท/การสิง/ผู้เล่นทดสอบเล่นต่อได้ ไม่ถูกเตะ) · ชื่อ/สถิติเดิมของผู้เล่นไม่ถูกแตะ<br>
+                • ปิดได้ 2 แบบ: <b>ปิดทันที</b> (เว้นช่องวันที่/เวลาว่างไว้) หรือ <b>เลือกวันที่และเวลาที่จะปิดล่วงหน้า</b> (ผู้เล่นเห็นแถบเตือนนับถอยหลังจนกว่าจะถึงเวลา + ข้อความของคุณ ยกเลิกได้ก่อนถึงเวลา) · ระหว่างรอ ปรับเวลาปิดให้ไวขึ้น/ถอยออกได้ตลอด (ตั้งใหม่ทับของเดิม) · ใส่ข้อความ/วันที่-เวลาที่คาดว่าจะเปิดได้ จะโชว์บนหน้า “กำลังปิด”<br>
+                • สถานะ “ปิด” และกำหนดการปิดที่ตั้งล่วงหน้ายังไม่ถึงเวลา ถูกจำไว้แม้เซิร์ฟเวอร์รีสตาร์ท/deploy ใหม่<br>
+                • ตอนเปิด ทุกคน (ผู้เล่น/โฮสต์) จะถูกพากลับ <b>หน้าแรก</b> ให้อัตโนมัติ ไม่กลับเข้าห้องเดิม — ต้องสร้าง/เข้าห้องใหม่
+            </p>
+            <div class="tool-actions">
+                <button class="btn" id="srvToggleBtn" onclick="askToggleServer()" disabled>...</button>
+                <button class="btn btn-ghost hidden" id="srvCancelBtn" onclick="askCancelClosing()">↩️ ยกเลิกการปิด</button>
+                <button class="btn btn-ghost hidden" id="srvEditBtn" onclick="askEditNotice()">✏️ แก้ข้อความ / เวลาที่คาดว่าจะเปิด</button>
+            </div>
+            <div class="tool-result" id="srvResult"></div>
+        </div>
+
+        <div class="tool-card">
+            <h3 class="tool-title">🔄 บังคับทุกคนรีโหลดเว็บ</h3>
+            <p class="tool-desc">
+                สั่งให้ทุกเครื่องที่เปิดเกมอยู่โหลดใหม่แล้วกลับ <b>หน้าแรก</b> (ใช้กันเครื่องที่ตกหล่นอัปเดต)<br>
+                • <b>⚠️ ปุ่มรีโหลด 3 ปุ่มแรกปิดทุกห้องปกติที่กำลังเล่น/รออยู่ทันที</b> (ไม่นับแพ้/ชนะ/“ออกเกม” ไม่เข้าประวัติใคร) และไม่กลับเข้าห้องเดิม — ต้องสร้าง/เข้าห้องใหม่ · <b>ห้องผู้ทดสอบไม่ถูกปิด/ไม่ถูกพากลับหน้าแรก</b><br>
+                • ไม่วนลูป: กลับหน้าแรก 1 ครั้งต่อเครื่อง<br>• <b>การ deploy ไฟล์ใหม่ไม่เรียกปุ่มเหล่านี้เอง</b> — ผู้เล่นที่กำลังเล่นไม่ถูกรบกวน แค่ตอนกลับหน้า index จะเห็น “มีอัปเดตเกมใหม่” ให้กดเอง · สำหรับ Tester ที่ไม่มี index ให้ใช้การ์ด “🧪 บังคับอัปเดตโหมดผู้ทดสอบ” โดยตรง · ปุ่ม “📣 แจ้งมีรุ่นใหม่” ด้านล่างใช้ประกาศโดยไม่แตะห้องใดเลย (เช่น เปลี่ยนรูปบน S3)<br>
+                • เครื่องที่อยู่หน้าแรก/แท็บหลับอยู่ จะโหลดตามเองภายใน ~20 วิ หรือตอนกลับมาเปิดแท็บ
+            </p>
+            <div class="tool-actions">
+                <button class="btn" onclick="askForceReload('files')">📄 โหลดไฟล์เกมใหม่</button>
+                <button class="btn" onclick="askForceReload('images')">🖼️ โหลดรูปภาพใหม่</button>
+                <button class="btn" onclick="askForceReload('both')">🔁 โหลดทั้งสองอย่าง</button>
+                <button class="btn btn-ghost" onclick="askPublishUpdate()">📣 แจ้งมีรุ่นใหม่ (ไม่กระทบห้อง)</button>
+            </div>
+            <div class="tool-result" id="reloadResult"></div>
+        </div>
+
+        <div class="tool-card">
+            <h3 class="tool-title">🧪 บังคับอัปเดตโหมดผู้ทดสอบ</h3>
+            <p class="tool-desc">ส่งคำสั่งอัปเดตตรงไปยังแท็บ Tester ที่กำลังออนไลน์ โดย <b>ไม่ปิดห้องทดลอง</b> และไม่พากลับหน้า Index · แท็บที่หลับ/พลาด event จะตรวจ <b>tester update epoch</b> จากเซิร์ฟเวอร์เองเมื่อกลับมาทำงาน · หลังอัปเดตจะโหลด <b>host/player หน้าเดิม</b> ต่อและใช้ห้อง/บอท/การสิงเดิมต่อ</p>
+            <div class="tool-actions">
+                <button class="btn" onclick="askTesterUpdate('files')">🧪 อัปเดตไฟล์ Tester</button>
+                <button class="btn" onclick="askTesterUpdate('images')">🖼️ อัปเดตรูป Tester</button>
+                <button class="btn" onclick="askTesterUpdate('both')">🔁 อัปเดต Tester ทั้งหมด</button>
+            </div>
+            <div class="tool-result" id="testerUpdateResult"></div>
+        </div>
+
+        <div class="tool-card">
+            <h3 class="tool-title">🧪 เข้าในฐานะผู้ทดสอบ</h3>
+            <p class="tool-desc">
+                สำหรับทดสอบหลายบัญชีผู้เล่นบนเครื่องเดียว — แต่ละแท็บนับเป็นคนละผู้เล่น<br>
+                • <b>เข้าเล่นได้แม้ปิดเซิร์ฟเวอร์อยู่</b> — ไว้ลองเล่นอัปเดตใหม่ก่อนเปิดจริง (ผู้เล่นทั่วไปยังเข้าไม่ได้เหมือนเดิม) <b>ห้องที่สร้างจากแท็บทดสอบนี้ไม่ถูกปิด</b>โดยปุ่มปิด/เปิดเซิร์ฟเวอร์และปุ่มรีโหลด (โฮสต์/ผู้เล่น/บอท/การเข้าสิงเล่นต่อได้ ไม่ถูกเตะ ไม่ถูกพากลับหน้าแรก) — สิทธิ์นี้ตัดสินจากบัตรผ่านที่ server ออกให้เท่านั้น (บัตรอายุ 12 ชม. และยังใช้ต่อได้ข้ามการรีสตาร์ท/deploy)<br>
+                • เปิดในแท็บใหม่ หน้าแอดมินนี้ยังอยู่ครบ กดซ้ำเพื่อเปิดอีกแท็บ = อีกบัญชี<br>
+                • ชื่อของแท็บทดลองตั้งโดยเซิร์ฟเวอร์เองตาม slot ที่ยังว่าง เช่น โฮสต์1 / โฮสต์2 / ผู้เล่น1 / ผู้เล่น2 และไม่ถูกบันทึกเป็นบัญชีจริง
+            </p>
+            <div class="tester-role-pick">
+                <button type="button" class="tester-role-btn selected" id="testerPickHost" onclick="pickTesterRole('host')">
+                    <span class="role-icon">🎮</span>โฮสต์
+                </button>
+                <button type="button" class="tester-role-btn" id="testerPickPlayer" onclick="pickTesterRole('player')">
+                    <span class="role-icon">👤</span>ผู้เล่น
+                </button>
+            </div>
+            <div class="tester-name-input" id="testerAutoName" style="display:flex;align-items:center;gap:8px;background:#0d1220;color:var(--ink-dim);">🔢 <span>ชื่อจะถูกตั้งอัตโนมัติโดยเซิร์ฟเวอร์ เช่น โฮสต์1 / โฮสต์2 / ผู้เล่น1 / ผู้เล่น2 และเลขที่ว่างจะถูกนำกลับมาใช้ใหม่</span></div>
+            <input type="password" class="tester-name-input" id="testerPasswordInput" placeholder="รหัสผ่านแอดมิน" autocomplete="off" style="display:none;">
+            <div class="tool-actions">
+                <button class="btn" onclick="enterTesterMode()">🧪 เข้าใช้งาน</button>
+            </div>
+            <div class="tool-result" id="testerResult"></div>
+        </div>
+
+        <div class="tool-card danger">
+            <h3 class="tool-title">🧹 ล้างข้อมูลเกมทิ้งทั้งหมด</h3>
+            <p class="tool-desc">
+                ทำให้ทุกคนกลับเป็นผู้เล่นใหม่ ลงทะเบียนครั้งแรก:<br>
+                • ลบสถิติแพ้/ชนะ รายชื่อผู้เล่นทั้งหมด และประวัติเข้าเล่นทุกอย่างใน DynamoDB<br>
+                • ปิดทุกห้องที่เปิดอยู่ตอนนี้ (เกมที่กำลังเล่นอยู่จะจบทันที)<br>
+                • ล้างชื่อ / token / รหัสโฮสต์ที่จำไว้ในเครื่องของทุกคน (เครื่องที่ออนไลน์ล้างทันที เครื่องที่ออฟไลน์จะล้างตอนเปิดเกมครั้งถัดไป)<br>
+                <b>ย้อนกลับไม่ได้</b>
+            </p>
+            <button class="btn btn-danger" onclick="openResetModal()">🧹 ล้างข้อมูลเกมทั้งหมด</button>
+            <div class="tool-result" id="resetResult"></div>
+        </div>
+    </div>
+
+    <div class="tab-panel" id="tab-diagnostics">
+        <div class="tool-card">
+            <div class="diag-toolbar">
+                <div>
+                    <h3 class="tool-title" style="margin-bottom:2px;">🩺 ศูนย์ตรวจปัญหาเกม</h3>
+                    <div class="tool-desc" style="margin:0;">รวบรวม Error จาก <b>index / host / player / JavaScript / Socket.IO / HTTP</b> และ Error ฝั่ง server โดยไม่พึ่ง state ของเกม · แต่ละเหตุการณ์สร้าง <b>ลิงก์ AI แบบชั่วคราว</b> ได้</div>
+                </div>
+                <div class="tool-actions" style="margin:0;">
+                    <button class="btn btn-ghost" onclick="loadDiagnostics()">🔄 รีเฟรช</button>
+                    <button class="btn btn-danger" onclick="clearDiagnostics()">🧹 ล้างบันทึก</button>
+                </div>
+            </div>
+            <div class="diagnostics-summary">
+                <div class="diag-kpi"><b id="diagStored">-</b><span>บันทึกไว้</span></div>
+                <div class="diag-kpi"><b id="diagSerious">-</b><span>ผิดปกติรุนแรง</span></div>
+                <div class="diag-kpi"><b id="diagDenied">-</b><span>ขาด IAM / Role</span></div>
+                <div class="diag-kpi"><b id="diagUptime">-</b><span>Server uptime</span></div>
+            </div>
+        </div>
+
+        <div class="tool-card diag-section">
+            <h3 class="diag-section-title">🔐 สิทธิ์ที่เกมใช้งาน</h3>
+            <p class="tool-desc">รายการนี้คือสิทธิ์ที่โค้ดฝั่ง server เรียกใช้งานจริง/เตรียมใช้งาน ส่วนแถวสีเหลืองคือสิทธิ์ที่ตรวจพบว่าโดนปฏิเสธจาก AWS จริง</p>
+            <div id="diagPermissions"><div class="empty">กำลังตรวจ...</div></div>
+        </div>
+
+        <div class="tool-card diag-section">
+            <h3 class="diag-section-title">🚨 ปัญหาล่าสุด</h3>
+            <div id="diagEvents"><div class="empty">กำลังโหลด...</div></div>
+        </div>
+    </div>
+
+</div>
+
+<div class="overlay hidden" id="actionOverlay">
+    <button class="overlay-close-float" type="button" aria-label="ปิด" onclick="closeActionModal()">×</button>
+    <div class="modal-box">
+        <h3 id="actionTitle"></h3>
+        <p class="modal-note" id="actionNote"></p>
+        <div id="actionExtra"></div>
+        <input type="password" id="actionPasswordInput" placeholder="รหัสผ่านแอดมิน" autocomplete="off" style="display:none;">
+        <p class="modal-err" id="actionError"></p>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeActionModal()">ยกเลิก</button>
+            <button class="btn" id="actionSubmitBtn" onclick="submitAction()">ยืนยัน</button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay hidden hist-modal" id="accountOverlay">
+    <button class="overlay-close-float" type="button" aria-label="ปิด" onclick="closeAccountDetail()">×</button>
+    <div class="modal-box">
+        <div id="accountDetailBody"><div class="hist-empty">กำลังโหลด...</div></div>
+        <div class="modal-actions" style="margin-top:14px;"><button class="btn btn-ghost" onclick="closeAccountDetail()">ปิด</button></div>
+    </div>
+</div>
+
+<div class="overlay hidden" id="resetOverlay">
+    <button class="overlay-close-float" type="button" aria-label="ปิด" onclick="closeResetModal()">×</button>
+    <div class="modal-box">
+        <h3>⚠️ ยืนยันล้างข้อมูลเกมทั้งหมด</h3>
+        <p class="modal-note">ข้อมูลทุกอย่างจะถูกลบและทุกคนต้องลงทะเบียนใหม่ ย้อนกลับไม่ได้ พิมพ์ <b>RESET</b> เพื่อยืนยัน</p>
+        <input type="text" id="resetConfirmInput" placeholder="พิมพ์ RESET" autocomplete="off" autocapitalize="characters">
+        <input type="password" id="resetPasswordInput" placeholder="รหัสผ่านแอดมิน" autocomplete="off" style="display:none;margin-top:8px;">
+        <p class="modal-err" id="resetError"></p>
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeResetModal()">ยกเลิก</button>
+            <button class="btn btn-danger" id="resetSubmitBtn" onclick="submitReset()">ล้างเลย</button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay hidden" id="renameOverlay">
+    <button class="overlay-close-float" type="button" aria-label="ปิด" onclick="closeRenameModal()">×</button>
+    <div class="modal-box">
+        <h3 id="renameTitle">แก้ชื่อ</h3>
+        <input type="text" id="renameInput" maxlength="24" placeholder="ชื่อใหม่">
+        <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeRenameModal()">ยกเลิก</button>
+            <button class="btn" onclick="submitRename()">บันทึก</button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay hidden hist-modal" id="historyOverlay">
+    <button class="overlay-close-float" type="button" aria-label="ปิด" onclick="closeHistoryModal()">×</button>
+    <div class="modal-box">
+        <h3 id="historyTitle">ประวัติผู้เล่น</h3>
+        <div id="historyBody"></div>
+        <div class="modal-actions" style="margin-top:14px;">
+            <button class="btn btn-ghost" onclick="closeHistoryModal()">ปิด</button>
+        </div>
+    </div>
+</div>
+
+<div class="admin-auth-overlay hidden" id="adminLoginOverlay" role="dialog" aria-modal="true" aria-labelledby="adminLoginTitle">
+    <div class="admin-auth-box">
+        <h2 id="adminLoginTitle">🔐 เข้าสู่ระบบแอดมิน</h2>
+        <p class="admin-auth-desc">หน้านี้ต้องยืนยันสิทธิ์จากเซิร์ฟเวอร์ก่อน จึงจะดูข้อมูลผู้เล่นหรือใช้คำสั่งจัดการระบบได้</p>
+        <div class="admin-auth-methods">
+            <input class="admin-auth-input" id="adminLoginPassword" type="password" autocomplete="current-password" placeholder="รหัสผ่านแอดมิน" inputmode="text" style="display:none;">
+            <button class="admin-auth-btn admin-auth-primary" id="adminPasswordLoginBtn" type="button" style="display:none;">🔑 เข้าด้วยรหัสแอดมิน</button>
+            <div class="admin-auth-divider" id="adminAuthDivider" style="display:none;">หรือ</div>
+            <button class="admin-auth-btn admin-auth-google" id="adminGoogleLoginBtn" type="button" style="display:none;">🔵 เข้าด้วย Google ของแอดมิน</button>
+            <button class="admin-auth-btn admin-auth-secondary" id="adminAuthCancelBtn" type="button">ปิด</button>
+            <div class="admin-auth-error" id="adminLoginError"></div>
+        </div>
+        <div class="admin-auth-email" id="adminAuthEmailHint"></div>
+        <div class="admin-auth-hint">สิทธิ์แอดมินถูกตรวจฝั่งเซิร์ฟเวอร์ด้วย HttpOnly session เท่านั้น การส่ง <code>auth.admin=true</code> จากเบราว์เซอร์อย่างเดียวไม่ทำให้เป็นแอดมิน</div>
+    </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/error-reporter.js?v=3"></script>
+<script src="/js/ww-ui.js?v=2"></script>
+<script>
+// auth.admin เป็นเพียงการบอก intent; server ต้องตรวจ HttpOnly admin session เสมอ
+const socket = io({ auth: { admin: true } });
+let adminLoginInFlight = null;
+let adminLoginResolve = null;
+let adminLoginState = null;
+const adminLoginOverlay = document.getElementById("adminLoginOverlay");
+const adminLoginPassword = document.getElementById("adminLoginPassword");
+const adminPasswordLoginBtn = document.getElementById("adminPasswordLoginBtn");
+const adminGoogleLoginBtn = document.getElementById("adminGoogleLoginBtn");
+const adminAuthDivider = document.getElementById("adminAuthDivider");
+const adminAuthCancelBtn = document.getElementById("adminAuthCancelBtn");
+const adminLoginError = document.getElementById("adminLoginError");
+const adminAuthEmailHint = document.getElementById("adminAuthEmailHint");
+let pendingAdminError = "";
+let adminWarmupRetryTimer = null;
+
+function stopAdminWarmupRetry() {
+    if (adminWarmupRetryTimer) window.clearTimeout(adminWarmupRetryTimer);
+    adminWarmupRetryTimer = null;
+}
+
+function showAdminLoginModal(state, message = "") {
+    adminLoginState = state || {};
+    const hasPassword = adminLoginState.passwordEnabled === true;
+    const hasGoogle = adminLoginState.googleEnabled === true;
+    adminLoginPassword.style.display = hasPassword ? "block" : "none";
+    adminPasswordLoginBtn.style.display = hasPassword ? "inline-flex" : "none";
+    adminGoogleLoginBtn.style.display = hasGoogle ? "inline-flex" : "none";
+    adminAuthDivider.style.display = hasPassword && hasGoogle ? "flex" : "none";
+    adminAuthEmailHint.textContent = hasGoogle ? "Google: ใช้เฉพาะอีเมลที่ถูกกำหนดเป็น ADMIN_GOOGLE_EMAILS บนเซิร์ฟเวอร์" : "";
+    adminLoginError.textContent = message || "";
+    adminLoginPassword.value = "";
+    adminLoginOverlay.classList.remove("hidden");
+    setTimeout(() => {
+        if (hasPassword) adminLoginPassword.focus();
+        else if (hasGoogle) adminGoogleLoginBtn.focus();
+        else adminAuthCancelBtn.focus();
+    }, 40);
+}
+function closeAdminLoginModal(result) {
+    stopAdminWarmupRetry();
+    adminLoginOverlay.classList.add("hidden");
+    adminLoginError.textContent = "";
+    adminLoginPassword.value = "";
+    const resolve = adminLoginResolve;
+    adminLoginResolve = null;
+    adminLoginState = null;
+    if (resolve) resolve(!!result);
+}
+async function submitAdminPasswordLogin() {
+    if (!adminLoginState?.passwordEnabled) return;
+    const password = String(adminLoginPassword.value || "");
+    if (!password) { adminLoginError.textContent = "กรุณาใส่รหัสผ่านแอดมิน"; adminLoginPassword.focus(); return; }
+    adminPasswordLoginBtn.disabled = true;
+    adminPasswordLoginBtn.textContent = "กำลังตรวจสอบ...";
+    try {
+        const r = await fetch("/api/admin/login", {
+            method:"POST", headers:{"Content-Type":"application/json"}, credentials:"same-origin", cache:"no-store",
+            body:JSON.stringify({ password }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.ok) {
+            closeAdminLoginModal(true);
+            try { socket.connect(); } catch (_) {}
+            return;
+        }
+        const code = String(d.code || d.error || "ADMIN_LOGIN_FAILED");
+        adminLoginError.textContent = code === "ADMIN_LOGIN_RATE_LIMITED" ? "ลองรหัสผิดหลายครั้งเกินไป กรุณารอสักครู่ก่อนลองใหม่" : (code === "ADMIN_AUTH_NOT_CONFIGURED" ? "เซิร์ฟเวอร์ยังไม่ได้ตั้งค่าวิธีเข้าสู่ระบบแอดมิน" : "รหัสผ่านแอดมินไม่ถูกต้อง");
+    } catch (_) {
+        adminLoginError.textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
+    } finally {
+        adminPasswordLoginBtn.disabled = false;
+        adminPasswordLoginBtn.textContent = "🔑 เข้าด้วยรหัสแอดมิน";
+    }
+}
+adminPasswordLoginBtn.addEventListener("click", submitAdminPasswordLogin);
+adminLoginPassword.addEventListener("keydown", (e) => { if (e.key === "Enter") submitAdminPasswordLogin(); });
+adminGoogleLoginBtn.addEventListener("click", () => { window.location.assign("/auth/google/admin-start"); });
+adminAuthCancelBtn.addEventListener("click", () => closeAdminLoginModal(false));
+
+function scheduleAdminWarmupRetry() {
+    if (adminWarmupRetryTimer || adminLoginOverlay.classList.contains("hidden")) return;
+    adminWarmupRetryTimer = window.setTimeout(async () => {
+        adminWarmupRetryTimer = null;
+        try {
+            const check = await fetch("/api/admin/session", { cache:"no-store", credentials:"same-origin" });
+            const state = await check.json().catch(() => ({}));
+            if (state.authenticated === true) {
+                closeAdminLoginModal(true);
+                try { socket.connect(); } catch (_) {}
+                return;
+            }
+            if (state.code === "ADMIN_SERVER_WARMING" || state.code === "ADMIN_SERVER_DRAINING") {
+                scheduleAdminWarmupRetry();
+                return;
+            }
+            if (state.required === true) {
+                const initialError = pendingAdminError;
+                pendingAdminError = "";
+                showAdminLoginModal(state, initialError);
+            }
+        } catch (_) {
+            scheduleAdminWarmupRetry();
+        }
+    }, 2500);
+}
+
+async function ensureAdminLogin() {
+    if (adminLoginInFlight) return adminLoginInFlight;
+    adminLoginInFlight = (async () => {
+        try {
+            const check = await fetch("/api/admin/session", { cache:"no-store", credentials:"same-origin" });
+            const state = await check.json().catch(() => ({}));
+            if (state.authenticated === true) return true;
+            if (state.code === "ADMIN_SERVER_WARMING" || state.code === "ADMIN_SERVER_DRAINING") {
+                showAdminLoginModal({ passwordEnabled:false, googleEnabled:false },
+                    state.code === "ADMIN_SERVER_DRAINING"
+                        ? "เซิร์ฟเวอร์กำลังสลับระบบระหว่างอัปเดต กรุณารอสักครู่แล้วหน้าแอดมินจะกลับมาเอง"
+                        : "เซิร์ฟเวอร์กำลังเริ่มรุ่นใหม่ กรุณารอสักครู่ ระบบจะตรวจสิทธิ์แอดมินให้อัตโนมัติ");
+                scheduleAdminWarmupRetry();
+                return false;
+            }
+            if (state.required !== true) {
+                showAdminLoginModal({ passwordEnabled:false, googleEnabled:false }, "เซิร์ฟเวอร์ยังไม่ได้ตั้งค่าการยืนยันแอดมิน จึงปิดสิทธิ์แอดมินไว้เพื่อความปลอดภัย");
+                return new Promise(resolve => { adminLoginResolve = resolve; });
+            }
+            const initialError = pendingAdminError;
+            pendingAdminError = "";
+            showAdminLoginModal(state, initialError);
+            return await new Promise(resolve => { adminLoginResolve = resolve; });
+        } catch (_) {
+            return false;
+        }
+    })().finally(() => { adminLoginInFlight = null; });
+    return adminLoginInFlight;
+}
+let accounts = [];
+let allPlayers = [];
+let currentTab = "overview";
+const connStatus = document.getElementById("connStatus");
+const POLL_INTERVAL_MS = 3000;
+let pollTimer = null;
+let searchDebounce = null;
+let detailAccountId = "";
+let detailLegacyName = "";
+let renameTarget = null;
+const runningVersionChip = document.getElementById("runningVersionChip");
+function updateRunningVersion(version, source = "api") {
+    const value = String(version ?? "").trim() || "unknown";
+    if (!runningVersionChip) return;
+    runningVersionChip.textContent = value;
+    runningVersionChip.classList.remove("pending", "error");
+    runningVersionChip.title = source === "socket" ? "Running version (socket sync)" : "Running version (Elastic Beanstalk)";
+    if (!value || value === "unknown") runningVersionChip.classList.add("error");
+}
+
+// วัดขนาดพื้นที่เว็บแบบสด: ใช้ CSS viewport ไม่ใช่ความละเอียดฮาร์ดแวร์ของจอ
+// เพื่อให้ค่าตรงกับพื้นที่ที่ UI กำลังจัดเลย์เอาต์จริง และเปลี่ยนทันทีเมื่อย่อ/ขยาย, หมุนจอ,
+// iPad Split View หรือ browser address bar ทำให้ visual viewport เปลี่ยน
+const adminViewportChip = document.getElementById("adminViewportChip");
+let adminViewportFrame = 0;
+function getAdminViewportSize() {
+    const vv = window.visualViewport;
+    const width = Number.isFinite(window.innerWidth) && window.innerWidth > 0
+        ? window.innerWidth
+        : (Number(vv?.width) || document.documentElement.clientWidth || 0);
+    const height = Number.isFinite(window.innerHeight) && window.innerHeight > 0
+        ? window.innerHeight
+        : (Number(vv?.height) || document.documentElement.clientHeight || 0);
+    return { width: Math.max(0, Math.round(width)), height: Math.max(0, Math.round(height)) };
+}
+function renderAdminViewportSize() {
+    if (!adminViewportChip) return;
+    const { width, height } = getAdminViewportSize();
+    adminViewportChip.textContent = `📐 ${width} × ${height} px`;
+    adminViewportChip.title = `Viewport หน้าเว็บ: ${width} × ${height} CSS px`;
+    adminViewportChip.dataset.width = String(width);
+    adminViewportChip.dataset.height = String(height);
+}
+function scheduleAdminViewportMeasure() {
+    if (adminViewportFrame) return;
+    adminViewportFrame = window.requestAnimationFrame(() => {
+        adminViewportFrame = 0;
+        renderAdminViewportSize();
+    });
+}
+window.addEventListener("resize", scheduleAdminViewportMeasure, { passive: true });
+window.addEventListener("orientationchange", scheduleAdminViewportMeasure, { passive: true });
+if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleAdminViewportMeasure, { passive: true });
+}
+let adminViewportObserver = null;
+if (typeof ResizeObserver !== "undefined") {
+    try {
+        adminViewportObserver = new ResizeObserver(scheduleAdminViewportMeasure);
+        adminViewportObserver.observe(document.documentElement);
+    } catch (_) {
+        adminViewportObserver = null;
+    }
+}
+renderAdminViewportSize();
+
+const ADMIN_FIX_COMMAND = "เริ่มแก้ไฟล์เลย ขอให้แก้และดูอย่างละเอียดไม่เอารีบส่ง ของานละเอียด และเช็คซ้ำหลายๆรอบว่าทำงานได้ดีและตรงแล้ว เสร็จแล้วส่งไฟล์มา";
+const copyAdminCommandBtn = document.getElementById("copyAdminCommandBtn");
+async function copyAdminFixCommand() {
+    if (!copyAdminCommandBtn) return;
+    let copied = false;
+    try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+            await navigator.clipboard.writeText(ADMIN_FIX_COMMAND);
+            copied = true;
+        }
+    } catch (_) {}
+
+    if (!copied) {
+        const ta = document.createElement("textarea");
+        ta.value = ADMIN_FIX_COMMAND;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "0";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        try {
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, ta.value.length);
+            copied = document.execCommand("copy");
+        } catch (_) {
+            copied = false;
+        }
+        ta.remove();
+    }
+
+    if (copied) {
+        copyAdminCommandBtn.textContent = "✅ คัดลอกแล้ว";
+        wwToast("คัดลอกคำสั่งเต็มแล้ว", { type: "success", duration: 1800 });
+        window.setTimeout(() => {
+            if (copyAdminCommandBtn.isConnected) copyAdminCommandBtn.textContent = "📋 คัดลอกคำสั่ง";
+        }, 1400);
+    } else {
+        wwToast("คัดลอกไม่ได้ ลองกดค้างแล้วคัดลอกข้อความ", { type: "error", duration: 2200 });
+    }
+}
+if (copyAdminCommandBtn) copyAdminCommandBtn.addEventListener("click", copyAdminFixCommand);
+
+// ตรวจว่าโค้ดหน้า Admin ที่กำลังเปิดค้างอยู่ตรงกับ admin.html รุ่นล่าสุดหรือไม่
+const adminReleaseMeta = (typeof document !== "undefined" && typeof document.querySelector === "function") ? document.querySelector('meta[name="ww-admin-release"]') : null;
+const loadedAdminRelease = String(adminReleaseMeta?.getAttribute("content") || "").trim();
+let adminUpdateNotice = null;
+let adminReleasePollTimer = null;
+function showAdminUpdateNotice() {
+    if (adminUpdateNotice || !loadedAdminRelease) return;
+    const n = document.createElement("div");
+    n.id = "wwAdminUpdateNotice";
+    n.style.cssText = "position:fixed;z-index:2147483000;left:50%;top:max(10px,env(safe-area-inset-top));transform:translateX(-50%);max-width:min(560px,calc(100vw - 24px));display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(132,199,255,.55);border-radius:14px;background:rgba(9,17,30,.96);color:#eaf5ff;box-shadow:0 12px 34px rgba(0,0,0,.28);font:600 13px/1.3 system-ui,sans-serif";
+    n.innerHTML = '<span style="flex:1">🛠️ หน้า Admin รุ่นใหม่พร้อมใช้งาน</span><button type="button" style="border:0;border-radius:9px;padding:8px 11px;background:#d8ecff;color:#0b1c2b;font-weight:800;cursor:pointer">โหลดใหม่</button><button type="button" aria-label="ปิด" style="border:0;background:transparent;color:#eaf5ff;font-size:18px;cursor:pointer;padding:4px">×</button>';
+    n.children[1].addEventListener("click", () => { try { const u = new URL(location.href); u.searchParams.set("_ww_force", Date.now()+"-"+Math.random().toString(36).slice(2,7)); location.replace(u.pathname+u.search+u.hash); } catch (_) { location.reload(); } });
+    n.children[2].addEventListener("click", () => { n.remove(); adminUpdateNotice = null; });
+    (document.body || document.documentElement).appendChild(n);
+    adminUpdateNotice = n;
+}
+function checkAdminRelease(cfg) {
+    const latest = String(cfg?.adminHash || "").trim();
+    if (loadedAdminRelease && latest && latest !== loadedAdminRelease) showAdminUpdateNotice();
+}
+
+async function pollAdminRelease() {
+    try {
+        const r = await fetch("/api/config?real=1&_ww_admin_release=" + Date.now(), { cache:"no-store", credentials:"same-origin" });
+        if (!r.ok) return;
+        const cfg = await r.json();
+        checkAdminRelease(cfg);
+        updateRunningVersion(cfg.appVersion || cfg.version || cfg.serverVersion || cfg.buildVersion || "unknown", "api");
+    } catch (_) {}
+}
+function startAdminReleasePolling() {
+    if (adminReleasePollTimer) return;
+    pollAdminRelease();
+    adminReleasePollTimer = window.setInterval(pollAdminRelease, 20000);
+}
+function stopAdminReleasePolling() {
+    if (adminReleasePollTimer) window.clearInterval(adminReleasePollTimer);
+    adminReleasePollTimer = null;
+}
+
+const adminErrorMessages = {
+    ADMIN_GOOGLE_NOT_ALLOWED: "Google บัญชีนี้ไม่ได้รับสิทธิ์แอดมิน",
+    ADMIN_GOOGLE_CANCELLED: "ยกเลิกการเข้าสู่ระบบ Google ของแอดมินแล้ว",
+    ADMIN_GOOGLE_STATE_INVALID: "เซสชัน Google ของแอดมินหมดอายุ กรุณาเริ่มใหม่",
+    ADMIN_GOOGLE_ADMIN_NOT_CONFIGURED: "ยังไม่ได้กำหนดอีเมล Google สำหรับแอดมิน",
+    ADMIN_GOOGLE_NOT_CONFIGURED: "ยังไม่ได้ตั้งค่า Google สำหรับแอดมิน",
+    ADMIN_GOOGLE_LOGIN_FAILED: "เข้าสู่ระบบ Google ของแอดมินไม่สำเร็จ",
+    GOOGLE_NOT_CONFIGURED: "ระบบ Google ยังตั้งค่าไม่ครบ",
+};
+try {
+    const q = new URLSearchParams(window.location.search);
+    const adminError = q.get("admin_error");
+    if (adminError) {
+        pendingAdminError = adminErrorMessages[adminError] || "เข้าสู่ระบบแอดมินไม่สำเร็จ";
+        window.history.replaceState({}, "", "/admin.html");
+    }
+} catch (_) {}
+
+socket.on("connect_error", async (err) => {
+    if (err?.message !== "admin_auth_required") return;
+    const ok = await ensureAdminLogin();
+    if (ok) { try { socket.connect(); } catch (_) {} }
+    else { connStatus.textContent = "ต้องเข้าสู่ระบบแอดมิน"; connStatus.className = "status down"; }
+});
+
+socket.on("connect", async () => {
+    const ok = await ensureAdminLogin();
+    if (!ok) {
+        connStatus.textContent = "ยังไม่ได้ยืนยันสิทธิ์แอดมิน";
+        connStatus.className = "status down";
+        try { socket.disconnect(); } catch (_) {}
+        return;
+    }
+    connStatus.textContent = "เชื่อมต่อแล้ว";
+    connStatus.className = "status live";
+    refreshServerStatus();
+    startAdminReleasePolling();
+    refreshDashboard();
+    loadAccounts();
+    loadRooms();
+    loadDiagnostics();
+});
+socket.on("serverInfo", (payload) => {
+    if (payload && payload.version) updateRunningVersion(payload.version, "socket");
+    checkAdminRelease(payload || {});
+});
+socket.on("disconnect", () => {
+    connStatus.textContent = "หลุดการเชื่อมต่อ";
+    connStatus.className = "status down";
+    stopPolling();
+    stopAdminReleasePolling();
+});
+
+refreshServerStatus();
+
+function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(() => {
+        loadAccounts();
+        if (currentTab === "overview") refreshDashboard();
+        if (currentTab === "rooms") loadRooms();
+    }, POLL_INTERVAL_MS);
+}
+function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+}
+function escapeHtml(str) {
+    return String(str ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+function formatDateTime(iso) {
+    if (!iso) return "-";
+    try {
+        return new Date(iso).toLocaleString("th-TH", { day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit" });
+    } catch (e) { return String(iso); }
+}
+function statusLabel(status) {
+    return ({ active:"ปกติ", suspended:"พักบัญชี", deleted:"ลบบัญชี", legacy:"ข้อมูลเก่า" })[status] || status || "-";
+}
+function accountIsLegacy(target) { return !!target?.legacy && !target?.accountId; }
+function setDirectoryCount() {
+    const el = document.getElementById("directoryCount");
+    if (!el) return;
+    const real = allPlayers.filter((x) => !x.legacy).length;
+    const legacy = allPlayers.filter((x) => x.legacy).length;
+    const suffix = legacy ? ` · ข้อมูลเก่า ${legacy}` : "";
+    el.textContent = `ทั้งหมด ${allPlayers.length} รายการ · บัญชีจริง ${real}${suffix}`;
+}
+
+function loadAccounts() {
+    socket.emit("admin_list_accounts", (res) => {
+        if (!res?.ok) return;
+        accounts = res.accounts || [];
+        renderLive();
+    });
+}
+function renderLive() {
+    const content = document.getElementById("content");
+    if (!accounts.length) {
+        content.innerHTML = '<div class="empty">ตอนนี้ไม่มีบัญชีจริงที่หน้าเว็บกำลังออนไลน์อยู่</div>';
+        return;
+    }
+    const byGroup = {};
+    accounts.forEach((a) => {
+        const key = a.roomId ? `room:${a.roomId}` : `page:${a.page || "unknown"}`;
+        (byGroup[key] = byGroup[key] || []).push(a);
+    });
+    let html = "";
+    Object.keys(byGroup).sort().forEach((key) => {
+        const list = byGroup[key];
+        const first = list[0] || {};
+        const title = first.roomId
+            ? `ห้อง <span class="code">${escapeHtml(first.roomId)}</span>`
+            : `หน้าเว็บ · ${escapeHtml(first.page === "index" ? "หน้าหลัก / index" : first.page || "ไม่ทราบหน้า")}`;
+        html += `<div class="room-group"><div class="room-label">${title} <span style="opacity:.65">· ${list.length} session</span></div>`;
+        list.forEach((a) => {
+            const where = a.roomId ? `ห้อง ${escapeHtml(a.roomId)}` : `หน้า ${escapeHtml(a.page || "unknown")}`;
+            html += `<div class="account-card"><div class="account-info"><div class="account-name">${escapeHtml(a.name)}</div><div class="tags"><span class="tag ${a.isHost ? "tag-host" : ""}">${a.isHost ? "โฮสต์" : "ผู้เล่น"}</span><span class="tag" style="background:var(--safe-soft);color:var(--safe)">🟢 ออนไลน์</span><span class="tag">${where}</span>${a.accountType === "temporary" ? '<span class="tag">ชั่วคราว</span>' : ""}</div></div><div class="account-actions"><button class="manage-live-btn" data-account-id="${escapeHtml(a.accountId)}" data-name="${escapeHtml(a.name)}">👁️ จัดการ</button></div></div>`;
+        });
+        html += "</div>";
+    });
+    content.innerHTML = html;
+}
+
+document.getElementById("content").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-account-id].manage-live-btn");
+    if (b) openAccountDetail(b.dataset.accountId, b.dataset.name);
+});
+
+function loadRooms() {
+    socket.emit("admin_list_rooms", (res) => {
+        const el = document.getElementById("roomsContent");
+        const st = document.getElementById("roomStatus");
+        if (!res?.ok) {
+            st.textContent = "โหลดไม่ได้";
+            el.innerHTML = '<div class="empty">โหลดห้องไม่สำเร็จ</div>';
+            return;
+        }
+        st.textContent = `${(res.rooms || []).length} ห้อง`;
+        renderRooms(res.rooms || []);
+    });
+}
+function renderRooms(rooms) {
+    const el = document.getElementById("roomsContent");
+    if (!rooms.length) {
+        el.innerHTML = '<div class="empty">ยังไม่มีห้องเปิดอยู่</div>';
+        return;
+    }
+    el.innerHTML = '<div class="room-grid">' + rooms.map((r) => `<div class="room-card"><div class="manage-head"><span class="room-code">${escapeHtml(r.roomId)}</span><span class="mini-tag ${r.isTester ? "warn" : ""}">${r.isTester ? "🧪 ทดลอง" : "ปกติ"}</span></div><div class="room-meta">โฮสต์: ${escapeHtml(r.hostName)} · ผู้เล่น ${r.players}${r.bots ? " + บอท " + r.bots : ""}${r.maxPlayers ? " / " + r.maxPlayers : ""}</div><div class="manage-tags"><span class="mini-tag">${r.started ? "🎮 กำลังเล่น" : "⏳ รอเริ่ม"}</span>${r.gameOver ? '<span class="mini-tag">🏁 จบเกม</span>' : ""}</div><div class="card-actions"><button class="danger-action admin-room-close" data-room-id="${escapeHtml(r.roomId)}">🚪 ปิดห้อง</button></div></div>`).join("") + '</div>';
+}
+document.getElementById("roomsContent").addEventListener("click", (e) => {
+    const b = e.target.closest(".admin-room-close");
+    if (b) adminCloseRoom(b.dataset.roomId);
+});
+async function adminCloseRoom(roomId) {
+    if (!(await wwConfirm(`ปิดห้อง ${roomId} ใช่หรือไม่?`, { danger:true, okText:"ปิดห้อง" }))) return;
+    socket.emit("admin_close_room", { roomId }, (res) => {
+        if (!res?.ok) return wwAlert("ปิดห้องไม่สำเร็จ: " + (res?.error || "unknown"));
+        wwToast("ปิดห้องเรียบร้อย", { type:"success" });
+        loadRooms(); loadAccounts(); refreshDashboard();
+    });
+}
+
+function refreshDashboard() {
+    Promise.all([
+        fetch("/api/admin/players", { cache: "no-store" }).then((r) => r.json()),
+        new Promise((resolve) => socket.emit("admin_list_rooms", resolve)),
+    ]).then(([p, r]) => {
+        allPlayers = p?.players || [];
+        const rooms = r?.rooms || [];
+        const realPlayers = allPlayers.filter((x) => !x.legacy);
+        document.getElementById("sumAccounts").textContent = realPlayers.length;
+        document.getElementById("sumGoogleAccounts").textContent = realPlayers.filter((x) => x.accountType === "google").length;
+        document.getElementById("sumTemporaryAccounts").textContent = realPlayers.filter((x) => x.accountType !== "google").length;
+        const uniqueOnline = new Set(accounts.map((x) => x.accountId).filter(Boolean));
+        document.getElementById("sumOnline").textContent = uniqueOnline.size;
+        document.getElementById("sumRoomSessions").textContent = accounts.filter((x) => !!x.roomId).length;
+        document.getElementById("sumRooms").textContent = rooms.length;
+        document.getElementById("sumTesters").textContent = rooms.filter((x) => x.isTester).length;
+        setDirectoryCount();
+        renderOverviewRecent(allPlayers.slice(0, 6));
+    }).catch(() => {});
+}
+function renderOverviewRecent(players) {
+    const el = document.getElementById("overviewRecent");
+    if (!players.length) {
+        el.innerHTML = '<div class="empty">ยังไม่มีบัญชีจริง</div>';
+        return;
+    }
+    el.innerHTML = '<div class="account-grid">' + players.map((x, idx) => `<div class="manage-card overview-player-card" data-player-index="${idx}"><div class="manage-name">${escapeHtml(x.name)}</div><div class="manage-meta">${x.legacy ? "ข้อมูลเก่า" : (x.online ? "🟢 ออนไลน์" : "⚪ ออฟไลน์")} · เกม ${x.games || 0} · ชนะ ${x.wins || 0}</div></div>`).join("") + '</div>';
+}
+document.getElementById("overviewRecent").addEventListener("click", (e) => {
+    const card = e.target.closest(".overview-player-card");
+    if (!card) return;
+    const p = allPlayers[Number(card.dataset.playerIndex)];
+    if (p) openAccountDetail(p.accountId, p.name, p);
+});
+
+function renderPlayerAccountCard(p, idx) {
+    const type = p.accountType === "google" ? "google" : "temporary";
+    const typeLabel = type === "google" ? "🔵 Google" : "🟡 ชั่วคราว";
+    const idText = p.legacy ? "ข้อมูลเก่าจากระบบเดิม" : "ID: " + escapeHtml(String(p.accountId).slice(0, 12));
+    const extra = type === "temporary" && p.temporaryExpiresAt ? " · หมดอายุ " + formatDateTime(p.temporaryExpiresAt) : "";
+    return `<div class="manage-card all-player-card" data-player-index="${idx}" role="button" tabindex="0"><div class="manage-head"><div class="manage-name">${escapeHtml(p.name)}</div><span class="mini-tag ${p.online ? "online" : ""}">${p.online ? "🟢 ออนไลน์" : "⚪ ออฟไลน์"}</span></div><div class="manage-meta">${idText}${extra}</div><div class="manage-tags"><span class="mini-tag player-type-badge ${type}">${typeLabel}</span><span class="mini-tag">เกม ${p.games || 0}</span><span class="mini-tag">ชนะ ${p.wins || 0}</span><span class="mini-tag">แพ้ ${p.losses || 0}</span><span class="mini-tag">เข้า ${p.joinCount || 0}</span>${p.status === "suspended" ? '<span class="mini-tag warn">พักบัญชี</span>' : ""}${p.status === "deleted" ? '<span class="mini-tag warn">ลบบัญชี</span>' : ""}</div></div>`;
+}
+function renderPlayerDirectory(players, q) {
+    const content = document.getElementById("allPlayersContent");
+    if (!players.length) {
+        content.innerHTML = `<div class="empty">${q ? "ไม่พบชื่อที่ค้นหา" : "ยังไม่มีบัญชี"}</div>`;
+        return;
+    }
+    const google = [], temporary = [], legacy = [];
+    players.forEach((p, idx) => {
+        if (p.legacy) legacy.push([p, idx]);
+        else if (p.accountType === "google") google.push([p, idx]);
+        else temporary.push([p, idx]);
+    });
+    const group = (cls, title, note, items, icon) => `<section class="player-account-group ${cls}"><div class="player-account-group-head"><div class="player-account-group-title">${icon} ${title}</div><span class="player-account-group-count">${items.length}</span></div><div class="player-account-group-note">${note}</div>${items.length ? '<div class="account-grid">' + items.map(([p,idx]) => renderPlayerAccountCard(p,idx)).join("") + '</div>' : '<div class="empty">ไม่มีบัญชีในกลุ่มนี้</div>'}</section>`;
+    let html = '<div class="player-account-groups">';
+    html += group("google", "บัญชี Google", "บัญชีถาวรที่ยืนยันตัวตนผ่าน Google · แยกจากบัญชีชั่วคราวอย่างชัดเจน", google, "🔵");
+    html += group("temporary", "บัญชีชั่วคราว", "บัญชีที่ยังไม่ได้ผูก Google · มีอายุ/วันหมดอายุตามระบบ", temporary, "🟡");
+    html += '</div>';
+    if (legacy.length) html += '<div style="margin-top:14px">' + group("legacy", "ข้อมูลผู้เล่นเก่า", "ข้อมูลจากระบบรุ่นก่อนที่ยังไม่มี accountId · ไม่ถือเป็นบัญชี Google หรือบัญชีชั่วคราว", legacy, "📦") + '</div>';
+    content.innerHTML = html;
+}
+function loadAllPlayers() {
+    const q = document.getElementById("playerSearch").value.trim();
+    const content = document.getElementById("allPlayersContent");
+    content.innerHTML = '<div class="empty">กำลังโหลด...</div>';
+    fetch("/api/admin/players?q=" + encodeURIComponent(q), { cache: "no-store" })
+        .then((r) => r.json())
+        .then((data) => {
+            allPlayers = data.players || [];
+            setDirectoryCount();
+            if (data.error) { content.innerHTML = '<div class="empty">โหลดไม่สำเร็จ</div>'; return; }
+            renderPlayerDirectory(allPlayers, q);
+        })
+        .catch(() => { content.innerHTML = '<div class="empty">เชื่อมต่อเซิร์ฟเวอร์ไม่ได้</div>'; });
+}
+const allPlayersContent = document.getElementById("allPlayersContent");
+allPlayersContent.addEventListener("click", (e) => {
+    const card = e.target.closest(".all-player-card");
+    if (!card) return;
+    const p = allPlayers[Number(card.dataset.playerIndex)];
+    if (p) openAccountDetail(p.accountId, p.name, p);
+});
+allPlayersContent.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const card = e.target.closest(".all-player-card");
+    if (!card) return;
+    e.preventDefault();
+    const p = allPlayers[Number(card.dataset.playerIndex)];
+    if (p) openAccountDetail(p.accountId, p.name, p);
+});
+document.getElementById("playerSearch").addEventListener("input", () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(loadAllPlayers, 250);
+});
+
+function renderDetailShell(bodyHtml) {
+    document.getElementById("historyOverlay").classList.add("hidden");
+    document.getElementById("accountOverlay").classList.remove("hidden");
+    document.getElementById("accountDetailBody").innerHTML = bodyHtml;
+}
+function openAccountDetail(accountId, name, listItem = null) {
+    detailAccountId = accountId || "";
+    detailLegacyName = !accountId ? String(name || "") : "";
+    renderDetailShell('<div class="hist-empty">กำลังโหลด...</div>');
+    if (accountId) {
+        fetch("/api/admin/player-account?accountId=" + encodeURIComponent(accountId), { cache: "no-store" })
+            .then((r) => r.json())
+            .then((d) => {
+                if (d.error) throw new Error(d.error);
+                renderModernAccountDetail(d.account || listItem || { accountId, name });
+            })
+            .catch((e) => { document.getElementById("accountDetailBody").innerHTML = '<div class="hist-empty">โหลดบัญชีไม่สำเร็จ: ' + escapeHtml(e.message) + '</div>'; });
+        return;
+    }
+    fetch("/api/admin/player-history?name=" + encodeURIComponent(name || ""), { cache: "no-store" })
+        .then((r) => r.json())
+        .then((d) => {
+            if (d.error) throw new Error(d.error);
+            renderLegacyAccountDetail(d);
+        })
+        .catch((e) => { document.getElementById("accountDetailBody").innerHTML = '<div class="hist-empty">โหลดข้อมูลเก่าไม่สำเร็จ: ' + escapeHtml(e.message) + '</div>'; });
+}
+function renderModernAccountDetail(a) {
+    const live = a.live || [];
+    const statusClass = a.status === "active" ? "online" : "warn";
+    document.getElementById("accountDetailBody").innerHTML = `<div class="detail-head"><div><h3 style="margin:0 0 4px">👤 ${escapeHtml(a.name)}</h3><div class="detail-id">${escapeHtml(a.accountId)}</div></div><span class="mini-tag ${statusClass}">${escapeHtml(statusLabel(a.status))}</span></div><div class="detail-stats"><div><b>${a.games || 0}</b>เกม</div><div><b>${a.wins || 0}</b>ชนะ</div><div><b>${a.losses || 0}</b>แพ้</div></div><div class="detail-section"><h4>ข้อมูลบัญชี</h4><div class="player-meta">ประเภท: ${a.accountType === "google" ? "🔵 บัญชี Google" : a.accountType === "temporary" ? "🟡 บัญชีชั่วคราว" : escapeHtml(a.accountType || "-")}<br>ผู้ให้บริการ: ${a.provider === "google" ? "Google" : "Temporary"}<br>สร้าง: ${formatDateTime(a.createdAt)}<br>ล่าสุด: ${formatDateTime(a.lastSeen)}<br>${a.temporaryExpiresAt ? "หมดอายุเมื่อ: " + formatDateTime(a.temporaryExpiresAt) + "<br>" : ""}เข้าเล่น: ${a.joinCount || 0} ครั้ง<br>เล่นล่าสุด: ${formatDateTime(a.lastPlayedAt)}<br>ชื่อเดิม: ${(a.aliases || []).length ? a.aliases.map(escapeHtml).join(", ") : "-"}</div></div><div class="detail-section"><h4>การเชื่อมต่อ</h4><div class="player-meta">${live.length ? live.map((x) => `${escapeHtml(x.roomId)} · ${x.isHost ? "โฮสต์" : "ผู้เล่น"}`).join("<br>") : "ออฟไลน์"}</div></div><div class="detail-actions">${a.status !== "deleted" ? '<button data-detail-action="rename">✏️ เปลี่ยนชื่อ</button><button data-detail-action="kick">🚪 เตะออกทุกเครื่อง</button>' : ''}${a.status === "deleted" ? '<span class="mini-tag warn">ลบถาวร · กู้คืนไม่ได้</span>' : '<button data-detail-action="status">' + (a.status === "suspended" ? "▶️ เปิดบัญชี" : "⏸️ พักบัญชี") + '</button>'}${a.status !== "deleted" ? '<button data-detail-action="reset-stats">♻️ รีเซ็ตสถิติ</button><button class="danger-action" data-detail-action="delete">🗑️ ลบบัญชี</button>' : ''}<button data-detail-action="history">📜 ดูประวัติ</button></div>`;
+    document.getElementById("accountDetailBody").dataset.accountId = a.accountId;
+    document.getElementById("accountDetailBody").dataset.accountName = a.name || "";
+    document.getElementById("accountDetailBody").dataset.accountStatus = a.status || "active";
+}
+function renderLegacyAccountDetail(d) {
+    document.getElementById("accountDetailBody").innerHTML = `<div class="detail-head"><div><h3 style="margin:0 0 4px">👤 ${escapeHtml(d.name)}</h3><div class="detail-id">Legacy / ไม่มี accountId</div></div><span class="mini-tag warn">ข้อมูลเก่า</span></div><div class="detail-stats"><div><b>${d.games || 0}</b>เกม</div><div><b>${d.wins || 0}</b>ชนะ</div><div><b>${d.losses || 0}</b>แพ้</div></div><div class="detail-section"><h4>ข้อมูลเดิม</h4><div class="player-meta">สร้าง: ${formatDateTime(d.firstSeen)}<br>ล่าสุด: ${formatDateTime(d.lastSeen)}<br>เข้าเล่น: ${d.joinCount || 0} ครั้ง<br>บัญชีชนิดนี้ไม่มี accountId จึงเป็นข้อมูล legacy</div></div><div class="detail-section"><h4>การจัดการ</h4><div class="player-meta">สามารถย้ายชื่อข้อมูลเดิมไปชื่อใหม่ หรือลบข้อมูล legacy ได้ โดยไม่สร้างบัญชีทดลองและไม่แตะบัญชีจริงที่มี accountId</div></div><div class="detail-actions"><button data-detail-action="rename-legacy">✏️ เปลี่ยนชื่อ</button><button data-detail-action="migrate-legacy">📦 ย้ายเข้า Account</button><button class="danger-action" data-detail-action="delete-legacy">🗑️ ลบข้อมูล</button><button data-detail-action="history">📜 ดูประวัติ</button></div>`;
+    document.getElementById("accountDetailBody").dataset.legacyName = d.name || "";
+}
+
+document.getElementById("accountDetailBody").addEventListener("click", (e) => {
+    const action = e.target.closest("[data-detail-action]")?.dataset.detailAction;
+    if (!action) return;
+    const body = document.getElementById("accountDetailBody");
+    const id = body.dataset.accountId || detailAccountId;
+    const name = body.dataset.accountName || body.dataset.legacyName || detailLegacyName;
+    if (action === "rename") return renameAccount(id, name, false);
+    if (action === "kick") return kickAccount(id);
+    if (action === "status") return setAccountStatus(id, body.dataset.accountStatus === "suspended" ? "active" : "suspended");
+    if (action === "delete") return setAccountStatus(id, "deleted");
+    if (action === "reset-stats") return resetAccountStats(id, name);
+    if (action === "history") return id ? openHistoryModalByAccount(id) : openHistoryModalByName(name);
+    if (action === "rename-legacy") return renameAccountLegacy(name);
+    if (action === "migrate-legacy") return migrateLegacy(name);
+    if (action === "delete-legacy") return deleteLegacy(name);
+});
+
+function closeAccountDetail() {
+    document.getElementById("accountOverlay").classList.add("hidden");
+    detailAccountId = "";
+    detailLegacyName = "";
+}
+function closeRenameModal() {
+    document.getElementById("renameOverlay").classList.add("hidden");
+    renameTarget = null;
+}
+function closeHistoryModal() { document.getElementById("historyOverlay").classList.add("hidden"); }
+function renameAccount(id, name, legacy = false) {
+    renameTarget = { accountId: id, legacyName: legacy ? name : "", name, legacy };
+    document.getElementById("renameTitle").textContent = `เปลี่ยนชื่อ "${name}"`;
+    const i = document.getElementById("renameInput");
+    i.value = name || "";
+    document.getElementById("renameOverlay").classList.remove("hidden");
+    setTimeout(() => { i.focus(); i.select(); }, 50);
+}
+function renameAccountLegacy(name) { renameAccount("", name, true); }
+async function submitRename() {
+    if (!renameTarget) return;
+    const newName = document.getElementById("renameInput").value.trim();
+    if (!newName) return wwAlert("กรุณาใส่ชื่อใหม่");
+    const target = renameTarget;
+    const eventName = target.legacy ? "admin_rename_legacy_player" : "admin_rename_account";
+    const payload = target.legacy ? { name: target.legacyName, newName } : { accountId: target.accountId, newName };
+    socket.emit(eventName, payload, (res) => {
+        if (!res?.ok) { wwAlert("แก้ชื่อไม่สำเร็จ: " + (res?.error || "unknown")); return; }
+        closeRenameModal();
+        closeAccountDetail();
+        wwToast("เปลี่ยนชื่อเรียบร้อย", { type:"success" });
+        loadAllPlayers(); loadAccounts(); refreshDashboard();
+    });
+}
+async function kickAccount(id) {
+    if (!(await wwConfirm("เตะบัญชีนี้ออกจากทุก session ที่เชื่อมต่ออยู่ใช่หรือไม่?", { danger:true, okText:"เตะออก" }))) return;
+    socket.emit("admin_kick_account", { accountId: id }, (res) => {
+        if (!res?.ok) return wwAlert("ทำรายการไม่สำเร็จ");
+        wwToast("ตัด session แล้ว", { type:"success" });
+        openAccountDetail(id, "");
+        loadAccounts(); refreshDashboard();
+    });
+}
+async function setAccountStatus(id, status) {
+    const text = status === "deleted" ? "ลบบัญชีนี้ถาวร (บัญชีเดิมจะกลับมาใช้งานไม่ได้และไม่สามารถกู้คืนผ่าน Admin) พร้อมตัดทุก session" : (status === "suspended" ? "พักบัญชีนี้และตัด session ปัจจุบัน" : "เปิดบัญชีนี้กลับมา");
+    if (!(await wwConfirm(text + " ใช่หรือไม่?", { danger: status !== "active", okText:"ยืนยัน" }))) return;
+    socket.emit("admin_set_account_status", { accountId: id, status }, (res) => {
+        if (!res?.ok) return wwAlert("ทำรายการไม่สำเร็จ: " + (res?.error || "unknown"));
+        wwToast(res.status === "deleted" ? "ลบบัญชีถาวรแล้ว" : "เปลี่ยนสถานะแล้ว", { type:"success" });
+        if (res.status === "deleted") closeAccountDetail();
+        else openAccountDetail(id, "");
+        loadAllPlayers(); loadAccounts(); refreshDashboard();
+    });
+}
+async function resetAccountStats(id, name) {
+    if (!(await wwConfirm(`รีเซ็ตสถิติของ "${name || id}" เป็น 0 ใช่หรือไม่? บัญชีและประวัติการเล่นจะยังอยู่`, { danger:true, okText:"รีเซ็ต" }))) return;
+    socket.emit("admin_reset_account_stats", { accountId: id }, (res) => {
+        if (!res?.ok) return wwAlert("รีเซ็ตสถิติไม่สำเร็จ: " + (res?.error || "unknown"));
+        wwToast("รีเซ็ตสถิติแล้ว", { type:"success" });
+        openAccountDetail(id, name || ""); loadAllPlayers(); refreshDashboard();
+    });
+}
+async function migrateLegacy(name) {
+    const source = String(name || "").trim();
+    if (!source) return wwAlert("ไม่พบชื่อ legacy");
+    const target = window.prompt(`Account ID ปลายทางสำหรับย้ายข้อมูลของ "${source}"`);
+    const accountId = String(target || "").trim();
+    if (!accountId) return;
+    if (!(await wwConfirm(`ย้ายสถิติและประวัติของ "${source}" เข้า Account ID ${accountId} ใช่หรือไม่? ระบบจะผูกข้อมูล legacy ชุดนี้กับบัญชีปลายทางและป้องกันการย้ายซ้ำ`, { danger:false, okText:"ย้ายข้อมูล" }))) return;
+    socket.emit("admin_migrate_legacy_player", { name: source, accountId }, (res) => {
+        if (!res?.ok) return wwAlert("ย้ายข้อมูลไม่สำเร็จ: " + (res?.error || "unknown"));
+        wwToast(res.resumed ? "ดำเนินการย้ายข้อมูลต่อจนเสร็จแล้ว" : "ย้ายข้อมูล legacy สำเร็จ", { type:"success" });
+        closeAccountDetail();
+        loadAllPlayers(); loadAccounts(); refreshDashboard();
+    });
+}
+async function deleteLegacy(name) {
+    if (!(await wwConfirm(`ลบข้อมูลผู้เล่นเก่า "${name}" ทั้งหมดใช่หรือไม่? การลบ legacy ย้อนกลับไม่ได้`, { danger:true, okText:"ลบข้อมูล" }))) return;
+    socket.emit("admin_delete_legacy_player", { name }, (res) => {
+        if (!res?.ok) return wwAlert("ลบข้อมูลไม่สำเร็จ: " + (res?.error || "unknown"));
+        wwToast("ลบข้อมูลเก่าแล้ว", { type:"success" });
+        closeAccountDetail(); loadAllPlayers(); refreshDashboard();
+    });
+}
+function openHistoryModalByAccount(id) {
+    document.getElementById("historyTitle").textContent = "ประวัติบัญชี";
+    document.getElementById("historyBody").innerHTML = '<div class="hist-empty">กำลังโหลด...</div>';
+    document.getElementById("historyOverlay").classList.remove("hidden");
+    fetch("/api/admin/player-history?accountId=" + encodeURIComponent(id), { cache: "no-store" })
+        .then((r) => r.json())
+        .then((data) => renderHistory(data));
+}
+function openHistoryModalByName(name) {
+    document.getElementById("historyTitle").textContent = `ประวัติ ${name}`;
+    document.getElementById("historyBody").innerHTML = '<div class="hist-empty">กำลังโหลด...</div>';
+    document.getElementById("historyOverlay").classList.remove("hidden");
+    fetch("/api/admin/player-history?name=" + encodeURIComponent(name), { cache: "no-store" })
+        .then((r) => r.json())
+        .then((data) => renderHistory(data));
+}
+function renderHistory(data) {
+    const body = document.getElementById("historyBody");
+    if (data.error) { body.innerHTML = '<div class="hist-empty">โหลดประวัติไม่สำเร็จ: ' + escapeHtml(data.error) + '</div>'; return; }
+    const summary = `<div class="hist-summary"><div><b>${data.joinCount || 0}</b>เข้าเล่น</div><div><b>${data.games || 0}</b>เกม</div><div><b>${data.winRate || 0}%</b>ชนะ</div><div><b>${data.lossRate || 0}%</b>แพ้</div><div><b>${data.leaveRate || 0}%</b>ออก</div></div>`;
+    const list = (data.events || []).map((ev) => {
+        const isLeave = !!ev.left || ev.eventKind === "game_leave";
+        const eventLabel = isLeave ? "🚪 หนีออกเกม" : (ev.type === "game_end" ? "🏁 จบเกม" : "🚪 เข้าห้อง");
+        const outcome = ev.role ? ` · ${escapeHtml(ev.role)} · ${ev.won ? "ชนะ" : isLeave ? "หนีออกเกม" : "แพ้"}` : "";
+        const reason = isLeave && ev.leaveReason === "new_room" ? " · เลือกหาห้องใหม่"
+            : isLeave && ev.leaveReason === "offline_threshold" ? " · ออฟไลน์ถึงเกณฑ์ 20%"
+            : (isLeave && ev.leaveReason ? ` · ${escapeHtml(ev.leaveReason)}` : "");
+        return `<div class="hist-item ${isLeave ? "leave" : (ev.won ? "win" : "lose")}"><div class="hist-time">${formatDateTime(ev.time)}</div><div>${eventLabel} · ${escapeHtml(ev.roomId || "-")}${outcome}${reason}</div></div>`;
+    }).join("") || '<div class="hist-empty">ยังไม่มีประวัติ</div>';
+    body.innerHTML = summary + '<div class="hist-list">' + list + '</div>';
+}
+// ============================================================
+// TABS
+// ============================================================
+// ============================================================
+// ล้างข้อมูลเกมทั้งหมด — POST /api/admin/reset
+// ============================================================
+function openResetModal() {
+    document.getElementById("resetConfirmInput").value = "";
+    document.getElementById("resetPasswordInput").value = "";
+    document.getElementById("resetError").textContent = "";
+    document.getElementById("resetSubmitBtn").disabled = false;
+    document.getElementById("resetOverlay").classList.remove("hidden");
+    setTimeout(() => document.getElementById("resetConfirmInput").focus(), 50);
+}
+
+function closeResetModal() {
+    document.getElementById("resetOverlay").classList.add("hidden");
+}
+
+function submitReset() {
+    const confirmText = document.getElementById("resetConfirmInput").value.trim();
+    const passwordInput = document.getElementById("resetPasswordInput");
+    const errEl = document.getElementById("resetError");
+    const btn = document.getElementById("resetSubmitBtn");
+    errEl.textContent = "";
+
+    if (confirmText !== "RESET") {
+        errEl.textContent = "ต้องพิมพ์คำว่า RESET (ตัวพิมพ์ใหญ่) ให้ตรงก่อน";
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "กำลังล้าง...";
+
+    fetch("/api/admin/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: "RESET", password: passwordInput.value }),
+    })
+        .then((r) => r.json().catch(() => ({ error: "bad_response" })))
+        .then((data) => {
+            btn.disabled = false;
+            btn.textContent = "ล้างเลย";
+            const result = document.getElementById("resetResult");
+
+            if (data && data.ok) {
+                closeResetModal();
+                result.className = data.statePersisted === false ? "tool-result warn" : "tool-result ok";
+                result.textContent = "✅ ล้างข้อมูลเกมเรียบร้อย — ลบ " + data.deletedRows + " แถวในฐานข้อมูล, ปิด " + data.closedRooms + " ห้อง ทุกคนต้องลงทะเบียนใหม่" + (data.statePersisted === false ? " ⚠️ ล้างข้อมูลสำเร็จ แต่บันทึกสถานะระบบหลังล้างไม่สำเร็จ — resetEpoch ยังถูกบันทึกแล้ว" : "");
+                allPlayers = [];
+                loadAccounts();
+                return;
+            }
+
+            const err = (data && data.error) || "unknown";
+            if (err === "password_required" || err === "wrong_password") {
+                passwordInput.style.display = "block";
+                passwordInput.focus();
+                errEl.textContent = err === "wrong_password" ? "รหัสผ่านไม่ถูกต้อง" : "ต้องใส่รหัสผ่านแอดมิน";
+            } else if (err === "db_wipe_failed") {
+                errEl.textContent = "ลบข้อมูลในฐานข้อมูลไม่สำเร็จ (ยังไม่มีอะไรถูกเปลี่ยนที่ห้อง/เครื่องผู้เล่น): " + (data.detail || "") +
+                    " — ถ้าเป็น AccessDeniedException ให้เพิ่มสิทธิ์ dynamodb:Scan, dynamodb:BatchWriteItem, dynamodb:DeleteItem ให้ role แล้วกดใหม่";
+            } else if (err === "epoch_save_failed") {
+                errEl.textContent = "บันทึกสถานะการล้างไม่สำเร็จ: " + (data.detail || "") + " — กดล้างใหม่อีกครั้งได้";
+            } else if (err === "reset_in_progress") {
+                errEl.textContent = "กำลังล้างอยู่ รอสักครู่";
+            } else if (err === "confirm_required") {
+                errEl.textContent = "ต้องพิมพ์ RESET ให้ตรง";
+            } else {
+                errEl.textContent = "ล้างไม่สำเร็จ (" + err + ")";
+            }
+        })
+        .catch(() => {
+            btn.disabled = false;
+            btn.textContent = "ล้างเลย";
+            errEl.textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
+        });
+}
+
+// ============================================================
+// เปิด/ปิดเซิร์ฟเวอร์ + บังคับทุกคนรีโหลด — POST /api/admin/server-open, /api/admin/force-reload
+// ============================================================
+let serverIsOpen = null;   // null = ยังไม่รู้
+let pendingAction = null;  // { url, body, title, note, tone, onDone }
+let adminPasswordCache = ""; // จำรหัสไว้ในหน้านี้ชั่วคราว (ไม่เก็บลง storage) จะได้ไม่ต้องพิมพ์ใหม่ทุกปุ่ม
+
+let closingEndsAt = 0;      // 0 = ไม่ได้นับถอยหลังปิดอยู่ (นาฬิกาเครื่องนี้) — เวลาปิดจริงตามที่แอดมินตั้งไว้ (epoch ms)
+let noticeMessageNow = "";  // ข้อความประกาศปัจจุบัน (ไว้เติมในช่องตอนกดแก้)
+let reopenAtNow = 0;        // เวลาที่คาดว่าจะเปิดปัจจุบัน (epoch ms, 0 = ไม่ระบุ — ไว้เติมในช่องตอนกดแก้)
+let serverTicker = null;
+
+function refreshServerStatus() {
+    // ?real=1: เครื่องแอดมินที่ถือบัตรผ่านผู้ทดสอบ (cookie) จะเห็น serverOpen เป็น "เปิด" ตลอด — ขอสถานะจริงแทน (ดู /api/config ใน server.js)
+    return fetch("/api/config?real=1", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((cfg) => {
+            serverIsOpen = cfg.serverOpen !== false;
+            closingEndsAt = serverIsOpen && cfg.closingInMs > 0 ? Date.now() + cfg.closingInMs : 0;
+            noticeMessageNow = typeof cfg.noticeMessage === "string" ? cfg.noticeMessage : "";
+            reopenAtNow = Number(cfg.reopenAt) > 0 ? Number(cfg.reopenAt) : 0;
+            updateRunningVersion(cfg.appVersion || cfg.version || cfg.serverVersion || cfg.buildVersion || "unknown", "api");
+            checkAdminRelease(cfg);
+            renderServerStatus();
+        })
+        .catch(() => {
+            serverIsOpen = null;
+            closingEndsAt = 0;
+            reopenAtNow = 0;
+            renderServerStatus();
+        });
+}
+
+function fmtCountdown(ms) {
+    const sec = Math.max(0, Math.ceil(ms / 1000));
+    const m = Math.floor(sec / 60), r = sec % 60;
+    return m + ":" + (r < 10 ? "0" : "") + r;
+}
+
+// แปลง epoch ms → ข้อความวันที่/เวลาแบบไทย อ่านง่าย (ไว้โชว์ในพิล/ผลลัพธ์)
+function fmtDateTime(ms) {
+    if (!ms) return "";
+    try {
+        return new Date(ms).toLocaleString("th-TH", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch (e) {
+        return new Date(ms).toLocaleString();
+    }
+}
+
+// แปลง epoch ms → ค่าที่ <input type="datetime-local"> ใช้ได้ (YYYY-MM-DDTHH:mm ตามเวลาเครื่องนี้)
+function toDatetimeLocalValue(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
+// ปรับค่าช่องวันที่/เวลาขึ้น-ลงทีละ deltaMin นาที (ใช้กับปุ่มชิปเร็วๆ อย่าง "-5 นาที" / "+1 ชม.")
+// ฐานเวลาที่ปรับ: ค่าที่กรอกไว้อยู่แล้ว ถ้ายังไม่ได้กรอกใช้ "ตอนนี้" แทน แล้วห้ามถอยเลยก่อน "ตอนนี้"
+function nudgeDatetime(inputId, deltaMin) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const now = Date.now();
+    const base = el.value ? new Date(el.value).getTime() : now;
+    const next = Math.max(now, (Number.isFinite(base) ? base : now) + deltaMin * 60_000);
+    el.value = toDatetimeLocalValue(next);
+}
+
+function tickClosingPill() {
+    const pill = document.getElementById("srvPill");
+    const remain = closingEndsAt - Date.now();
+    if (remain <= 0) {
+        clearInterval(serverTicker);
+        serverTicker = null;
+        pill.textContent = "🟡 กำลังปิด...";
+        setTimeout(refreshServerStatus, 1500);
+        return;
+    }
+    pill.textContent = "🟡 จะปิด " + fmtDateTime(closingEndsAt) + " (อีก " + fmtCountdown(remain) + ")";
+}
+
+function renderServerStatus() {
+    const pill = document.getElementById("srvPill");
+    const btn = document.getElementById("srvToggleBtn");
+    const cancelBtn = document.getElementById("srvCancelBtn");
+    const editBtn = document.getElementById("srvEditBtn");
+
+    if (serverTicker) { clearInterval(serverTicker); serverTicker = null; }
+    cancelBtn.classList.add("hidden");
+    editBtn.classList.add("hidden");
+
+    if (serverIsOpen === null) {
+        pill.textContent = "เช็คสถานะไม่ได้";
+        pill.className = "srv-pill";
+        btn.disabled = true;
+        btn.textContent = "...";
+        return;
+    }
+    btn.disabled = false;
+
+    if (!serverIsOpen) {
+        pill.textContent = "🔴 ปิดอยู่" + (reopenAtNow ? " · คาดว่าจะเปิด " + fmtDateTime(reopenAtNow) : "");
+        pill.className = "srv-pill closed";
+        btn.className = "btn btn-safe";
+        btn.textContent = "🟢 เปิดเซิร์ฟเวอร์";
+        editBtn.classList.remove("hidden");
+        return;
+    }
+    if (closingEndsAt > 0) {
+        pill.className = "srv-pill closing";
+        btn.className = "btn btn-danger";
+        btn.textContent = "🔴 ตั้งเวลาปิดใหม่ / ปิดทันที";
+        cancelBtn.classList.remove("hidden");
+        tickClosingPill();
+        if (closingEndsAt - Date.now() > 0) serverTicker = setInterval(tickClosingPill, 1000);
+        return;
+    }
+    pill.textContent = "🟢 เปิดอยู่";
+    pill.className = "srv-pill open";
+    btn.className = "btn btn-danger";
+    btn.textContent = "🔴 ปิดเซิร์ฟเวอร์";
+}
+
+function openActionModal(action) {
+    pendingAction = action;
+    document.getElementById("actionTitle").textContent = action.title;
+    document.getElementById("actionNote").textContent = action.note;
+    const extra = document.getElementById("actionExtra");
+    extra.innerHTML = "";
+    if (action.buildExtra) action.buildExtra(extra);
+    const pw = document.getElementById("actionPasswordInput");
+    pw.value = adminPasswordCache;
+    document.getElementById("actionError").textContent = "";
+    const submit = document.getElementById("actionSubmitBtn");
+    submit.disabled = false;
+    submit.textContent = action.confirmLabel || "ยืนยัน";
+    submit.className = "btn " + (action.tone || "");
+    document.getElementById("actionOverlay").classList.remove("hidden");
+}
+
+function closeActionModal() {
+    document.getElementById("actionExtra").innerHTML = "";
+    document.getElementById("actionOverlay").classList.add("hidden");
+    pendingAction = null;
+}
+
+document.getElementById("actionOverlay").addEventListener("click", (e) => {
+    if (e.target.id === "actionOverlay") closeActionModal();
+});
+
+// ช่องกรอกในกล่องยืนยัน: (ตั้งเวลาปิด) วันที่/เวลาที่จะปิด + ข้อความถึงผู้เล่น + วันที่/เวลาที่คาดว่าจะเปิด
+// withClose = true เฉพาะตอน "กำลังจะปิด" (เซิร์ฟเวอร์เปิดอยู่) — ตอนปิดอยู่แล้วแก้ได้แค่ข้อความ/เวลาที่คาดว่าจะเปิด ไม่มีช่องปิด
+// prefillCloseAt / prefillReopenAt: เติมค่าเดิม (ถ้ามี) ให้แก้ไขต่อได้เลย แทนที่จะกรอกใหม่ทั้งหมด
+// ไม่มีข้อมูลผู้ใช้ปนใน HTML (markup คงที่) — ค่าที่เติมทีหลังใช้ .value เท่านั้น
+function makeScheduleFields({ withClose, prefillCloseAt, prefillReopenAt }) {
+    return {
+        buildExtra(box) {
+            const closeChips =
+                '<div class="nudge-row">' +
+                '<button type="button" class="chip" data-target="fCloseAt" data-delta="-5">-5 นาที</button>' +
+                '<button type="button" class="chip" data-target="fCloseAt" data-delta="5">+5 นาที</button>' +
+                '<button type="button" class="chip" data-target="fCloseAt" data-delta="15">+15 นาที</button>' +
+                '<button type="button" class="chip" data-target="fCloseAt" data-delta="60">+1 ชม.</button>' +
+                '<button type="button" class="chip chip-clear" data-clear="fCloseAt">ล้าง (ปิดทันที)</button>' +
+                '</div>';
+            const reopenChips =
+                '<div class="nudge-row">' +
+                '<button type="button" class="chip" data-target="fReopenAt" data-delta="-15">-15 นาที</button>' +
+                '<button type="button" class="chip" data-target="fReopenAt" data-delta="15">+15 นาที</button>' +
+                '<button type="button" class="chip" data-target="fReopenAt" data-delta="60">+1 ชม.</button>' +
+                '<button type="button" class="chip" data-target="fReopenAt" data-delta="1440">+1 วัน</button>' +
+                '<button type="button" class="chip chip-clear" data-clear="fReopenAt">ล้าง (ไม่ระบุ)</button>' +
+                '</div>';
+            box.innerHTML =
+                (withClose
+                    ? '<div class="modal-field"><label for="fCloseAt">ปิดวันที่ / เวลา</label>' +
+                      '<input type="datetime-local" id="fCloseAt" step="60">' +
+                      '<p class="modal-field-hint">เว้นว่าง = ปิดทันที</p>' +
+                      closeChips
+                    : '') +
+                '<div class="modal-field"><label for="fMsg">ข้อความถึงผู้เล่น (ไม่บังคับ)</label>' +
+                '<input type="text" id="fMsg" maxlength="200" placeholder="เช่น กำลังอัปเดตระบบ ขออภัยในความไม่สะดวก" autocomplete="off"></div>' +
+                '<div class="modal-field"><label for="fReopenAt">คาดว่าจะเปิดวันที่ / เวลา (ไม่บังคับ)</label>' +
+                '<input type="datetime-local" id="fReopenAt" step="60">' +
+                reopenChips;
+
+            document.getElementById("fMsg").value = noticeMessageNow || "";
+            const nowLocal = toDatetimeLocalValue(Date.now());
+            const reopenInput = document.getElementById("fReopenAt");
+            reopenInput.value = prefillReopenAt ? toDatetimeLocalValue(prefillReopenAt) : "";
+            reopenInput.min = nowLocal;
+
+            if (withClose) {
+                const closeInput = document.getElementById("fCloseAt");
+                closeInput.value = prefillCloseAt ? toDatetimeLocalValue(prefillCloseAt) : "";
+                closeInput.min = nowLocal;
+                const submit = document.getElementById("actionSubmitBtn");
+                const sync = () => { submit.textContent = closeInput.value ? "ตั้งเวลาปิด" : "ปิดเลย"; };
+                closeInput.addEventListener("input", sync);
+                sync();
+            }
+
+            box.querySelectorAll(".chip[data-target]").forEach((btn) => {
+                btn.addEventListener("click", () => {
+                    nudgeDatetime(btn.dataset.target, Number(btn.dataset.delta));
+                    const closeInput = document.getElementById("fCloseAt");
+                    if (withClose && closeInput) {
+                        const submit = document.getElementById("actionSubmitBtn");
+                        submit.textContent = closeInput.value ? "ตั้งเวลาปิด" : "ปิดเลย";
+                    }
+                });
+            });
+            box.querySelectorAll(".chip-clear").forEach((btn) => {
+                btn.addEventListener("click", () => {
+                    document.getElementById(btn.dataset.clear).value = "";
+                    const closeInput = document.getElementById("fCloseAt");
+                    if (withClose && closeInput) {
+                        const submit = document.getElementById("actionSubmitBtn");
+                        submit.textContent = closeInput.value ? "ตั้งเวลาปิด" : "ปิดเลย";
+                    }
+                });
+            });
+        },
+        collect() {
+            const closeVal = withClose ? document.getElementById("fCloseAt").value : "";
+            const reopenVal = document.getElementById("fReopenAt").value;
+            return {
+                closeAt: closeVal ? new Date(closeVal).getTime() : 0,
+                message: document.getElementById("fMsg").value.trim(),
+                reopenAt: reopenVal ? new Date(reopenVal).getTime() : 0,
+            };
+        },
+    };
+}
+
+function askToggleServer() {
+    if (serverIsOpen === null) return;
+    if (serverIsOpen) {
+        openActionModal(Object.assign({
+            url: "/api/admin/server-open",
+            body: { open: false },
+            title: closingEndsAt > 0 ? "🔴 ตั้งเวลาปิดใหม่ / ปิดทันที" : "🔴 ยืนยันปิดเซิร์ฟเวอร์",
+            note: "เลือกวันที่/เวลาที่จะปิด หรือเว้นว่างไว้เพื่อปิดทันที (ระหว่างรอ ผู้เล่นเล่นได้ตามปกติแต่เห็นแถบเตือนนับถอยหลัง) ⚠️ พอปิดจริง ทุกห้องปกติที่กำลังเล่นอยู่จะถูกปิด (ยกเว้นห้องผู้ทดสอบ) (ไม่นับแพ้/ชนะ/ออกเกม) ผู้เล่นเห็นหน้า “เซิร์ฟเวอร์กำลังปิด” เข้าเกมไม่ได้แม้กดรีเฟรช และตอนเปิดคืนทุกคนจะกลับหน้าแรก",
+            confirmLabel: closingEndsAt > 0 ? "ตั้งเวลาปิดใหม่" : "ตั้งเวลาปิด",
+            tone: "btn-danger",
+            resultEl: "srvResult",
+            describe: (d) => d.scheduled
+                ? "🟡 ตั้งเวลาปิดไว้ " + fmtDateTime(d.closeAt) + " (อีก " + fmtCountdown(d.closeAt - Date.now()) + ") — แจ้ง " + d.notified + " เครื่องที่ออนไลน์ (ปรับเวลา/ยกเลิกได้ก่อนถึงเวลา)" +
+                  (d.persisted ? "" : " (⚠️ บันทึกกำหนดการลงฐานข้อมูลไม่สำเร็จ: ถ้าเซิร์ฟเวอร์รีสตาร์ทก่อนถึงเวลา กำหนดการนี้จะหาย)")
+                : "🔴 ปิดเซิร์ฟเวอร์แล้ว — ตัดการเชื่อมต่อ " + d.kicked + " เครื่อง, ปิด " + (d.closedRooms || 0) + " ห้อง" + (d.keptTesterRooms ? " (เก็บห้องผู้ทดสอบไว้ " + d.keptTesterRooms + " ห้อง)" : "") +
+                  (d.persisted ? "" : " (⚠️ บันทึกสถานะลงฐานข้อมูลไม่สำเร็จ: ถ้าเซิร์ฟเวอร์รีสตาร์ท จะกลับมาเปิดเอง)"),
+            warn: (d) => !d.persisted,
+        }, makeScheduleFields({ withClose: true, prefillCloseAt: closingEndsAt > 0 ? closingEndsAt : 0, prefillReopenAt: reopenAtNow })));
+    } else {
+        openActionModal({
+            url: "/api/admin/server-open",
+            body: { open: true },
+            title: "🟢 ยืนยันเปิดเซิร์ฟเวอร์",
+            note: "ผู้เล่นที่รออยู่หน้า “เซิร์ฟเวอร์กำลังปิด” จะถูกพากลับหน้าแรกให้อัตโนมัติภายในไม่กี่วินาที (ห้องเดิมถูกปิดไปแล้ว ต้องสร้าง/เข้าห้องใหม่)",
+            confirmLabel: "เปิดเลย",
+            tone: "btn-safe",
+            resultEl: "srvResult",
+            describe: (d) => "🟢 เปิดเซิร์ฟเวอร์แล้ว" +
+                (d.persisted ? "" : " (⚠️ บันทึกสถานะลงฐานข้อมูลไม่สำเร็จ: ถ้าเซิร์ฟเวอร์รีสตาร์ท อาจกลับไปปิดตามค่าเก่า)"),
+            warn: (d) => !d.persisted,
+        });
+    }
+}
+
+// ยกเลิกการตั้งเวลาปิด (ทุกคนเห็นข้อความว่าแอดมินยกเลิก เล่นต่อได้)
+function askCancelClosing() {
+    openActionModal({
+        url: "/api/admin/server-close-cancel",
+        body: {},
+        title: "↩️ ยกเลิกการปิดเซิร์ฟเวอร์",
+        note: "หยุดกำหนดการปิดที่ตั้งไว้ ทุกคนที่เห็นแถบเตือนจะได้ข้อความว่าแอดมินยกเลิกการปิด เล่นต่อได้ตามปกติ ห้องที่กำลังเล่นอยู่ไม่ถูกแตะ",
+        confirmLabel: "ยกเลิกการปิด",
+        tone: "btn-safe",
+        resultEl: "srvResult",
+        describe: (d) => d.cancelled
+            ? "↩️ ยกเลิกกำหนดการปิดแล้ว — เซิร์ฟเวอร์เปิดต่อตามปกติ" + (d.persisted ? "" : " (⚠️ ล้างกำหนดการในฐานข้อมูลไม่สำเร็จ)")
+            : "ไม่มีกำหนดการปิดอยู่แล้ว (อาจปิดไปแล้ว หรือถูกยกเลิกไปก่อน)",
+        warn: (d) => !d.cancelled || !d.persisted,
+    });
+}
+
+// ปิดอยู่แล้ว: แก้ข้อความ/วันที่-เวลาที่คาดว่าจะเปิด (ไม่ยุ่งกับห้อง/สถานะ)
+function askEditNotice() {
+    openActionModal(Object.assign({
+        url: "/api/admin/server-open",
+        body: { open: false },
+        title: "✏️ แก้ข้อความ / วันที่-เวลาที่คาดว่าจะเปิด",
+        note: "เปลี่ยนข้อความบนหน้า “เซิร์ฟเวอร์กำลังปิด” ของผู้เล่น และ/หรือวันที่-เวลาที่คาดว่าจะเปิด (อัปเดตให้เองภายในไม่กี่วินาที) เว้นว่างช่องเวลาเพื่อลบ ห้อง/สถานะไม่ถูกแตะ",
+        confirmLabel: "บันทึก",
+        tone: "",
+        resultEl: "srvResult",
+        describe: (d) => "✅ อัปเดตข้อความ/เวลาที่คาดว่าจะเปิดแล้ว" + (d.reopenAt ? " — คาดว่าจะเปิด " + fmtDateTime(d.reopenAt) : "") + (d.persisted ? "" : " (⚠️ บันทึกลงฐานข้อมูลไม่สำเร็จ: ถ้าเซิร์ฟเวอร์รีสตาร์ท อาจหาย)"),
+        warn: (d) => !d.persisted,
+    }, makeScheduleFields({ withClose: false, prefillReopenAt: reopenAtNow })));
+}
+
+const RELOAD_KIND_TEXT = {
+    files: { title: "📄 โหลดไฟล์เกมใหม่", note: "ทุกคนที่เปิดเกมอยู่จะโหลดไฟล์เกมใหม่ (ล้างแคชไฟล์ .html/.js/.css ก่อน) แล้วกลับหน้าแรก", done: "ไฟล์เกม" },
+    images: { title: "🖼️ โหลดรูปภาพใหม่", note: "ทุกคนที่เปิดเกมอยู่จะดึงรูปภาพทุกใบใหม่ (ไม่ใช้รูปที่แคชไว้) แล้วกลับหน้าแรก", done: "รูปภาพ" },
+    both: { title: "🔁 โหลดทั้งสองอย่าง", note: "ทุกคนที่เปิดเกมอยู่จะโหลดไฟล์เกมและรูปภาพใหม่ทั้งหมด แล้วกลับหน้าแรก", done: "ไฟล์เกม + รูปภาพ" },
+};
+
+function askForceReload(kind) {
+    const t = RELOAD_KIND_TEXT[kind];
+    if (!t) return;
+    openActionModal({
+        url: "/api/admin/force-reload",
+        body: { kind },
+        title: t.title,
+        note: t.note + " ⚠️ ทุกห้องปกติที่กำลังเล่นอยู่จะถูกปิดทันที (ไม่นับแพ้/ชนะ/ออกเกม) ต้องสร้าง/เข้าห้องใหม่ — ห้องผู้ทดสอบไม่ถูกปิด",
+        confirmLabel: "สั่งรีโหลด",
+        tone: "",
+        resultEl: "reloadResult",
+        describe: (d) => "✅ สั่งรีโหลด (" + t.done + ") แล้ว — แจ้ง " + d.notified + " เครื่องที่ออนไลน์, ปิด " + (d.closedRooms || 0) + " ห้อง" + (d.keptTesterRooms ? " (เก็บห้องผู้ทดสอบไว้ " + d.keptTesterRooms + " ห้อง)" : "") +
+            (d.serverOpen ? "" : " (ตอนนี้ปิดเซิร์ฟเวอร์อยู่ จึงไม่มีผู้เล่นออนไลน์ — เครื่องที่รออยู่จะได้ไฟล์/รูปใหม่ตอนเปิดคืน)") +
+            (d.persisted ? "" : " ⚠️ บันทึกเลขรุ่นรูปลงฐานข้อมูลไม่สำเร็จ: ถ้าเซิร์ฟเวอร์รีสตาร์ท รูปอาจกลับไปใช้แคชเก่า — กดใหม่ได้"),
+        warn: (d) => !d.persisted,
+    });
+}
+
+// ประกาศว่ามีรุ่นใหม่ โดยไม่ปิดห้อง/ไม่ยิง force_reload/ไม่แตะผู้เล่นคนไหน — ผู้เล่นเห็น “มีอัปเดตเกมใหม่” ตอนกลับมาหน้า index เองเท่านั้น
+function askTesterUpdate(kind) {
+    const labels = { files: "ไฟล์เกม", images: "รูปภาพ", both: "ไฟล์เกม + รูปภาพ" };
+    const label = labels[kind] || "ไฟล์เกม + รูปภาพ";
+    openActionModal({
+        url: "/api/admin/tester-update",
+        body: { kind },
+        title: "🧪 บังคับอัปเดต Tester — " + label,
+        note: "อัปเดตแท็บโหมดผู้ทดสอบโดยตรง ไม่ปิดห้องทดลอง ไม่สั่งรีโหลดผู้เล่นปกติ และไม่พา Tester กลับหน้า index — แท็บที่ออนไลน์จะได้รับคำสั่งทันที ส่วนแท็บที่หลับ/พลาด event จะเห็นคำสั่งเมื่อกลับมาทำงาน",
+        confirmLabel: "สั่งอัปเดต Tester",
+        tone: "",
+        resultEl: "testerUpdateResult",
+        describe: (d) => "✅ สั่งอัปเดต Tester แล้ว — แจ้ง " + (d.notified || 0) + " แท็บ, ห้องทดลองยังอยู่ " + (d.testerRooms || 0) + " ห้อง" +
+            (d.persisted ? "" : " ⚠️ บันทึก epoch ลงฐานข้อมูลไม่สำเร็จ: แท็บที่หลับตอนนี้อาจไม่เห็นคำสั่งหลังเซิร์ฟเวอร์รีสตาร์ท"),
+        warn: (d) => !d.persisted,
+    });
+}
+
+function askPublishUpdate() {
+    openActionModal({
+        url: "/api/admin/publish-update",
+        body: {},
+        title: "📣 แจ้งมีรุ่นใหม่ (ไม่กระทบห้อง)",
+        note: "เปลี่ยนเลขรุ่น (version) ให้หน้า index ของทุกเครื่องแสดง “มีอัปเดตเกมใหม่” ตอนที่ผู้เล่นกลับมาหน้าแรกเอง ห้องที่กำลังเล่นอยู่ไม่ถูกปิด ไม่มี popup/reload/redirect ระหว่างเล่น (ใช้เมื่อเปลี่ยนรูปบน S3/CDN ที่ระบบมองไม่เห็นว่าไฟล์เปลี่ยน — ไฟล์ในโปรเจกต์ที่ deploy ใหม่ตรวจจับ version เองอยู่แล้ว)",
+        confirmLabel: "แจ้งมีรุ่นใหม่",
+        tone: "",
+        resultEl: "reloadResult",
+        describe: (d) => "📣 ประกาศรุ่นใหม่แล้ว (version " + d.version + ") — ไม่ได้ปิดห้อง/ไม่ได้ยิงรีโหลดให้ใคร" +
+            (d.persisted ? "" : " ⚠️ บันทึกเลขรุ่นรูปลงฐานข้อมูลไม่สำเร็จ: ถ้าเซิร์ฟเวอร์รีสตาร์ท เลขรุ่นอาจย้อนกลับ — กดใหม่ได้"),
+        warn: (d) => !d.persisted,
+    });
+}
+
+function submitAction() {
+    const act = pendingAction;
+    if (!act) return;
+    const pwInput = document.getElementById("actionPasswordInput");
+    const errEl = document.getElementById("actionError");
+    const btn = document.getElementById("actionSubmitBtn");
+    errEl.textContent = "";
+    btn.disabled = true;
+
+    fetch(act.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({}, act.body, act.collect ? act.collect() : {}, { password: pwInput.value })),
+    })
+        .then((r) => r.json().catch(() => ({ error: "bad_response" })))
+        .then((data) => {
+            btn.disabled = false;
+            if (data && data.ok) {
+                adminPasswordCache = pwInput.value;
+                closeActionModal();
+                const result = document.getElementById(act.resultEl);
+                result.className = "tool-result " + (act.warn(data) ? "warn" : "ok");
+                result.textContent = act.describe(data);
+                refreshServerStatus();
+                if (currentTab === "live") loadAccounts();
+                return;
+            }
+            const err = (data && data.error) || "unknown";
+            if (err === "password_required" || err === "wrong_password") {
+                pwInput.style.display = "block";
+                pwInput.focus();
+                errEl.textContent = err === "wrong_password" ? "รหัสผ่านไม่ถูกต้อง" : "ต้องใส่รหัสผ่านแอดมิน";
+            } else {
+                errEl.textContent = "ไม่สำเร็จ (" + err + ")";
+            }
+        })
+        .catch(() => {
+            btn.disabled = false;
+            errEl.textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
+        });
+}
+
+document.getElementById("actionPasswordInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitAction();
+});
+
+
+let diagnosticsTimer = null;
+function startDiagnosticsPolling(){
+    if (diagnosticsTimer) clearInterval(diagnosticsTimer);
+    diagnosticsTimer = setInterval(() => { if (currentTab === "diagnostics") loadDiagnostics(); }, 5000);
+}
+function stopDiagnosticsPolling(){ if (diagnosticsTimer) clearInterval(diagnosticsTimer); diagnosticsTimer = null; }
+function renderPermissionChecklist(data){
+    const el=document.getElementById("diagPermissions");
+    const observed=data?.permissions?.observedFailures||[];
+    const expected=data?.permissions?.expected||[];
+    if(!expected.length){el.innerHTML='<div class="empty">ไม่พบรายการสิทธิ์</div>';return;}
+    const byAction=new Map(observed.map(x=>[x.action,x]));
+    let html='<div class="perm-list">'+expected.map(x=>{
+        const fail=byAction.get(x.action); const cls=fail?'diag-permission':'';
+        return `<div class="perm-row ${cls}"><div class="perm-action">${escapeHtml(x.action)}</div><div class="perm-reason">${escapeHtml(x.reason)}${fail?`<br><span style="color:var(--wolf)">พบ AccessDenied ${fail.count} ครั้ง${fail.resource?' · '+escapeHtml(fail.resource):''}</span>`:''}</div><div class="perm-count">${fail?'❌ ถูกปฏิเสธ':'✅ รายการ'}</div></div>`;
+    }).join('')+'</div>';
+    const denied=observed.filter(x=>x.action);
+    if(denied.length){
+        html+='<div class="tool-result warn" style="margin-top:10px;">⚠️ <b>สิทธิ์ที่ควรไปเพิ่มให้ IAM Role:</b> '+denied.map(x=>escapeHtml(x.action)).join(', ')+'</div>';
+        html+='<div class="diag-code">'+escapeHtml(denied.map(x=>`${x.action}${x.resource?'  #  '+x.resource:''}`).join('\n'))+'</div>';
+    }
+    el.innerHTML=html;
+}
+function diagnosticJson(value){
+    if(value===null || value===undefined || value==='') return '';
+    if(typeof value==='string'){
+        try{return JSON.stringify(JSON.parse(value), null, 2);}catch(_){return value;}
+    }
+    try{return JSON.stringify(value, null, 2);}catch(_){return String(value);}
+}
+function diagnosticReportText(e, related){
+    related = Array.isArray(related) ? related : [e];
+    const trace = e.traceId || '-';
+    const session = e.sessionId || '-';
+    const a = e.analysis || {};
+    const lines = [
+        'WEREWOLF DIAGNOSTIC REPORT v16.2',
+        '==================================',
+        `เวลา: ${formatDateTime(e.time)}`,
+        `ชนิด: ${e.kind || 'error'}`,
+        `แหล่งที่มา: ${e.source || '-'}`,
+        `หน้า: ${e.page || '-'}`,
+        `Trace ID: ${trace}`,
+        `Session ID: ${session}`,
+        e.action ? `การกระทำล่าสุด: ${e.action}` : '',
+        e.roomId ? `ห้อง: ${e.roomId}` : '',
+        e.endpoint ? `Endpoint: ${e.endpoint}` : '',
+        e.requestId ? `Server request ID: ${e.requestId}` : '',
+        e.clientRequestId ? `Client request ID: ${e.clientRequestId}` : '',
+        e.durationMs ? `ระยะเวลา: ${e.durationMs} ms` : '',
+        e.status ? `HTTP: ${e.status}` : '',
+        e.operation ? `Operation: ${e.operation}` : '',
+        e.operationId ? `Operation ID: ${e.operationId}` : '',
+        e.fingerprint ? `Fingerprint: ${e.fingerprint}` : '',
+        '',
+        'ROOT CAUSE (ระบบวิเคราะห์)',
+        'ต้นสายเหตุ: วิเคราะห์จาก evidence + causal chain + correlation',
+        a.rootCause ? `สรุป: ${a.rootCause}` : 'สรุป: ยังระบุไม่ได้',
+        `CAUSE CODE: ${a.causeCode || 'UNCLASSIFIED'}`,
+        `FAILURE STAGE: ${a.failureStage || 'unknown'}`,
+        `ROOT SOURCE: ${a.rootCauseSource || 'unknown'}`,
+        `CONFIDENCE: ${a.confidence || 'low'}`,
+        `FIRST FAILURE: ${a.firstFailureAt || '-'}`,
+        `ROOT CAUSE AT: ${a.rootCauseAt || '-'}`,
+        `LAST SEEN: ${a.lastSeenAt || '-'}`,
+        a.evidence?.length ? `EVIDENCE: ${a.evidence.join(' | ')}` : 'EVIDENCE: -',
+        '',
+        'BLOCKING EVENT:',
+        diagnosticJson(a.blockingEvent || {}),
+        '',
+        'CAUSAL CHAIN (ต้นสาย → ปลายเหตุ):',
+        ...(Array.isArray(a.causalChain) && a.causalChain.length ? a.causalChain.map((x,i)=>`${i+1}. [${x.status || '-'}] ${x.stage || '-'} :: ${x.evidence || ''}`) : ['(ไม่มี)']),
+        '',
+        'CAUSAL IMPACT / CROSS-LOG RELATIONSHIPS:',
+        `log นี้ส่งผลต่อ log อื่น: ${a.causalImpact?.causedAnotherLog ? 'YES' : 'ไม่พบหลักฐานโดยตรงใน snapshot'}`,
+        `Upstream causes: ${Number(a.causalImpact?.upstreamCount)||0}`,
+        `Downstream effects: ${Number(a.causalImpact?.downstreamCount)||0}`,
+        `Correlated events: ${Number(a.causalImpact?.correlatedCount)||0}`,
+        '',
+        'DOWNSTREAM EFFECTS:',
+        ...(Array.isArray(a.downstreamEffects) && a.downstreamEffects.length ? a.downstreamEffects.map((x,i)=>`${i+1}. ${x.time || ''} | ${x.stage || '-'} | ${x.evidence || ''}`) : ['(ไม่มีหลักฐาน downstream ชัดเจน)']),
+        '',
+        'CORRELATION:',
+        diagnosticJson(a.correlation || {}),
+        '',
+        'AUTH EVIDENCE (client → server):',
+        diagnosticJson(a.authEvidence || {}),
+        '',
+        'COMPETING SIGNALS:',
+        ...(Array.isArray(a.competingSignals) && a.competingSignals.length ? a.competingSignals.map(x=>`${x.kind || '-'} | ${x.source || '-'} | ${x.code || '-'} | ${x.stage || '-'} | score=${x.score ?? '-'}`) : ['(ไม่มี)']),
+        '',
+        'NEXT STEP:',
+        a.nextStep || '-',
+        '',
+        `รายงาน: ${e.message || 'ไม่ระบุข้อความ'}`,
+        e.file ? `ไฟล์: ${e.file}${e.line ? `:${e.line}${e.column ? `:${e.column}` : ''}` : ''}` : '',
+        e.permission?.action ? `IAM Action: ${e.permission.action}` : '',
+        e.permission?.resource ? `Resource: ${e.permission.resource}` : '',
+        e.context && Object.keys(e.context).length ? `Context:\n${diagnosticJson(e.context)}` : '',
+        e.state && Object.keys(e.state).length ? `State ตอนเกิดเหตุ:\n${diagnosticJson(e.state)}` : '',
+        e.data ? `ข้อมูลเพิ่มเติม:\n${diagnosticJson(e.data)}` : '',
+        e.stack ? `Stack:\n${e.stack}` : '',
+        '',
+        'TIMELINE (เรียงเวลา):',
+        ...(Array.isArray(a.timeline) && a.timeline.length ? a.timeline.map(x=>`${x.time || ''} | ${x.stage || '-'} | ${x.kind || '-'} | ${x.code || '-'} | ${x.label || ''}`) : ['(ไม่มี)']),
+        '',
+        'BREADCRUMB CLIENT (เหตุการณ์ก่อนหน้า):',
+        ...(Array.isArray(e.breadcrumbs) && e.breadcrumbs.length ? e.breadcrumbs.map(b => `${formatDateTime(b.time)} | ${b.type || 'event'} | ${b.label || ''}${b.detail && Object.keys(b.detail).length ? ` | ${diagnosticJson(b.detail)}` : ''}`) : ['(ไม่มี)']),
+        '',
+        'BREADCRUMB SERVER:',
+        ...(Array.isArray(e.serverBreadcrumbs) && e.serverBreadcrumbs.length ? e.serverBreadcrumbs.map(b => `${formatDateTime(b.time)} | ${b.type || 'event'} | ${b.label || ''}${b.detail && Object.keys(b.detail).length ? ` | ${diagnosticJson(b.detail)}` : ''}`) : ['(ไม่มี)']),
+        '',
+        'RELATED EVENTS (Trace/Session):',
+        ...(related.length ? related.slice(0, 30).map(x => `${formatDateTime(x.time)} | ${x.kind || 'error'} | ${x.source || '-'} | ${x.page || '-'} | ${x.message || ''}${x.traceId ? ` | trace=${x.traceId}` : ''}${x.roomId ? ` | room=${x.roomId}` : ''}${x.operationId ? ` | op=${x.operationId}` : ''}`) : ['(ไม่มี)']),
+        '',
+        'RELATED EVENT DETAILS (สูงสุด 30 เหตุการณ์):',
+        ...(related.length ? related.slice(0, 30).flatMap(x => [
+            `--- ${formatDateTime(x.time)} | ${x.kind || 'error'} | ${x.source || '-'} ---`,
+            x.action ? `Action: ${x.action}` : '',
+            x.traceId ? `Trace: ${x.traceId}` : '',
+            x.sessionId ? `Session: ${x.sessionId}` : '',
+            x.roomId ? `Room: ${x.roomId}` : '',
+            x.endpoint ? `Endpoint: ${x.endpoint}` : '',
+            x.operation ? `Operation: ${x.operation}` : '',
+            x.operationId ? `Operation ID: ${x.operationId}` : '',
+            x.requestId ? `Request ID: ${x.requestId}` : '',
+            x.fingerprint ? `Fingerprint: ${x.fingerprint}` : '',
+            x.permission?.action ? `IAM Action: ${x.permission.action}` : '',
+            x.permission?.resource ? `IAM Resource: ${x.permission.resource}` : '',
+            x.message ? `Message: ${x.message}` : '',
+            x.context && Object.keys(x.context).length ? `Context:\n${diagnosticJson(x.context)}` : '',
+            x.stack ? `Stack:\n${x.stack}` : '',
+            ''
+        ].filter(Boolean)) : ['(ไม่มีรายละเอียดเหตุการณ์ที่สัมพันธ์กัน)']),
+    ];
+    return lines.filter((x, i) => x !== '' || lines[i-1] !== '').join('\n');
+}
+async function copyDiagnosticReport(button, index){
+    const e = (window.__wwDiagnosticEvents || [])[index];
+    if(!e) return;
+    let related = [e];
+    try {
+        const params = new URLSearchParams({limit:'200'});
+        if(e.traceId) params.set('traceId', e.traceId);
+        else if(e.sessionId) params.set('sessionId', e.sessionId);
+        const { response, data:d } = await adminFetchJson('/api/admin/diagnostics?' + params.toString());
+        if(response.ok && d?.ok && Array.isArray(d.events) && d.events.length) related = d.events;
+    } catch (_) {}
+    const report = diagnosticReportText(e, related);
+    try {
+        await navigator.clipboard.writeText(report);
+        button.textContent = "✅ ก็อปแล้ว";
+        setTimeout(() => { if(button.isConnected) button.textContent = "📋 ก็อปรายงานเต็ม"; }, 1200);
+        wwToast("คัดลอกรายงานเต็มแล้ว", {type:"success", duration:1800});
+    } catch (_) {
+        const ta=document.createElement("textarea"); ta.value=report; ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); wwToast("คัดลอกรายงานเต็มแล้ว", {type:"success"}); } catch(__) { wwToast("คัดลอกไม่ได้ ลองกดค้างแล้วคัดลอกข้อความ", {type:"error"}); }
+        ta.remove();
+    }
+}
+async function copyDiagnosticShareLink(button, index){
+    const e = (window.__wwDiagnosticEvents || [])[index];
+    if(!e || !e.id) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = '⏳ สร้างลิงก์...';
+    try {
+        const { response, data } = await adminFetchJson('/api/admin/diagnostics/share', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({eventId:e.id})
+        });
+        if(!response.ok || !data?.ok || !data.url) {
+            const code = data?.code || data?.causeCode || data?.error || ('HTTP_' + response.status);
+            const detail = data?.causeMessage ? `: ${data.causeMessage}` : (data?.causeName ? `: ${data.causeName}` : '');
+            const err = new Error(code + detail);
+            err.diagnosticRequestId = data?.requestId || '';
+            err.diagnosticStage = data?.failureStage || '';
+            throw err;
+        }
+        e.__shareUrl = data.url;
+        e.__shareJsonUrl = data.jsonUrl || '';
+        try {
+            await navigator.clipboard.writeText(data.url);
+        } catch (_) {
+            const ta=document.createElement('textarea');ta.value=data.url;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
+            try { document.execCommand('copy'); } finally { ta.remove(); }
+        }
+        button.textContent='✅ คัดลอกลิงก์ AI แล้ว';
+        wwToast((data.reusedIncident ? 'ใช้ลิงก์ incident เดิม · รวม log ของความพยายามเดียวกันไว้แล้ว' : 'สร้างลิงก์ incident ใหม่แล้ว') + ' · หมดอายุ ' + formatDateTime(data.expiresAt), {type:'success', duration:3600});
+        setTimeout(()=>{if(button.isConnected){button.textContent='🔗 คัดลอกลิงก์ AI';button.disabled=false;}},1800);
+    } catch(err) {
+        button.textContent=original; button.disabled=false;
+        const extra = err?.diagnosticRequestId ? ` · ref ${err.diagnosticRequestId}` : '';
+        wwToast('สร้างลิงก์รายงานไม่ได้ (' + (err?.message || err) + ')' + extra, {type:'error', duration:5200});
+    }
+}
+
+function renderDiagnostics(data){
+    const summary=data?.summary||{}; const server=data?.server||{};
+    document.getElementById('diagStored').textContent=summary.stored??'-';
+    document.getElementById('diagSerious').textContent=summary.serious??'-';
+    document.getElementById('diagDenied').textContent=summary.accessDenied??'-';
+    const up=Number(server.uptimeSec||0); document.getElementById('diagUptime').textContent=up?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':'-';
+    renderPermissionChecklist(data);
+    const el=document.getElementById('diagEvents'); const events=data?.events||[];
+    window.__wwDiagnosticEvents = events;
+    if(!events.length){el.innerHTML='<div class="empty">✅ ยังไม่พบ Error ที่ถูกบันทึก</div>';return;}
+    el.innerHTML='<div class="diag-list">'+events.map((e,i)=>{
+        const cls=e.permission?.accessDenied?'permission':(e.source==='server'?'server':'client');
+        const location = e.file ? `ไฟล์: ${escapeHtml(e.file)}${e.line?`:${e.line}${e.column?':'+e.column:''}`:''}` : (e.operation ? `Operation: ${escapeHtml(e.operation)}` : '');
+        const trace = e.traceId ? `<span class="diag-trace-tag">Trace ${escapeHtml(e.traceId)}</span>` : '';
+        const a=e.analysis||{};
+        const chain=Array.isArray(a.causalChain)?a.causalChain.slice(0,6):[];
+        const analysisHtml=a.rootCause?`<div class="diag-analysis"><div class="diag-analysis-title">🧭 สาเหตุที่ระบบจับได้ / ต้นสายเหตุ</div><div class="diag-msg" style="margin-top:0;">${escapeHtml(a.rootCause)}</div><div class="diag-meta" style="margin-top:6px;"><span class="diag-tag">CAUSE ${escapeHtml(a.causeCode||'UNCLASSIFIED')}</span><span class="diag-tag">STAGE ${escapeHtml(a.failureStage||'unknown')}</span><span class="diag-tag">SOURCE ${escapeHtml(a.rootCauseSource||'unknown')}</span><span class="diag-tag">CONF ${escapeHtml(a.confidence||'low')}</span></div>${chain.length?`<div class="diag-chain">${chain.map((x,n)=>`<div class="diag-chain-row"><span class="diag-chain-num">${n+1}</span><div><div class="diag-chain-stage">${escapeHtml(x.stage||'-')} · ${escapeHtml(x.status||'-')}</div><div class="diag-chain-evidence">${escapeHtml(x.evidence||'')}</div></div></div>`).join('')}</div>`:''}${a.nextStep?`<div class="diag-next"><b>ขั้นถัดไป:</b> ${escapeHtml(a.nextStep)}</div>`:''}</div>`:'';
+        const downstream=Array.isArray(a.downstreamEffects)?a.downstreamEffects.slice(0,3):[];
+        const impact=a.causalImpact||{};
+        const impactHtml=(impact.upstreamCount||impact.downstreamCount||impact.correlatedCount)?`<div class="diag-location"><b>🧩 ความสัมพันธ์ข้าม Log:</b> ต้นน้ำ ${Number(impact.upstreamCount)||0} · downstream ${Number(impact.downstreamCount)||0} · correlated ${Number(impact.correlatedCount)||0}${impact.causedAnotherLog?' · log นี้มีผลต่อ log อื่น':''}</div>`:'';
+        const downstreamHtml=downstream.length?`<div class="diag-location"><b>ผลต่อเนื่อง:</b> ${escapeHtml(downstream.map(x=>x.evidence||x.stage||'').join(' · '))}</div>`:'';
+        return `<div class="diag-event ${cls}"><div class="diag-head"><div class="diag-kind">${e.permission?.accessDenied?'🔐 ':''}${escapeHtml(e.kind||'error')}</div><div class="diag-time">${formatDateTime(e.time)}</div></div><div class="diag-meta"><span class="diag-tag">${escapeHtml(e.source||'-')}</span><span class="diag-tag">${escapeHtml(e.page||'-')}</span>${e.status?`<span class="diag-tag">HTTP ${e.status}</span>`:''}${e.endpoint?`<span class="diag-tag">${escapeHtml(e.endpoint)}</span>`:''}${e.roomId?`<span class="diag-tag">ห้อง ${escapeHtml(e.roomId)}</span>`:''}${e.permission?.action?`<span class="diag-tag">${escapeHtml(e.permission.action)}</span>`:''}</div><div class="diag-msg">${escapeHtml(e.message||'ไม่ระบุข้อความ')}</div>${analysisHtml}${impactHtml}${downstreamHtml}${location?`<div class="diag-location">${escapeHtml(location)}</div>`:''}${trace?`<div class="diag-location">${trace}</div>`:''}<div class="diag-copy-row"><button class="btn btn-ghost diag-copy-btn" onclick="copyDiagnosticReport(this,${i})">📋 ก็อปรายงานเต็ม</button><button class="btn btn-ghost diag-share-btn" onclick="copyDiagnosticShareLink(this,${i})">🔗 คัดลอกลิงก์ AI</button></div></div>`;
+    }).join('')+'</div>';
+}
+async function adminFetchJson(url, options={}, { retryOnAuth = true } = {}){
+    const fetchOptions = { cache:'no-store', credentials:'same-origin', ...options };
+    let response = await fetch(url, fetchOptions);
+    if (response.status === 401 && retryOnAuth) {
+        const ok = await ensureAdminLogin();
+        if (ok) {
+            response = await fetch(url, fetchOptions);
+        }
+    }
+    let data = null;
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    try {
+        if (contentType.includes('application/json')) data = await response.json();
+        else {
+            const raw = await response.text();
+            try { data = raw ? JSON.parse(raw) : null; } catch (_) { data = null; }
+        }
+    } catch (_) {}
+    return { response, data };
+}
+async function loadDiagnostics(){
+    try {
+        // The diagnostics endpoint is protected by the same admin session as the other /api/admin/* routes.
+        // Wait for/restore that session before the request so the first load cannot race the login prompt.
+        const authReady = await ensureAdminLogin();
+        if (!authReady) return;
+        const { response, data } = await adminFetchJson('/api/admin/diagnostics?limit=100');
+        if (response.ok && data?.ok) {
+            renderDiagnostics(data);
+            return;
+        }
+        if (response.status === 401) {
+            wwToast('เซสชันแอดมินหมดอายุ กรุณาเข้าสู่ระบบใหม่',{type:'error'});
+            return;
+        }
+        wwToast('โหลดศูนย์ปัญหาไม่สำเร็จ',{type:'error'});
+    } catch(err) {
+        wwToast('เชื่อมต่อศูนย์ตรวจปัญหาไม่ได้',{type:'error'});
+        if(window.WWReportError) window.WWReportError('admin_diagnostics_fetch_failed',{message:err?.message||String(err)});
+    }
+}
+async function clearDiagnostics(){
+    if(!(await wwConfirm('ล้างบันทึกปัญหาทั้งหมดจากศูนย์ตรวจ Error ใช่หรือไม่?',{danger:true,okText:'ล้างบันทึก'}))) return;
+    const authReady = await ensureAdminLogin();
+    if(!authReady) return;
+    try {
+        const { response, data } = await adminFetchJson('/api/admin/diagnostics/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        if(response.ok && data?.ok){wwToast('ล้างบันทึกแล้ว',{type:'success'});loadDiagnostics();}
+        else if(response.status===401) wwAlert('เซสชันแอดมินหมดอายุ กรุณาเข้าสู่ระบบใหม่');
+        else wwAlert('ล้างบันทึกไม่สำเร็จ');
+    } catch (_) { wwAlert('ล้างบันทึกไม่สำเร็จ'); }
+}
+
+function switchTab(tab){currentTab=tab;updateQuickDock();document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));['overview','live','all','rooms','tools','diagnostics'].forEach(t=>document.getElementById('tab-'+t)?.classList.toggle('active',tab===t));stopPolling();stopDiagnosticsPolling();if(tab==='tools'){document.getElementById('pageSub').textContent='เครื่องมือจัดการระบบ — ใช้อย่างระมัดระวัง การกระทำบางอย่างย้อนกลับไม่ได้';refreshServerStatus();prefetchTesterPass();return}if(tab==='diagnostics'){document.getElementById('pageSub').textContent='ศูนย์ตรวจ Error ของ index / host / player / server และรายการ IAM ที่ถูกปฏิเสธ';loadDiagnostics();startDiagnosticsPolling();return}document.getElementById('pageSub').textContent=tab==='overview'?'ภาพรวมบัญชีจริง ห้อง และสถานะระบบ':tab==='all'?'บัญชีจริงทั้งหมด — คลิกการ์ดเพื่อดูข้อมูล เปลี่ยนชื่อ พัก ลบ เตะ และประวัติ':tab==='live'?'session ที่เชื่อมต่ออยู่ตอนนี้ — ไม่รวม Tester และบอท':'ห้องทั้งหมด — แยกห้องปกติและห้องทดลอง';if(tab==='overview'){refreshDashboard();loadAccounts()}if(tab==='all'){loadAllPlayers()}if(tab==='live'){loadAccounts();startPolling()}if(tab==='rooms'){loadRooms();startPolling()}}
+
+// ============================================================
+// เข้าโหมดผู้ทดสอบ (ย้ายมาจากปุ่มในหน้าแรก index.html)
+// เปิด host.html / player.html พร้อม ?tester=1&name=... ในแท็บใหม่ — โหมดนี้ฝั่งเกมใช้ sessionStorage
+// แยกต่อแท็บ (ดูคอมเมนต์ isTesterMode ใน host.main.js / TESTER_MODE ใน player.main.js) จึงต้องพ่วงชื่อ
+// ไปกับ URL เองเหมือนเดิม
+// - แท็บทดสอบต้องมี opener เพื่อปิดตัวเองและกลับมาที่ admin เดิมได้ — sessionStorage ที่อาจถูก clone จะถูกล้างอย่างปลอดภัยที่
+//   shared.server-control.js ตอนแท็บใหม่เริ่มโหลด ก่อน host.main.js/player.main.js อ่านตัวตน ทำให้แท็บทดสอบเริ่มจากที่ว่างจริงๆ
+// - ชื่อเติมให้จากชื่อที่ตั้งไว้ในเครื่อง (localStorage เดียวกับหน้าแรก) แก้ได้ แต่ไม่เขียนกลับ
+//   เพื่อไม่ให้ชื่อทดสอบไปทับชื่อจริงของเครื่องนี้
+// ============================================================
+let testerRole = "host"; // "host" | "player"
+
+// ศูนย์ควบคุมของแท็บทดลองนี้ — ใช้ sessionStorage เพราะแยกต่อแท็บ และแนบ ID ไปกับ URL
+// ของทุกแท็บ tester เพื่อให้ tester กลับมาที่ Admin ตัวเดิมได้แม้ window.opener จะชี้ผิด/หายไป
+const TESTER_ADMIN_CONTROLLER_KEY = "ww_tester_admin_controller_id";
+function makeAdminControllerId() {
+    try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+    } catch (e) {}
+    return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+}
+function getTesterAdminControllerId() {
+    try {
+        let id = sessionStorage.getItem(TESTER_ADMIN_CONTROLLER_KEY);
+        if (!id) {
+            id = makeAdminControllerId();
+            sessionStorage.setItem(TESTER_ADMIN_CONTROLLER_KEY, id);
+        }
+        return id;
+    } catch (e) {
+        return "admin-" + makeAdminControllerId();
+    }
+}
+const testerAdminControllerId = getTesterAdminControllerId();
+let testerAdminReturnChannel = null;
+const TESTER_ADMIN_RETURN_STORAGE_PREFIX = "ww_tester_return_";
+function focusTesterAdminController(eventData) {
+    const d = eventData && eventData.data ? eventData.data : eventData;
+    if (d && d.type && d.type !== "tester_return_to_admin") return;
+    // Admin ตัวนี้เป็น controller ตาม ID ที่ child ส่งมา จึงโฟกัสตัวนี้เท่านั้น
+    try { window.focus(); } catch (e) {}
+}
+try {
+    if (typeof BroadcastChannel !== "undefined") {
+        testerAdminReturnChannel = new BroadcastChannel("ww_tester_admin_" + testerAdminControllerId);
+        testerAdminReturnChannel.onmessage = focusTesterAdminController;
+    }
+} catch (e) {
+    testerAdminReturnChannel = null;
+}
+// Fallback สำหรับ browser/WebView ที่ไม่มี BroadcastChannel: storage event จะส่งข้ามแท็บ
+// เฉพาะ key ของ Admin controller ตัวนี้ จึงไม่สับสนกับ Admin/Host ตัวอื่นบนเครื่องเดียวกัน
+window.addEventListener("storage", (event) => {
+    if (event.key !== TESTER_ADMIN_RETURN_STORAGE_PREFIX + testerAdminControllerId || !event.newValue) return;
+    try { focusTesterAdminController(JSON.parse(event.newValue)); } catch (e) { try { window.focus(); } catch (_) {} }
+});
+window.addEventListener("beforeunload", () => {
+    try { testerAdminReturnChannel?.close(); } catch (e) {}
+});
+
+function getSavedDisplayName() {
+    try {
+        return localStorage.getItem("ww_playerName") || localStorage.getItem("ww_host_display_name") || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+function pickTesterRole(role) {
+    testerRole = role;
+    document.getElementById("testerPickHost").classList.toggle("selected", role === "host");
+    document.getElementById("testerPickPlayer").classList.toggle("selected", role === "player");
+}
+
+// บัตรผ่านผู้ทดสอบ (ให้เล่นได้แม้ปิดเซิร์ฟเวอร์อยู่ — ดูหัวข้อ "บัตรผ่านผู้ทดสอบ" ใน server.js)
+// ขอล่วงหน้าตอนเปิดแท็บ ⚙️ จัดการระบบ เพื่อให้ตอนกดปุ่มมีบัตรอยู่แล้ว → เปิดแท็บใหม่ได้ทันทีในจังหวะกด (ไม่โดนเบราว์เซอร์มือถือบล็อกป๊อปอัป
+// ที่เปิดหลังรอ fetch) ถ้าไม่มี/ใกล้หมดอายุค่อยขอตอนกด (เปิดแท็บเปล่ารอไว้ก่อนแล้วค่อยพาไปหน้าจริง)
+let testerPass = null; // { token, exp }
+const TESTER_PASS_MARGIN_MS = 60 * 60 * 1000; // เหลือไม่ถึง 1 ชม. = ขอใหม่
+
+function testerPassFresh() {
+    return !!testerPass && testerPass.exp - Date.now() > TESTER_PASS_MARGIN_MS;
+}
+
+function showTesterPasswordField(msg) {
+    const pw = document.getElementById("testerPasswordInput");
+    pw.style.display = "block";
+    if (msg) {
+        const result = document.getElementById("testerResult");
+        result.textContent = msg;
+        result.className = "tool-result err";
+    }
+}
+
+function requestTesterPass() {
+    const pwInput = document.getElementById("testerPasswordInput");
+    const pw = pwInput.value || adminPasswordCache;
+    return fetch("/api/admin/tester-pass", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+    })
+        .then((r) => r.json().catch(() => ({ error: "bad_response" })))
+        .then((d) => {
+            if (d && d.ok && d.token) {
+                testerPass = { token: d.token, exp: Date.now() + (Number(d.ttlMs) || 0) };
+                if (pw) adminPasswordCache = pw;
+                pwInput.style.display = "none";
+                return testerPass;
+            }
+            const err = new Error((d && d.error) || "unknown");
+            err.code = err.message;
+            throw err;
+        });
+}
+
+function prefetchTesterPass() {
+    if (testerPassFresh()) return;
+    requestTesterPass().catch((e) => {
+        // ต้องใช้รหัสผ่านแอดมิน → โชว์ช่องรอไว้เลย (ยังไม่ฟ้อง error ตอนยังไม่ได้กดอะไร)
+        if (e.code === "password_required") showTesterPasswordField("");
+    });
+}
+
+function makeTesterLaunchId() {
+    try {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+    } catch (e) {}
+    return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) + "-" + Math.random().toString(36).slice(2);
+}
+
+function testerUrl(token, launchId) {
+    const page = testerRole === "host" ? "host.html" : "player.html";
+    const ts = launchId || makeTesterLaunchId();
+    return page + "?tester=1&tp=" + encodeURIComponent(token) + "&ts=" + encodeURIComponent(ts)
+        + "&ac=" + encodeURIComponent(testerAdminControllerId);
+}
+
+function enterTesterMode() {
+    const result = document.getElementById("testerResult");
+    const roleText = testerRole === "host" ? "โฮสต์" : "ผู้เล่น";
+    const fail = (msg) => { result.textContent = msg; result.className = "tool-result err"; };
+    const done = () => {
+        result.textContent = "เปิดแท็บ" + roleText + "ทดสอบแล้ว — server จะตั้งชื่อและเลข slot ให้เอง ไม่สร้างบัญชีจริง";
+        result.className = "tool-result ok";
+    };
+    const launchId = makeTesterLaunchId();
+    const w = window.open("", "_blank");
+
+    const go = (p) => {
+        const url = testerUrl(p.token, launchId);
+        if (w && !w.closed) {
+            w.location.href = url;
+            try { w.focus(); } catch (e) {}
+            done();
+        } else {
+            fail("เบราว์เซอร์บล็อกการเปิดแท็บทดสอบ — อนุญาตป๊อปอัปให้เว็บนี้แล้วลองอีกครั้ง");
+        }
+    };
+
+    if (testerPassFresh()) {
+        go(testerPass);
+        return;
+    }
+
+    result.textContent = "กำลังขอสิทธิ์เข้าโหมดทดสอบ...";
+    result.className = "tool-result";
+    requestTesterPass().then(go).catch((e) => {
+        if (w && !w.closed) w.close();
+        if (e.code === "password_required" || e.code === "wrong_password") {
+            showTesterPasswordField(e.code === "wrong_password" ? "รหัสผ่านไม่ถูกต้อง" : "ต้องใส่รหัสผ่านแอดมิน");
+            document.getElementById("testerPasswordInput").focus();
+        } else {
+            fail("ขอสิทธิ์ไม่สำเร็จ (" + e.code + ") — เซิร์ฟเวอร์อาจกำลังรีสตาร์ท ลองใหม่อีกครั้ง");
+        }
+    });
+}
+
+document.getElementById("testerPasswordInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") enterTesterMode();
+});
+</script>
+
+</body>
+</html>

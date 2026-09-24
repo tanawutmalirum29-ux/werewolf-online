@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Werewolf — เซิร์ฟเวอร์กำลังปิด</title>
+<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
+<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+<!--
+  หน้านี้ server ตอบแทน "ทุกหน้าเกม" (/, index/player/host.html) ตอนแอดมินปิดเซิร์ฟเวอร์ (ดู server.js "เปิด/ปิดเซิร์ฟเวอร์")
+  จึงต้องเป็นไฟล์เดี่ยว: CSS/JS อยู่ในไฟล์นี้ทั้งหมด ไม่พึ่งไฟล์อื่น (ตอนปิดไฟล์อื่นของเกมถูกบล็อกอยู่)
+  ทุกๆ 4 วิ เช็ค /api/config — พอ serverOpen เป็น true จึง "ล้างห้อง/token ที่จำไว้ แล้วพากลับหน้าแรก (index)"
+  (ห้องเดิมทุกห้องถูกปิดไปตั้งแต่ตอนแอดมินกดปิดเซิร์ฟเวอร์แล้ว จึงไม่มีอะไรให้กลับเข้า — ไม่รีโหลดกลับหน้าเกมเดิมอีก)
+  ล้างเฉพาะของที่ผูกกับห้อง/เซสชัน (รายการเดียวกับ SESSION_KEYS ใน shared.server-control.js) ชื่อที่ตั้งไว้/สถานะผ่านรหัสไม่ถูกล้าง
+  ไปหน้าแรกเฉพาะตอนได้คำตอบชัดว่าเปิดแล้วเท่านั้น (เน็ตหลุด/server ล่มชั่วคราว = รอต่อ) จึงไม่วนลูป
+-->
+<style>
+    *{ box-sizing:border-box; }
+    html,body{ min-height:100%; margin:0; }
+    body{
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        min-height:100vh;
+        min-height:100dvh; /* iPad/iPhone Safari: 100vh สูงกว่าพื้นที่มองเห็นจริง (แถบ URL) ใช้ dvh ถ้ารองรับ */
+        text-align:center;
+        padding:24px;
+        background:radial-gradient(circle at 50% 28%, #1b2440 0%, #0b0f19 72%);
+        color:#fff;
+        font-family:"IBM Plex Sans Thai","Noto Sans Thai",system-ui,-apple-system,"Segoe UI",sans-serif;
+        -webkit-user-select:none;
+        user-select:none;
+    }
+    .box{ max-width:420px; width:100%; }
+    /* รายการอาชีพ (โหลดเองจาก /api/roles-data) — เลื่อนอ่านได้บนจอสัมผัส (iPad/iPhone/Android) */
+    .roles{
+        display:none;
+        margin:22px 0 0;
+        text-align:left;
+        max-height:38vh; max-height:38dvh;
+        overflow-y:auto;
+        -webkit-overflow-scrolling:touch;
+        overscroll-behavior:contain;
+        touch-action:pan-y;
+        background:rgba(255,255,255,.06);
+        border-radius:12px;
+        padding:10px 14px;
+    }
+    .roles-title{ font-size:12.5px; font-weight:700; color:rgba(255,255,255,.85); margin:0 0 6px; }
+    .role-row{ display:flex; gap:10px; align-items:flex-start; padding:9px 0; border-bottom:1px solid rgba(255,255,255,.08); }
+    .role-row img.role-icon{ width:32px; height:32px; border-radius:8px; object-fit:cover; flex:0 0 auto; }
+    .role-name{ font-size:13.5px; font-weight:700; margin-bottom:2px; }
+    .role-desc{ font-size:12.5px; line-height:1.55; color:rgba(255,255,255,.75); }
+    .role-desc img{ max-height:1.2em; vertical-align:middle; }
+    .icon{ font-size:56px; line-height:1; margin-bottom:14px; }
+    h1{ font-size:24px; font-weight:700; margin:0 0 10px; }
+    p{ font-size:15px; line-height:1.7; color:rgba(255,255,255,.72); margin:0 0 22px; }
+    .msg{
+        display:none;
+        font-size:16px; font-weight:600; line-height:1.6;
+        margin:-6px 0 12px; padding:10px 14px;
+        border-radius:12px; background:rgba(255,255,255,.08);
+        word-break:break-word;
+    }
+    .eta{ display:none; font-size:14px; color:#c9bcff; margin:0 0 20px; }
+    .dots span{
+        display:inline-block;
+        width:9px;
+        height:9px;
+        margin:0 4px;
+        border-radius:50%;
+        background:#7c5cff;
+        animation:dot 1.3s infinite ease-in-out;
+    }
+    .dots span:nth-child(2){ animation-delay:.2s; }
+    .dots span:nth-child(3){ animation-delay:.4s; }
+    @keyframes dot{
+        0%,80%,100%{ opacity:.25; transform:scale(.8); }
+        40%{ opacity:1; transform:scale(1); }
+    }
+</style>
+</head>
+<body>
+<div class="box">
+    <div class="icon">🔧</div>
+    <h1>เซิร์ฟเวอร์กำลังปิด</h1>
+    <p>ตอนนี้ยังเข้าเกมไม่ได้<br>เมื่อเซิร์ฟเวอร์เปิดอีกครั้ง หน้านี้จะพาคุณกลับหน้าแรกให้อัตโนมัติ</p>
+    <div class="msg" id="noticeMsg"></div>
+    <div class="eta" id="noticeEta"></div>
+    <div class="dots"><span></span><span></span><span></span></div>
+    <div class="roles" id="rolesBox">
+        <div class="roles-title">📖 เลื่อนอ่านคำอธิบายอาชีพระหว่างรอได้</div>
+        <div id="rolesList"></div>
+    </div>
+</div>
+<script>
+(function () {
+    var reloading = false;
+
+    // ต้องตรงกับ SESSION_KEYS / SESSION_PREFIXES ใน public/js/shared.server-control.js (ไฟล์นี้ต้องเป็นไฟล์เดี่ยว เลยต้องเขียนซ้ำ)
+    var SESSION_KEYS = ["ww_joinedRoom", "ww_lastRoom", "ww_token", "ww_host_room", "ww_host_token", "ww_bot_tokens"];
+    var SESSION_PREFIXES = ["ww_room_pass_", "ww_room_joincode_"];
+    function clearSessionIdentity() {
+        ["localStorage", "sessionStorage"].forEach(function (name) {
+            try {
+                var store = window[name];
+                SESSION_KEYS.forEach(function (k) { store.removeItem(k); });
+                var keys = [];
+                for (var i = 0; i < store.length; i++) keys.push(store.key(i));
+                keys.forEach(function (k) {
+                    if (k && SESSION_PREFIXES.some(function (p) { return k.indexOf(p) === 0; })) store.removeItem(k);
+                });
+            } catch (e) { /* เบราว์เซอร์บล็อก storage — ข้าม */ }
+        });
+    }
+
+    // ข้อความจากแอดมิน + เวลาที่คาดว่าจะเปิด (ใช้ textContent เสมอ กัน HTML แทรก) — ตรรกะเดียวกับ etaText ใน shared.server-control.js
+    var clockSkew = 0;
+    function renderNotice(d) {
+        var msgEl = document.getElementById("noticeMsg");
+        var etaEl = document.getElementById("noticeEta");
+        var msg = (d && typeof d.noticeMessage === "string") ? d.noticeMessage : "";
+        msgEl.textContent = msg;
+        msgEl.style.display = msg ? "block" : "none";
+
+        var eta = "";
+        var at = d && Number(d.reopenAt) > 0 ? Number(d.reopenAt) : 0;
+        if (at) {
+            var now = Date.now() + clockSkew;
+            var t = new Date(at);
+            var clock;
+            try {
+                clock = t.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", hour12: false });
+                if (t.toDateString() !== new Date(now).toDateString()) {
+                    clock = t.toLocaleDateString("th-TH", { day: "numeric", month: "short" }) + " " + clock;
+                }
+            } catch (e) { clock = t.getHours() + ":" + ("0" + t.getMinutes()).slice(-2); }
+            var mins = Math.ceil((at - now) / 60000);
+            if (mins <= 0) {
+                eta = "เลยเวลาที่คาดไว้แล้ว — กำลังรอแอดมินเปิด";
+            } else {
+                var left = mins < 60 ? mins + " นาที" : Math.floor(mins / 60) + " ชม." + (mins % 60 ? " " + (mins % 60) + " นาที" : "");
+                eta = "คาดว่าจะเปิดประมาณ " + clock + " น. (อีกประมาณ " + left + ")";
+            }
+        }
+        etaEl.textContent = eta;
+        etaEl.style.display = eta ? "block" : "none";
+    }
+
+    // ---------- ข้อมูลอาชีพ ----------
+    // หน้านี้ถูกเปิดสดตอนปิดเซิร์ฟเวอร์ได้ (ไม่มี socket / ไม่เคยเข้าเกม / localStorage ว่าง / iPad Safari) จึงต้อง "ขอเอง" จาก GET /api/roles-data
+    // (server เปิดให้ผ่านด่านตอนปิด — ไม่ต้อง login ไม่ผูกห้อง) รูปอาชีพ /images/* ก็ผ่านด่านตอนปิดเช่นกัน
+    var rolesState = 0; // 0 = ยังไม่ขอ/ล้มเหลว (ลองใหม่ได้), 1 = กำลังขอ, 2 = แสดงแล้ว
+    // ข้อมูลอาชีพเป็นข้อความที่ server เขียนเอง (มี <b>/<img> ปนบ้าง) — ตัด script/iframe/on* ทิ้งก่อนเสมอ กันไว้เผื่อข้อมูลถูกแก้ผิดพลาด
+    function safeHtml(html) {
+        var tpl = document.createElement("template");
+        tpl.innerHTML = String(html == null ? "" : html);
+        var nodes = tpl.content.querySelectorAll("script,iframe,object,embed,style,link,meta");
+        for (var i = 0; i < nodes.length; i++) nodes[i].parentNode.removeChild(nodes[i]);
+        var all = tpl.content.querySelectorAll("*");
+        for (var j = 0; j < all.length; j++) {
+            var attrs = all[j].attributes;
+            for (var k = attrs.length - 1; k >= 0; k--) {
+                var n = attrs[k].name.toLowerCase();
+                if (n.indexOf("on") === 0 || ((n === "href" || n === "src") && /^\s*javascript:/i.test(attrs[k].value))) all[j].removeAttribute(attrs[k].name);
+            }
+        }
+        return tpl.innerHTML;
+    }
+    function plainText(html) {
+        var tpl = document.createElement("template");
+        tpl.innerHTML = String(html == null ? "" : html);
+        return (tpl.content.textContent || "").trim();
+    }
+    function renderRoles(data) {
+        var box = document.getElementById("rolesBox");
+        var list = document.getElementById("rolesList");
+        if (!box || !list || !data || typeof data !== "object") return false;
+        var keys = Object.keys(data).filter(function (k) { return k.indexOf("__") !== 0; });
+        if (keys.length === 0) return false;
+        list.textContent = "";
+        keys.forEach(function (role) {
+            var info = data[role];
+            var title = role, desc = "ยังไม่มีคำอธิบาย", icon = "";
+            if (info && typeof info === "object") {
+                title = plainText(info.title) || role;
+                desc = info.desc || info.description || desc;
+                icon = typeof info.icon === "string" ? info.icon : "";
+            } else if (typeof info === "string") {
+                desc = info;
+            }
+            var row = document.createElement("div");
+            row.className = "role-row";
+            if (icon) {
+                var img = document.createElement("img");
+                img.className = "role-icon";
+                img.alt = "";
+                img.onerror = function () { img.style.display = "none"; };
+                img.src = icon;
+                row.appendChild(img);
+            }
+            var body = document.createElement("div");
+            body.style.minWidth = "0";
+            var nameEl = document.createElement("div");
+            nameEl.className = "role-name";
+            nameEl.textContent = title;
+            var descEl = document.createElement("div");
+            descEl.className = "role-desc";
+            descEl.innerHTML = safeHtml(desc);
+            body.appendChild(nameEl);
+            body.appendChild(descEl);
+            row.appendChild(body);
+            list.appendChild(row);
+        });
+        box.style.display = "block";
+        return true;
+    }
+    function loadRoles() {
+        if (rolesState !== 0) return;
+        rolesState = 1;
+        fetch("/api/roles-data", { cache: "no-store" })
+            .then(function (r) { if (!r.ok) throw new Error("bad_status"); return r.json(); })
+            .then(function (d) { rolesState = renderRoles(d) ? 2 : 0; })
+            .catch(function () { rolesState = 0; /* เน็ตสะดุด/server ยังไม่ตอบ — รอบเช็คถัดไป (ทุก 4 วิ) จะลองใหม่ */ });
+    }
+
+    function check() {
+        if (reloading) return;
+        loadRoles();
+        fetch("/api/config", { cache: "no-store" })
+            .then(function (r) { if (!r.ok) throw new Error("bad_status"); return r.json(); })
+            .then(function (d) {
+                if (d && typeof d.serverNow === "number") clockSkew = d.serverNow - Date.now();
+                if (d && d.serverOpen === false) renderNotice(d);
+                if (d && d.serverOpen === true) {
+                    reloading = true;
+                    // กระจายเวลาไม่ให้ทุกเครื่องกระแทก server พร้อมกันตอนเพิ่งเปิด
+                    setTimeout(function () {
+                        // ไปหน้าแรกเสมอ ไม่ว่าจะเปิดหน้านี้ตรงๆ (/maintenance.html) หรือ server ตอบหน้านี้แทนหน้าเกม (/player.html ฯลฯ)
+                        // — ไม่รีโหลด path เดิม เพราะหน้าเกมจะพยายามกลับเข้าห้องเดิม/สร้างห้องใหม่เอง (ห้องเดิมถูกปิดไปหมดแล้ว)
+                        clearSessionIdentity();
+                        var p = location.pathname;
+                        if (p === "/" || /\/index\.html$/.test(p)) location.reload(); // อยู่ที่หน้าแรกอยู่แล้ว (server ตอบหน้านี้แทน) — รีโหลดเพื่อได้หน้าแรกจริง
+                        else location.replace("/");
+                    }, Math.random() * 2500);
+                }
+            })
+            .catch(function () { /* เน็ตหลุด/server ยังไม่ขึ้น — รอรอบหน้า */ });
+    }
+    check(); // เช็คทันทีตอนเปิดหน้า (ไม่ต้องรอ 4 วิถึงจะเห็นข้อความ/เวลาที่คาดว่าจะเปิด)
+    setInterval(check, 4000);
+    document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "visible") check();
+    });
+})();
+</script>
+</body>
+</html>
