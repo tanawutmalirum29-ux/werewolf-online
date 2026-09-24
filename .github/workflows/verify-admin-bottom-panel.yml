@@ -79,7 +79,7 @@ jobs:
           with ZipFile(src, 'r') as zin, ZipFile(tmp, 'w', ZIP_DEFLATED) as zout:
               for info in zin.infolist():
                   name = info.filename.rstrip('/')
-                  if name == '.gitignore' or name.endswith('/.gitignore') or name.startswith('.github/'):
+                  if name == '.gitignore' or name.endswith('/.gitignore') or name == '.github' or name.startswith('.github/'):
                       continue
                   zout.writestr(info, zin.read(info.filename))
           tmp.replace(src)
@@ -89,7 +89,7 @@ jobs:
           p='dist/werewolf-online-admin-bottom-panel-20260924.zip'
           with ZipFile(p) as z:
               names=z.namelist()
-              bad=[n for n in names if n == '.gitignore' or n.endswith('/.gitignore') or n.startswith('.github/')]
+              bad=[n for n in names if n == '.gitignore' or n.endswith('/.gitignore') or n == '.github/' or n.startswith('.github/')]
               assert not bad, bad
               assert 'public/admin.html' in names
               assert 'public/host.html' in names
