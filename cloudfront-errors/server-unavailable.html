@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#120f24">
+  <title>Werewolf Online — กำลังเชื่อมต่อ</title>
+  <style>
+    :root{color-scheme:dark}
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+    body{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 50% 18%,#30224d 0,#171126 40%,#0b0812 100%);color:#fff}
+    .card{width:min(520px,100%);padding:30px 26px;border:1px solid rgba(255,255,255,.12);border-radius:24px;background:rgba(15,12,26,.86);box-shadow:0 20px 70px rgba(0,0,0,.35);text-align:center;backdrop-filter:blur(12px)}
+    .mark{width:70px;height:70px;margin:0 auto 18px;border-radius:22px;display:grid;place-items:center;font-size:34px;background:rgba(124,92,255,.16);border:1px solid rgba(124,92,255,.32)}
+    h1{margin:0 0 10px;font-size:27px;line-height:1.25}
+    p{margin:0;color:rgba(255,255,255,.72);line-height:1.7;font-size:15px}
+    .status{margin:22px 0 18px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.05);color:rgba(255,255,255,.84);font-size:14px}
+    .spinner{width:28px;height:28px;margin:0 auto 10px;border:3px solid rgba(255,255,255,.18);border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite}
+    .retry{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 20px;border:0;border-radius:12px;background:#18b9aa;color:#071313;font:700 14px system-ui,-apple-system,"Segoe UI",sans-serif;cursor:pointer}.retry:focus-visible{outline:3px solid rgba(255,255,255,.55);outline-offset:3px}.hint{margin-top:16px;font-size:12px;color:rgba(255,255,255,.44)}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    @media (max-width:520px){.card{padding:26px 20px;border-radius:20px}h1{font-size:24px}}
+  </style>
+</head>
+<body>
+  <main class="card" role="status" aria-live="polite">
+    <div class="mark">🐺</div>
+    <h1>กำลังเชื่อมต่อเซิร์ฟเวอร์</h1>
+    <p>เซิร์ฟเวอร์กำลังอัปเดตหรือรีสตาร์ตชั่วคราว<br>ข้อมูลบัญชีของคุณยังคงอยู่ตามปกติ</p>
+    <div class="status"><div class="spinner" aria-hidden="true"></div><span id="state">ระบบจะลองเชื่อมต่อให้อัตโนมัติ</span></div>
+    <button class="retry" type="button" id="retry">ลองเชื่อมต่อทันที</button>
+    <div class="hint">ไม่ต้องกดซ้ำ ระบบจะพยายามเข้าเกมให้อีกครั้ง</div>
+  </main>
+  <script>
+  (function(){
+    var state=document.getElementById("state");
+    function retry(){
+      try{if(navigator.onLine===false){state.textContent="กำลังรอการเชื่อมต่ออินเทอร์เน็ต";setTimeout(retry,5000);return;}}catch(_){ }
+      state.textContent="กำลังตรวจสอบเซิร์ฟเวอร์…";
+      setTimeout(function(){location.reload();},4000+Math.floor(Math.random()*4500));
+    }
+    var button=document.getElementById("retry");
+    if(button){button.addEventListener("click",function(){state.textContent="กำลังตรวจสอบเซิร์ฟเวอร์…";location.reload();});}
+    setTimeout(retry,900);
+  })();
+  </script>
+</body>
+</html>
