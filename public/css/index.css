@@ -1,0 +1,1186 @@
+/* ---------- shared transient toast ---------- */
+.ww-toast-container{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200000;pointer-events:none;width:min(92vw,460px);display:flex;justify-content:center;}
+.ww-toast{width:100%;box-sizing:border-box;padding:11px 15px;border:1px solid rgba(255,255,255,.14);border-radius:14px;background:rgba(20,20,30,.94);color:#fff;box-shadow:0 12px 34px rgba(0,0,0,.34);font-size:13px;line-height:1.5;text-align:center;opacity:0;transform:translateY(-8px);transition:opacity .18s ease,transform .18s ease;pointer-events:none;backdrop-filter:blur(8px);}
+.ww-toast.show{opacity:1;transform:translateY(0);}
+.ww-toast.ww-toast-success{border-color:rgba(69,213,177,.5);}
+.ww-toast.ww-toast-error,.ww-toast.ww-toast-danger{border-color:rgba(239,99,99,.55);}
+
+:root{
+    --bg:#0a1720;
+    --panel:#0c273180;
+    --line:rgba(255,255,255,.09);
+    --ink:#fff8ec;
+    --ink-dim:#c9b79a;
+    --moon:#5eead4;
+    --moon-soft:rgba(94,234,212,.16);
+    --wolf:#ef4444;
+    --wolf-soft:rgba(239,68,68,.14);
+    --r-sm:10px;
+    --r-md:16px;
+    --r-lg:22px;
+    /* ฉากชายหาดยามเย็น (golden hour) — คงที่ เพราะหน้านี้ไม่มีรอบกลางวัน/กลางคืน */
+    --sky-top:#2b2350;
+    --sky-mid:#c2557a;
+    --sea:#e08a4e;
+    --sea-deep:#a85a3a;
+    --sand:#f4c66b;
+    --sand-deep:#c98a3f;
+    --glow-core:#fff3d6;
+    --glow-soft:rgba(255,183,94,.65);
+    --horizon:38%;
+    --shoreline:68%;
+}
+
+*{
+    box-sizing:border-box;
+    margin:0;
+    padding:0;
+    -webkit-user-select:none;
+    user-select:none;
+    touch-action:pan-x pan-y;
+}
+
+body{
+    min-height:100vh;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    background:
+        radial-gradient(circle 70px at 78% 22%, var(--glow-core), var(--glow-soft) 55%, transparent 72%),
+        radial-gradient(ellipse 900px 260px at 50% var(--shoreline), rgba(255,255,255,.06), transparent 70%),
+        linear-gradient(180deg,
+            var(--sky-top) 0%, var(--sky-mid) var(--horizon),
+            var(--sea) var(--horizon), var(--sea-deep) var(--shoreline),
+            var(--sand) var(--shoreline), var(--sand-deep) 100%);
+    background-attachment:fixed;
+    color:var(--ink);
+    font-family:"IBM Plex Sans Thai","Noto Sans Thai",sans-serif;
+    padding:24px;
+    overflow:hidden;
+}
+
+/* นกนางนวลเล็กๆ ลอยอยู่บนท้องฟ้ายามเย็น + คลื่นบางๆ เหนือแนวหาด */
+body::before{
+    content:"";
+    position:fixed;
+    inset:0;
+    pointer-events:none;
+    background-image:
+        radial-gradient(ellipse 220px 12px at 20% var(--shoreline), rgba(255,255,255,.18), transparent 70%),
+        radial-gradient(ellipse 260px 14px at 55% var(--shoreline), rgba(255,255,255,.14), transparent 70%),
+        radial-gradient(ellipse 200px 12px at 85% var(--shoreline), rgba(255,255,255,.16), transparent 70%),
+        radial-gradient(1px 1px at 30% 14%, rgba(255,255,255,.4), transparent 40%),
+        radial-gradient(1px 1px at 65% 10%, rgba(255,255,255,.3), transparent 40%);
+    opacity:.7;
+    z-index:0;
+}
+
+@keyframes rise{
+    from{ opacity:0; transform:translateY(16px); }
+    to{   opacity:1; transform:translateY(0); }
+}
+
+@media (prefers-reduced-motion:reduce){
+    *{ animation-duration:.001ms !important; transition-duration:.001ms !important; }
+}
+
+/* ===== CARD ===== */
+.card{
+    position:relative;
+    z-index:1;
+    width:100%;
+    max-width:420px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    backdrop-filter:blur(14px);
+    border-radius:var(--r-lg);
+    padding:36px 28px 32px;
+    text-align:center;
+    animation:rise .6s ease both;
+}
+
+/* ===== SEAL / TITLE ===== */
+.seal{
+    display:inline-flex;
+    flex-direction:column;
+    align-items:center;
+    gap:4px;
+    padding:18px 40px;
+    border:1px solid var(--moon-soft);
+    border-radius:999px;
+    background:
+        radial-gradient(ellipse at center, rgba(94,234,212,.14), transparent 70%),
+        var(--panel);
+    margin-bottom:28px;
+    position:relative;
+}
+
+.seal::before{
+    content:"";
+    position:absolute;
+    inset:8px;
+    border:1px dashed rgba(94,234,212,.32);
+    border-radius:999px;
+    pointer-events:none;
+}
+
+.seal-eyebrow{
+    font-family:"JetBrains Mono",monospace;
+    font-size:10px;
+    letter-spacing:.32em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+}
+
+.seal-title{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-weight:700;
+    font-size:46px;
+    letter-spacing:.06em;
+    color:#fff;
+    text-shadow:0 0 32px rgba(94,234,212,.55);
+    line-height:1.1;
+}
+
+.seal-wolf{
+    font-size:30px;
+    line-height:1;
+    filter:drop-shadow(0 0 10px rgba(239,68,68,.5));
+}
+
+/* ===== SUB ===== */
+.sub{
+    font-size:14px;
+    color:var(--ink-dim);
+    line-height:1.7;
+    margin-bottom:28px;
+}
+
+/* ===== ชื่อของคุณ ===== */
+.name-field{
+    margin-bottom:16px;
+    text-align:left;
+}
+
+.name-field input{
+    width:100%;
+    padding:13px 14px;
+    border-radius:var(--r-sm);
+    border:1px solid var(--line);
+    background:#071e25;
+    color:#fff;
+    font-size:15px;
+    font-family:"IBM Plex Sans Thai",sans-serif;
+}
+
+.name-field input::placeholder{
+    color:var(--ink-dim);
+}
+
+.name-field input:focus{
+    outline:none;
+    border-color:rgba(94,234,212,.5);
+}
+
+.name-error{
+    color:var(--wolf);
+    font-size:12px;
+    min-height:16px;
+    margin-top:6px;
+}
+
+/* ===== ป้ายชื่อมุมขวาบน (โชว์หลังตั้งชื่อแล้ว — แก้ไม่ได้จากตรงนี้อีก) ===== */
+.name-badge{
+    position:fixed;
+    top:16px;
+    right:16px;
+    z-index:5;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:7px 14px;
+    border-radius:999px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    backdrop-filter:blur(10px);
+    font-size:13px;
+    color:var(--ink);
+    max-width:calc(100vw - 32px);
+}
+
+.name-badge-icon{
+    flex-shrink:0;
+    font-size:13px;
+}
+
+.name-badge-text{
+    font-weight:600;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.name-badge.hidden{
+    display:none;
+}
+
+.name-badge{
+    cursor:pointer;
+    transition:border-color .2s, transform .15s;
+}
+
+.name-badge:hover{
+    border-color:rgba(94,234,212,.4);
+    transform:translateY(-1px);
+}
+
+/* ===== สถิติผู้เล่น (ป็อปอัปกดจากป้ายชื่อมุมขวาบน) ===== */
+.account-recreate-box{
+    max-width:360px;
+    text-align:center;
+}
+.account-recreate-copy{
+    line-height:1.65;
+    margin:0 0 14px;
+}
+.account-recreate-box input{
+    width:100%;
+    box-sizing:border-box;
+    text-align:left;
+}
+.account-recreate-box .name-error{
+    min-height:18px;
+    margin-top:5px;
+    text-align:left;
+}
+
+.stats-modal-box{
+    max-width:360px;
+    max-height:min(560px, 82vh);
+    display:flex;
+    flex-direction:column;
+    text-align:left;
+}
+
+.stats-modal-box h3{
+    text-align:center;
+    margin-bottom:2px;
+}
+
+.stats-modal-name{
+    text-align:center;
+    font-size:12.5px;
+    color:var(--ink-dim);
+    margin-bottom:16px;
+}
+
+.stats-games-count{
+    text-align:center;
+    font-size:12px;
+    color:var(--ink-dim);
+    margin-bottom:10px;
+}
+.stats-games-count b{
+    color:#fff;
+    font-family:"JetBrains Mono",monospace;
+}
+
+.stats-overall{
+    display:flex;
+    gap:8px;
+    margin-bottom:16px;
+}
+
+.stats-overall-cell{
+    flex:1;
+    background:#071e25;
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    padding:10px 6px;
+    text-align:center;
+}
+
+.stats-overall-cell .num{
+    font-family:"JetBrains Mono",monospace;
+    font-size:18px;
+    font-weight:700;
+    color:#fff;
+    display:block;
+}
+
+.stats-overall-cell.win .num{ color:#22c55e; }
+.stats-overall-cell.lose .num{ color:#ef4444; }
+.stats-overall-cell.leave .num{ color:#fbbf24; }
+
+.stats-overall-cell .lbl{
+    font-size:10.5px;
+    color:var(--ink-dim);
+    margin-top:2px;
+    display:block;
+}
+
+.stats-section-label{
+    font-size:11px;
+    color:var(--ink-dim);
+    letter-spacing:.04em;
+    margin-bottom:8px;
+}
+
+.stats-teams{
+    overflow-y:auto;
+    flex:1;
+    margin:0 -4px;
+    padding:0 4px;
+}
+
+.stats-team{
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    margin-bottom:8px;
+    overflow:hidden;
+    background:#071e25;
+}
+
+.stats-team summary{
+    list-style:none;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:11px 12px;
+    cursor:pointer;
+    font-size:13.5px;
+    font-weight:600;
+    color:var(--ink);
+}
+
+.stats-team summary::-webkit-details-marker{
+    display:none;
+}
+
+.stats-team summary::after{
+    content:"›";
+    color:var(--ink-dim);
+    font-size:16px;
+    transform:rotate(90deg);
+    transition:transform .15s;
+    flex-shrink:0;
+}
+
+.stats-team[open] summary::after{
+    transform:rotate(-90deg);
+}
+
+.stats-team-rate{
+    font-family:"JetBrains Mono",monospace;
+    color:#5eead4;
+    font-weight:700;
+    flex-shrink:0;
+}
+
+.stats-roles{
+    border-top:1px solid var(--line);
+    padding:4px 12px 8px;
+}
+
+.stats-role-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:7px 0;
+    font-size:12.5px;
+    color:var(--ink-dim);
+}
+
+.stats-role-row:not(:last-child){
+    border-bottom:1px solid rgba(255,255,255,.04);
+}
+
+.stats-role-name{
+    color:var(--ink);
+}
+
+.stats-role-detail{
+    font-family:"JetBrains Mono",monospace;
+    flex-shrink:0;
+    white-space:nowrap;
+}
+
+.stats-empty{
+    text-align:center;
+    color:var(--ink-dim);
+    font-size:13px;
+    padding:20px 8px;
+}
+
+.account-profile-card{
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    padding:12px;
+    margin-bottom:10px;
+    background:rgba(7,30,37,.72);
+}
+.account-profile-name{
+    font-size:14px;
+    font-weight:700;
+    color:#fff;
+    margin-bottom:9px;
+}
+.account-profile-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:7px 0;
+    border-top:1px solid rgba(255,255,255,.04);
+    font-size:12px;
+    color:var(--ink-dim);
+}
+.account-profile-row b{ color:var(--ink); }
+.account-id-value{
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:6px;
+    min-width:0;
+}
+.account-id-value code{
+    font-family:"JetBrains Mono",monospace;
+    color:#5eead4;
+    font-size:10px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    max-width:170px;
+}
+.account-copy-btn{
+    border:1px solid var(--line);
+    background:transparent;
+    color:var(--ink);
+    border-radius:6px;
+    padding:5px 7px;
+    cursor:pointer;
+    font-size:10px;
+    flex-shrink:0;
+}
+.account-rename-open{
+    width:100%;
+    margin-top:10px;
+    border:1px solid var(--line);
+    background:rgba(255,255,255,.04);
+    color:var(--ink);
+    border-radius:7px;
+    padding:8px 10px;
+    cursor:pointer;
+    font-size:12px;
+}
+
+
+/* ===== เปลี่ยนชื่อภายในป๊อปอัปโปรไฟล์ =====
+   ไม่ใช้ wwPrompt() บนหน้า index เพราะมันสร้าง modal ชั้นใหม่ทับ Profile modal
+   และหน้า index ไม่ได้โหลด CSS ของ host/player ที่เคยจัดสไตล์ ww-modal */
+/* ===== ยืนยัน Login / Logout ภายใน Profile modal ===== */
+.account-inline-confirm{
+    margin:0 0 10px;
+    padding:12px;
+    border:1px solid rgba(94,234,212,.22);
+    border-radius:9px;
+    background:rgba(4,22,28,.88);
+    box-shadow:0 8px 24px rgba(0,0,0,.18);
+    animation:rise .18s ease both;
+}
+
+.account-inline-confirm.danger{
+    border-color:rgba(239,68,68,.28);
+}
+
+.account-inline-confirm-title{
+    color:var(--ink);
+    font-size:12.5px;
+    font-weight:700;
+    margin-bottom:5px;
+}
+
+.account-inline-confirm-message{
+    color:var(--ink-dim);
+    font-size:11.5px;
+    line-height:1.55;
+}
+
+.account-inline-confirm-actions{
+    display:flex;
+    gap:7px;
+    margin-top:10px;
+}
+
+.account-inline-confirm-actions button{
+    flex:1;
+    min-width:0;
+    border:1px solid var(--line);
+    border-radius:7px;
+    padding:8px 9px;
+    color:var(--ink);
+    font:600 12px "IBM Plex Sans Thai",sans-serif;
+    cursor:pointer;
+}
+
+.account-inline-confirm-cancel{
+    background:rgba(255,255,255,.04);
+}
+
+.account-inline-confirm-ok{
+    background:linear-gradient(135deg,#14b8a6,#0d9488);
+    border-color:transparent !important;
+    color:#fff !important;
+}
+
+.account-inline-confirm.danger .account-inline-confirm-ok{
+    background:linear-gradient(135deg,#ef4444,#b91c1c);
+}
+
+.account-rename-editor{
+    margin-top:10px;
+    padding:12px;
+    border:1px solid rgba(94,234,212,.18);
+    border-radius:9px;
+    background:rgba(4,22,28,.72);
+    animation:rise .18s ease both;
+}
+
+.account-rename-editor.hidden{
+    display:none;
+}
+
+.account-rename-editor label{
+    display:block;
+    margin:0 0 6px;
+    color:var(--ink-dim);
+    font-size:11px;
+}
+
+.account-rename-editor input{
+    width:100%;
+    box-sizing:border-box;
+    padding:9px 10px;
+    border:1px solid var(--line);
+    border-radius:7px;
+    background:#071e25;
+    color:var(--ink);
+    font:13px "IBM Plex Sans Thai",sans-serif;
+    outline:none;
+}
+
+.account-rename-editor input:focus{
+    border-color:rgba(94,234,212,.55);
+    box-shadow:0 0 0 2px rgba(94,234,212,.08);
+}
+
+.account-rename-error{
+    min-height:17px;
+    margin-top:5px;
+    color:var(--wolf);
+    font-size:11px;
+    line-height:1.45;
+}
+
+.account-rename-actions{
+    display:flex;
+    gap:7px;
+    margin-top:4px;
+}
+
+.account-rename-actions button{
+    flex:1;
+    min-width:0;
+    border:1px solid var(--line);
+    border-radius:7px;
+    padding:8px 9px;
+    color:var(--ink);
+    font:600 12px "IBM Plex Sans Thai",sans-serif;
+    cursor:pointer;
+}
+
+.account-rename-cancel{
+    background:rgba(255,255,255,.04);
+}
+
+.account-rename-save{
+    background:linear-gradient(135deg,#14b8a6,#0d9488);
+    border-color:transparent !important;
+    color:#fff !important;
+}
+
+.account-rename-actions button:disabled{
+    opacity:.55;
+    cursor:wait;
+}
+
+.stats-loading{
+    text-align:center;
+    color:var(--ink-dim);
+    font-size:13px;
+    padding:20px 8px;
+}
+
+/* ===== ACCOUNT / GOOGLE INLINE NOTICE ===== */
+.account-inline-notice{
+    margin:0 0 10px;
+    padding:12px;
+    border:1px solid rgba(94,234,212,.22);
+    border-radius:9px;
+    background:rgba(4,22,28,.9);
+    box-shadow:0 8px 24px rgba(0,0,0,.2);
+    animation:rise .18s ease both;
+}
+.account-inline-notice.danger{ border-color:rgba(239,68,68,.3); background:rgba(45,10,15,.88); }
+.account-inline-notice-title{ color:var(--ink); font-size:12.5px; font-weight:700; margin-bottom:5px; }
+.account-inline-notice-message{ color:var(--ink-dim); font-size:11.5px; line-height:1.6; white-space:pre-line; }
+.account-inline-notice-close{
+    width:100%; margin-top:9px; padding:8px 10px; border-radius:7px;
+    border:1px solid var(--line); background:rgba(255,255,255,.05);
+    color:var(--ink); font:600 12px "IBM Plex Sans Thai",sans-serif; cursor:pointer;
+}
+
+/* ww-ui.js ใช้ modal helper ร่วมกับ Host/Player แต่ index.html มี index.css ของตัวเอง
+   จึงต้องมี skin ของ .ww-modal-* ที่นี่ด้วย ไม่เช่นนั้น alert/confirm จะเป็น HTML ดิบ */
+.ww-modal-overlay{
+    position:fixed; inset:0; z-index:100000; display:flex; align-items:center; justify-content:center;
+    padding:22px; background:rgba(5,7,12,.74); backdrop-filter:blur(5px);
+}
+.ww-modal-box{
+    width:100%; max-width:360px; box-sizing:border-box; padding:22px 20px;
+    background:linear-gradient(180deg,rgba(25,35,50,.98),rgba(12,25,32,.98));
+    border:1px solid rgba(94,234,212,.22); border-radius:16px;
+    box-shadow:0 22px 70px rgba(0,0,0,.45); color:var(--ink);
+    animation:rise .2s ease both;
+}
+.ww-modal-msg{font-size:13px; line-height:1.65; margin-bottom:16px; white-space:pre-line; color:var(--ink);}
+.ww-modal-input{width:100%; box-sizing:border-box; padding:11px 12px; margin-bottom:10px; border:1px solid var(--line); border-radius:8px; background:#071e25; color:#fff; font:14px "IBM Plex Sans Thai",sans-serif; outline:none;}
+.ww-modal-input:focus{border-color:rgba(94,234,212,.55); box-shadow:0 0 0 2px rgba(94,234,212,.08);}
+.ww-modal-actions{display:flex; gap:9px;}
+.ww-modal-actions-col{flex-direction:column;}
+.ww-modal-btn{flex:1; min-width:0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:600 12px "IBM Plex Sans Thai",sans-serif; cursor:pointer;}
+.ww-modal-ok{background:linear-gradient(135deg,#14b8a6,#0d9488); color:#fff; border-color:transparent;}
+.ww-modal-cancel{background:#263641; color:#e5edf0;}
+.ww-modal-ok.ww-modal-danger{background:linear-gradient(135deg,#ef4444,#b91c1c);}
+.ww-modal-btn:active{transform:translateY(1px);}
+
+/* ===== BUTTONS ===== */
+.btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:10px;
+    width:100%;
+    padding:15px 20px;
+    border:none;
+    border-radius:var(--r-md);
+    font-family:"IBM Plex Sans Thai",sans-serif;
+    font-size:16px;
+    font-weight:600;
+    cursor:pointer;
+    transition:transform .15s, filter .15s, box-shadow .15s;
+    margin-bottom:12px;
+    text-decoration:none;
+    color:#fff;
+}
+
+.btn:last-of-type{
+    margin-bottom:0;
+}
+
+.btn-host{
+    background:linear-gradient(135deg, var(--moon), #0d9488);
+    box-shadow:0 4px 22px rgba(94,234,212,.32);
+}
+
+.btn-host:hover{
+    transform:translateY(-2px);
+    filter:brightness(1.1);
+    box-shadow:0 6px 28px rgba(94,234,212,.48);
+}
+
+.btn-player{
+    background:#0a2932;
+    border:1px solid var(--line);
+    color:var(--ink);
+}
+
+.btn-player:hover{
+    background:#0d333e;
+    border-color:rgba(94,234,212,.3);
+    transform:translateY(-2px);
+}
+
+.btn:active{
+    transform:translateY(0);
+}
+
+.btn-icon{
+    font-size:20px;
+    line-height:1;
+}
+
+/* ===== TESTER PASSWORD MODAL ===== */
+.modal-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(5,7,12,.72);
+    backdrop-filter:blur(4px);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:100;
+    padding:24px;
+}
+
+.modal-overlay.hidden{
+    display:none;
+}
+
+.hidden{
+    display:none !important;
+}
+
+.modal-box{
+    width:100%;
+    max-width:320px;
+    background:#11162280;
+    border:1px solid var(--line);
+    border-radius:var(--r-lg);
+    padding:26px 22px;
+    text-align:center;
+    animation:rise .25s ease both;
+}
+
+.modal-box h3{
+    font-size:17px;
+    margin-bottom:8px;
+    color:#fff;
+}
+
+.modal-box p{
+    font-size:12.5px;
+    color:var(--ink-dim);
+    margin-bottom:18px;
+    line-height:1.6;
+}
+
+.modal-box input{
+    width:100%;
+    padding:13px 14px;
+    border-radius:var(--r-sm);
+    border:1px solid var(--line);
+    background:#071e25;
+    color:#fff;
+    font-size:16px;
+    text-align:center;
+    letter-spacing:.14em;
+    margin-bottom:8px;
+    font-family:"JetBrains Mono",monospace;
+}
+
+.modal-box input:focus{
+    outline:none;
+    border-color:rgba(20,184,166,.5);
+}
+
+.modal-error{
+    color:var(--wolf);
+    font-size:12px;
+    min-height:16px;
+    margin-bottom:6px;
+}
+
+.modal-actions{
+    display:flex;
+    gap:10px;
+    margin-top:6px;
+}
+
+.modal-actions button{
+    flex:1;
+    padding:12px;
+    border-radius:var(--r-sm);
+    border:none;
+    font-weight:600;
+    font-size:14px;
+    cursor:pointer;
+    font-family:inherit;
+}
+
+.modal-cancel{
+    background:#0d333e;
+    color:var(--ink-dim);
+}
+
+.modal-confirm{
+    background:linear-gradient(135deg, #14b8a6, #0d9488);
+    color:#fff;
+}
+
+@keyframes shake{
+    0%,100%{ transform:translateX(0); }
+    25%{ transform:translateX(-6px); }
+    75%{ transform:translateX(6px); }
+}
+
+.shake{
+    animation:shake .3s ease;
+}
+
+/* ===== FOOTER ===== */
+.footer{
+    margin-top:24px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.18em;
+    text-transform:uppercase;
+    color:rgba(137,147,168,.45);
+}
+
+/* ===== PROFILE UI/UX refresh ===== */
+.stats-modal-box{
+    max-width:420px;
+    max-height:min(720px, 90vh);
+    padding:18px 18px 14px;
+    overflow:hidden;
+}
+
+.profile-modal-head{
+    display:grid;
+    grid-template-columns:42px minmax(0,1fr) 40px;
+    align-items:center;
+    gap:10px;
+    padding:2px 2px 14px;
+    border-bottom:1px solid rgba(255,255,255,.06);
+}
+
+.profile-avatar{
+    width:42px;
+    height:42px;
+    display:grid;
+    place-items:center;
+    border-radius:13px;
+    background:rgba(94,234,212,.09);
+    border:1px solid rgba(94,234,212,.16);
+    font-size:20px;
+}
+
+.profile-heading{min-width:0;}
+.profile-kicker{
+    font:600 9px "JetBrains Mono",monospace;
+    letter-spacing:.18em;
+    color:rgba(201,183,154,.72);
+    margin-bottom:1px;
+}
+.profile-heading h3{
+    margin:0 !important;
+    text-align:left !important;
+    font-size:16px;
+}
+.stats-modal-name{
+    text-align:left;
+    font-size:14px;
+    font-weight:600;
+    color:#fff;
+    margin:2px 0 0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.profile-edit-name-btn{
+    width:40px;
+    height:40px;
+    padding:0;
+    display:grid;
+    place-items:center;
+    border:1px solid var(--line);
+    border-radius:11px;
+    background:rgba(255,255,255,.045);
+    color:var(--ink);
+    font-size:16px;
+    cursor:pointer;
+    transition:border-color .15s, background .15s, transform .15s;
+}
+.profile-edit-name-btn:hover,
+.profile-edit-name-btn:focus-visible{
+    border-color:rgba(94,234,212,.4);
+    background:rgba(94,234,212,.08);
+    outline:none;
+}
+.profile-edit-name-btn:active{transform:translateY(1px);}
+
+
+/* ===== Inline profile editing / same-slot Google confirmation ===== */
+.stats-modal-name-edit{
+    width:100%;
+    min-width:0;
+    margin:2px 0 0;
+    padding:0 0 2px;
+    border:0;
+    border-bottom:1px solid rgba(94,234,212,.65);
+    border-radius:0;
+    background:transparent;
+    color:#fff;
+    font:600 14px "IBM Plex Sans Thai",sans-serif;
+    outline:none;
+    box-shadow:none;
+}
+.stats-modal-name-edit:focus{
+    border-bottom-color:#5eead4;
+}
+.profile-edit-name-btn:disabled{opacity:.55;cursor:wait;}
+.account-action-slot{
+    position:relative;
+    min-height:42px;
+}
+.account-action-slot > .account-action,
+.account-action-slot > .account-switch-link{
+    display:block;
+}
+.account-inline-confirm{
+    position:absolute;
+    inset:0;
+    z-index:2;
+    margin:0;
+    min-height:42px;
+    padding:4px 6px;
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto auto;
+    align-items:center;
+    gap:6px;
+    border:1px solid rgba(94,234,212,.28);
+    border-radius:9px;
+    background:rgba(5,25,31,.98);
+    box-shadow:0 8px 22px rgba(0,0,0,.22);
+}
+.account-inline-confirm.danger{border-color:rgba(239,68,68,.32);}
+.account-inline-confirm-message{
+    min-width:0;
+    color:var(--ink-dim);
+    font-size:9.5px;
+    line-height:1.3;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+.account-inline-confirm-actions{display:contents;}
+.account-inline-confirm-actions button{
+    min-height:32px;
+    padding:5px 10px;
+    border:1px solid var(--line);
+    border-radius:7px;
+    color:var(--ink);
+    font:600 11px "IBM Plex Sans Thai",sans-serif;
+    cursor:pointer;
+}
+.account-inline-confirm-cancel{background:rgba(255,255,255,.04);}
+.account-inline-confirm-ok{
+    background:linear-gradient(135deg,#14b8a6,#0d9488);
+    border-color:transparent !important;
+    color:#fff !important;
+}
+.account-inline-confirm.danger .account-inline-confirm-ok{
+    background:linear-gradient(135deg,#ef4444,#b91c1c);
+}
+.confirm-source-hidden{visibility:hidden;}
+
+#statsModalBody{
+    min-height:0;
+    overflow:auto;
+    padding-top:12px;
+}
+
+.profile-modal-actions{
+    margin-top:10px;
+}
+
+.account-profile-card{
+    padding:11px 12px;
+    margin-bottom:10px;
+    background:rgba(7,30,37,.62);
+}
+.account-profile-summary{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:6px;
+    margin-bottom:3px;
+}
+.account-status-pill{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    min-height:25px;
+    padding:4px 8px;
+    border-radius:999px;
+    border:1px solid rgba(255,255,255,.08);
+    font-size:10.5px;
+    font-weight:600;
+    white-space:nowrap;
+}
+.account-status-pill.is-active{
+    background:rgba(94,234,212,.08);
+    color:#d9fffa;
+    border-color:rgba(94,234,212,.16);
+}
+.account-status-pill.is-warning,
+.account-status-pill.warning{
+    background:rgba(251,191,36,.08);
+    color:#fde68a;
+    border-color:rgba(251,191,36,.2);
+}
+.account-status-pill.is-danger{
+    background:rgba(239,68,68,.08);
+    color:#fecaca;
+    border-color:rgba(239,68,68,.2);
+}
+.account-status-pill.google{
+    background:rgba(34,197,94,.07);
+    color:#bbf7d0;
+    border-color:rgba(34,197,94,.18);
+}
+.account-status-pill.neutral{
+    background:rgba(255,255,255,.035);
+    color:var(--ink-dim);
+}
+.account-status-dot{
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    background:#22c55e;
+    box-shadow:0 0 8px rgba(34,197,94,.5);
+}
+
+.account-profile-row-id{padding-top:8px;}
+.account-id-value{max-width:70%;}
+.account-copy-btn{
+    min-height:32px;
+    padding:5px 8px;
+    border-radius:8px;
+    background:rgba(255,255,255,.035);
+}
+
+.account-google-section{
+    margin-bottom:10px;
+    padding:12px;
+    border:1px solid rgba(94,234,212,.13);
+    border-radius:12px;
+    background:linear-gradient(180deg, rgba(4,28,34,.82), rgba(4,22,28,.66));
+}
+.account-google-section.is-linked{
+    border-color:rgba(34,197,94,.15);
+}
+.account-section-head{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:9px;
+}
+.account-section-title{
+    color:#fff;
+    font-size:13px;
+    font-weight:700;
+}
+.account-section-sub{
+    color:var(--ink-dim);
+    font-size:10.5px;
+    line-height:1.45;
+    margin-top:2px;
+}
+.account-action{
+    width:100%;
+    min-height:42px;
+    border-radius:9px;
+    padding:9px 12px;
+    font:600 12px "IBM Plex Sans Thai",sans-serif;
+    cursor:pointer;
+    transition:transform .15s, filter .15s, border-color .15s;
+}
+.account-action:active{transform:translateY(1px);}
+.account-action-primary{
+    border:1px solid transparent;
+    background:linear-gradient(135deg,#14b8a6,#0d9488);
+    color:#fff;
+    box-shadow:0 6px 18px rgba(20,184,166,.16);
+}
+.account-action-primary:hover{filter:brightness(1.06);}
+.account-action-secondary{
+    border:1px solid var(--line);
+    background:rgba(255,255,255,.045);
+    color:var(--ink);
+}
+.account-action-secondary:hover{border-color:rgba(94,234,212,.25);}
+.account-action-hint{
+    margin-top:7px;
+    color:rgba(201,183,154,.78);
+    font-size:10.5px;
+    line-height:1.55;
+}
+.account-action-hint b{color:var(--ink);}
+.account-switch-link{
+    width:100%;
+    margin-top:8px;
+    padding:5px 0;
+    border:0;
+    background:transparent;
+    color:#8be9dd;
+    font:600 11px "IBM Plex Sans Thai",sans-serif;
+    cursor:pointer;
+    text-decoration:underline;
+    text-decoration-color:rgba(139,233,221,.3);
+    text-underline-offset:3px;
+}
+.account-switch-link:hover,
+.account-switch-link:focus-visible{
+    color:#c2fff8;
+    outline:none;
+}
+.account-switch-hint{
+    margin-top:1px;
+    color:rgba(201,183,154,.62);
+    font-size:9.8px;
+    line-height:1.5;
+}
+
+.account-rename-editor{
+    margin:10px 0 0;
+    padding:12px;
+    border-color:rgba(94,234,212,.2);
+    background:rgba(4,22,28,.88);
+}
+.account-rename-label{
+    color:#fff;
+    font-size:12px;
+    font-weight:700;
+}
+.account-rename-hint{
+    margin-top:2px;
+    color:var(--ink-dim);
+    font-size:10.5px;
+    line-height:1.45;
+}
+.account-rename-editor input{
+    margin-top:9px;
+    min-height:42px;
+    padding:10px 11px;
+    font-size:14px;
+    user-select:text;
+    -webkit-user-select:text;
+}
+.account-rename-actions button{
+    min-height:40px;
+}
+
+@media (max-width:520px){
+    .stats-modal-box{padding:16px 14px 12px;}
+    .profile-modal-head{grid-template-columns:40px minmax(0,1fr) 38px;gap:9px;padding-bottom:12px;}
+    .profile-avatar{width:40px;height:40px;}
+    .profile-edit-name-btn{width:38px;height:38px;}
+    .account-profile-row{font-size:11.5px;}
+    .account-id-value{max-width:67%;}
+}

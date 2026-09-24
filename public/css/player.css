@@ -1,0 +1,4812 @@
+:root{
+    --bg:#04141d;
+    --panel:#0a293480;
+    --line:rgba(255,255,255,.08);
+    --ink:#eafaf7;
+    --ink-dim:#8fbcbb;
+    --moon:#5eead4;
+    --moon-soft:rgba(94,234,212,.16);
+    --wolf:#ef4444;
+    --wolf-soft:rgba(239,68,68,.14);
+    --safe:#22c55e;
+    --safe-soft:rgba(34,197,94,.14);
+    --mark:#fbbf24;
+    --mark-soft:rgba(251,191,36,.14);
+    --r-sm:10px;
+    --r-md:16px;
+    --r-lg:22px;
+    /* ฉากชายหาด: ท้องฟ้า/ทะเล/หาดทราย — สลับค่าใน body.is-day */
+    --sky-top:#040d16;
+    --sky-mid:#0a2b3d;
+    --sea:#0a3a49;
+    --sea-deep:#072b36;
+    --sand:#2c2114;
+    --sand-deep:#1a130b;
+    --glow-core:#eafffa;
+    --glow-soft:rgba(94,234,212,.55);
+    --horizon:40%;
+    --shoreline:74%;
+
+    /*
+       Responsive game layout tokens: ใช้ค่าช่วง (clamp) แทน breakpoint/px เดี่ยว เพื่อให้
+       Split View / Stage Manager เปลี่ยนขนาดได้ต่อเนื่องโดยไม่กระโดดข้ามดีไซน์กลางทาง
+       - chat width มีขั้นต่ำพออ่าน/พิมพ์ และขยายตาม viewport จนถึงเพดานที่ยังไม่แย่งพื้นที่กริด
+       - chat min-height กันกรณีกริดผู้เล่นมีหลายแถวไม่ให้แชทถูกบีบเหลือไม่กี่พิกเซล
+       - ผู้เล่นเป็นส่วนที่ยอม scroll เมื่อพื้นที่แนวตั้งไม่พอ เพราะจำนวนคนเป็นตัวแปรที่ไม่รู้ล่วงหน้า
+    */
+    --game-chat-width:clamp(240px, 28vw, 380px);
+    --game-chat-min-height:clamp(148px, 27svh, 230px);
+    --game-bottom-clearance:calc(56px + env(safe-area-inset-bottom, 0px));
+    /* ความกว้างแผง "บทในเกมรอบนี้" ฝั่งซ้ายสุด — โผล่คู่กับแชทตั้งแต่จอ ≥900px (ดู @media (min-width:900px)
+       ท้ายไฟล์) ใช้ clamp แบบเดียวกับ --game-chat-width เพื่อไม่มีรอยต่อตอนลาก resize
+       ขยายจากเดิม clamp(160px, 14vw, 260px) (iPad แนวนอน 1180px ได้แค่ ~165px ชื่อบท/ป้าย ×N/ลูกศรดูคำอธิบาย
+       อัดกันแน่น คำอธิบายที่กางออกก็แคบจนอ่านยาก) เป็น clamp(220px, 22vw, 330px): 1180px ได้ ~260px
+       ส่วนที่เพิ่มมาหักจากพื้นที่กริดผู้เล่นตรงกลางเอง (.app.game-visible คำนวณความกว้างจากตัวแปรนี้) */
+    --game-roles-width:clamp(220px, 22vw, 330px);
+
+    /* ===== KEYBOARD MODE (VisualViewport) =====
+       ค่าเริ่มต้นเฉยๆ กันไว้เผื่อ #chatCard.keyboard-mode ถูก apply ก่อน JS เซ็ตค่าจริง — ตามปกติ
+       player.main.js จะเซ็ตทั้ง 4 ตัวนี้ (จาก visualViewport.offsetTop/offsetLeft/width/height)
+       ทุกครั้งก่อนเพิ่มคลาส keyboard-mode อยู่แล้ว (ดู VisualViewport listener ท้ายไฟล์นั้น) */
+    --vv-top:0px;
+    --vv-left:0px;
+    --vv-width:100%;
+    --vv-height:100%;
+}
+
+*{
+    box-sizing:border-box;
+    -webkit-user-select:none;
+    user-select:none;
+    touch-action:pan-x pan-y;
+}
+/* ล็อกความสูงหน้าด้วย svh (small viewport height) แทน dvh (dynamic viewport height) เดิม —
+   dvh จะยุบตามคีย์บอร์ดที่เด้งขึ้นในบางเบราว์เซอร์ (โดยเฉพาะ Android Chrome) ทำให้ .app ทั้งก้อน
+   ถูกบีบ/ดันขึ้นทันทีที่แตะช่องพิมพ์ (บั๊กที่ผู้ใช้รายงาน) ส่วน svh คือค่าความสูงจอ "เล็กที่สุด" ที่เป็นไป
+   ได้ (นับรวม UI ของเบราว์เซอร์ที่โผล่เต็มที่แล้ว) จะไม่ขยับตามคีย์บอร์ดอีกต่อไป คู่กับ
+   interactive-widget=resizes-visual ใน <meta name="viewport"> (player.html) ที่กันไม่ให้ layout
+   viewport ยุบตามคีย์บอร์ดอยู่แล้วอีกชั้น — ตอนคีย์บอร์ดเปิด #chatCard ทั้งก้อนแยกไปเป็น fixed overlay
+   ของตัวเองแทน (ดู #chatCard.keyboard-mode ท้ายไฟล์นี้ + VisualViewport listener ใน player.main.js) */
+html{
+    height:100%;
+    height:100svh;
+}
+body{
+    margin:0;
+    padding:0;
+    height:100%;
+    height:100svh;
+    overflow:hidden;
+    background:
+        radial-gradient(circle 50px at 80% 10%, var(--glow-core), var(--glow-soft) 55%, transparent 72%),
+        radial-gradient(ellipse 700px 220px at 50% var(--shoreline), rgba(255,255,255,.05), transparent 70%),
+        linear-gradient(180deg,
+            var(--sky-top) 0%, var(--sky-mid) var(--horizon),
+            var(--sea) var(--horizon), var(--sea-deep) var(--shoreline),
+            var(--sand) var(--shoreline), var(--sand-deep) 100%);
+    transition:background 1.1s ease;
+    color:var(--ink);
+    font-family:"IBM Plex Sans Thai","Noto Sans Thai",sans-serif;
+    line-height:1.55;
+    display:flex;
+    flex-direction:column;
+    align-items:stretch;
+}
+
+/* โทนกลางวัน: ท้องฟ้าสีฟ้าสด ทะเลสีเทอร์ควอยซ์ หาดทรายสีทอง */
+body.is-day{
+    --sky-top:#7dd3fc;
+    --sky-mid:#38bdf8;
+    --sea:#06b6d4;
+    --sea-deep:#0891b2;
+    --sand:#fde68a;
+    --sand-deep:#f3c34d;
+    --glow-core:#fff8dc;
+    --glow-soft:rgba(251,191,36,.65);
+}
+
+/* คลื่นทะเลบางๆ เหนือแนวหาด */
+body::after{
+    content:"";
+    position:fixed;
+    inset:0;
+    pointer-events:none;
+    background-image:
+        radial-gradient(ellipse 130px 8px at 18% var(--shoreline), rgba(255,255,255,.16), transparent 70%),
+        radial-gradient(ellipse 170px 10px at 50% var(--shoreline), rgba(255,255,255,.12), transparent 70%),
+        radial-gradient(ellipse 140px 8px at 82% var(--shoreline), rgba(255,255,255,.14), transparent 70%);
+    opacity:.6;
+    z-index:0;
+}
+
+/* ดาวยามค่ำคืน — จางหายไปตอนกลางวัน (body.is-day) */
+body::before{
+    content:"";
+    position:fixed;
+    inset:0;
+    pointer-events:none;
+    background-image:
+        radial-gradient(1px 1px at 12% 12%, rgba(234,255,250,.7), transparent 40%),
+        radial-gradient(1px 1px at 78% 8%, rgba(234,255,250,.55), transparent 40%),
+        radial-gradient(1.5px 1.5px at 60% 18%, rgba(234,255,250,.6), transparent 40%),
+        radial-gradient(1px 1px at 32% 26%, rgba(234,255,250,.45), transparent 40%),
+        radial-gradient(1px 1px at 90% 20%, rgba(234,255,250,.5), transparent 40%),
+        radial-gradient(1.5px 1.5px at 8% 32%, rgba(234,255,250,.4), transparent 40%);
+    opacity:.85;
+    transition:opacity .9s ease;
+    z-index:0;
+}
+body.is-day::before{
+    opacity:0;
+}
+
+::-webkit-scrollbar{
+    width:8px;
+}
+
+::-webkit-scrollbar-thumb{
+    background:var(--moon);
+    border-radius:20px;
+    opacity:.6;
+}
+
+::-webkit-scrollbar-track{
+    background:transparent;
+}
+
+:focus-visible{
+    outline:2px solid var(--moon);
+    outline-offset:2px;
+    border-radius:8px;
+}
+
+@keyframes rise{
+    from{ opacity:0; transform:translateY(14px); }
+    to{ opacity:1; transform:translateY(0); }
+}
+
+/* เหมือน rise แต่ไม่มี transform เลย ใช้กับกล่องที่ centering ด้วย left/right
+   (ถ้าใช้ rise ตัวเดิม transform:translateY ของ animation จะไปทับ/ลบ transform
+   ที่ใช้ centering อยู่ทันทีที่ animation จบ เพราะ fill-mode:both ค้างค่าสุดท้ายไว้) */
+@keyframes riseFade{
+    from{ opacity:0; }
+    to{ opacity:1; }
+}
+
+@media (prefers-reduced-motion: reduce){
+    *{ animation-duration:.001ms !important; transition-duration:.001ms !important; }
+}
+
+/* ================= LAYOUT ================= */
+
+.app{
+    position:relative;
+    z-index:1;
+    width:100%;
+    max-width:560px;
+    margin:0 auto;
+    height:100svh;
+    display:flex;
+    flex-direction:column;
+    padding:8px 6px 64px;
+    overflow:hidden;
+    min-height:0;
+}
+
+/* ===== ฉากกลางวัน/กลางคืน — พื้นหลังตกแต่งแบบ fixed อยู่หลังการ์ดทั้งหมด (z-index:0) ===== */
+/* ค่าเริ่มต้น = โทนกลางคืน (ม่วง/ดาว) เดิม, สลับเป็นกลางวัน (ทอง/ฟ้า, ไม่มีดาว) ด้วย body.is-day */
+.scene-layer{
+    position:fixed;
+    inset:0;
+    z-index:0;
+    pointer-events:none;
+    overflow:hidden;
+}
+/* ดวงจันทร์/ดวงอาทิตย์ */
+.scene-disc{
+    position:absolute;
+    top:22px;
+    right:20px;
+    width:64px;
+    height:64px;
+    border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #ccfbf1, #5eead4 70%);
+    box-shadow:0 0 46px 12px rgba(94,234,212,.38);
+    opacity:.85;
+    transition:background 1.1s ease, box-shadow 1.1s ease, opacity 1.1s ease, transform 1.1s ease;
+}
+body.is-day .scene-disc{
+    background:radial-gradient(circle at 35% 30%, #fff6d2, #fbbf24 70%);
+    box-shadow:0 0 60px 16px rgba(251,191,36,.45);
+    opacity:.95;
+}
+/* ดาวกระพริบ — เห็นเฉพาะตอนกลางคืน */
+.scene-stars{
+    position:absolute;
+    inset:0;
+    background-image:
+        radial-gradient(1.6px 1.6px at 12% 12%, #fff, transparent),
+        radial-gradient(1.6px 1.6px at 28% 6%, #fff, transparent),
+        radial-gradient(1px 1px at 46% 16%, #fff, transparent),
+        radial-gradient(1.6px 1.6px at 64% 4%, #fff, transparent),
+        radial-gradient(1px 1px at 80% 14%, #fff, transparent),
+        radial-gradient(1.6px 1.6px at 92% 22%, #fff, transparent),
+        radial-gradient(1px 1px at 18% 26%, #fff, transparent),
+        radial-gradient(1.6px 1.6px at 38% 30%, #fff, transparent);
+    background-repeat:no-repeat;
+    opacity:.55;
+    animation:sceneTwinkle 4.5s ease-in-out infinite;
+    transition:opacity .9s ease;
+}
+body.is-day .scene-stars{
+    opacity:0;
+}
+@keyframes sceneTwinkle{
+    0%,100%{ opacity:.3; }
+    50%{ opacity:.7; }
+}
+
+/* joinCard อยู่กลางจอตอน lobby */
+.app:not(.game-visible) {
+    justify-content:center;
+}
+#joinCard {
+    width:100%;
+}
+
+.card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    backdrop-filter:blur(12px);
+    border-radius:var(--r-md);
+    padding:10px 12px;
+    margin-bottom:6px;
+    animation:rise .5s ease both;
+    flex-shrink:0;
+}
+
+.card h2,.card h3{
+    margin:0 0 2px;
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-weight:700;
+    color:#fff;
+    letter-spacing:.02em;
+}
+
+.card h2{
+    font-size:20px;
+}
+
+.card h3{
+    font-size:15px;
+}
+
+.sub{
+    margin:0 0 8px;
+    font-size:12px;
+    color:var(--ink-dim);
+}
+
+.card h2 + .sub,
+.card h3 + .sub{
+    margin-top:2px;
+}
+
+/* ---- inputs ---- */
+
+input, select{
+    width:100%;
+    padding:13px 14px;
+    margin-top:8px;
+    margin-bottom:12px;
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    background:#082530;
+    color:var(--ink);
+    box-sizing:border-box;
+    outline:none;
+    font-size:14px;
+    transition:border-color .2s, box-shadow .2s;
+    font-family:inherit;
+}
+
+input:focus, select:focus{
+    border-color:var(--moon);
+    box-shadow:0 0 0 3px var(--moon-soft);
+}
+
+input::placeholder{
+    color:var(--ink-dim);
+}
+
+/* ชื่อที่ยืนยันแล้ว (จำไว้ในเครื่อง) — แสดงให้เห็นแต่แก้ไม่ได้อีก แก้ได้เฉพาะโฮสต์เท่านั้น */
+input.locked{
+    opacity:.7;
+    cursor:not-allowed;
+    background:#061a20;
+}
+
+/* ชื่อผู้เล่นที่ยืนยันแล้ว (ตั้งจากหน้าแรก index.html) — โชว์เป็นข้อความอ่านอย่างเดียว
+   แทนช่องกรอก #name เดิม (ซ่อนไว้แล้ว แก้ไม่ได้อีกจากหน้านี้) */
+.player-name-display{
+    text-align:center;
+    font-size:14px;
+    color:var(--ink-dim);
+    margin-bottom:14px;
+}
+
+.player-name-display b{
+    color:var(--ink);
+}
+
+.join-waiting{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.06em;
+    color:var(--ink-dim);
+    text-align:center;
+    margin-top:2px;
+}
+
+.room-suggestion{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    margin:-4px 0 12px;
+    padding:10px 12px;
+    background:var(--moon-soft);
+    border:1px solid rgba(94,234,212,.3);
+    border-radius:var(--r-sm);
+    cursor:pointer;
+    transition:transform .15s, filter .15s;
+}
+
+.room-suggestion:active{
+    transform:scale(.98);
+}
+
+.room-suggestion.hidden{
+    display:none;
+}
+
+.room-suggestion-main{
+    font-size:12.5px;
+    color:var(--ink);
+    line-height:1.5;
+}
+
+.room-suggestion-main b{
+    font-family:"JetBrains Mono",monospace;
+    color:var(--moon);
+    letter-spacing:.05em;
+    font-size:14px;
+}
+
+.room-suggestion-host{
+    font-size:11px;
+    color:var(--ink-dim);
+}
+
+.room-suggestion-tap{
+    flex-shrink:0;
+    font-size:11px;
+    font-weight:600;
+    color:var(--moon);
+    white-space:nowrap;
+}
+
+select{
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+        linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+    background-position:
+        calc(100% - 18px) center,
+        calc(100% - 13px) center;
+    background-size:5px 5px, 5px 5px;
+    background-repeat:no-repeat;
+    appearance:none;
+    cursor:pointer;
+}
+
+button{
+    width:100%;
+    padding:14px;
+    border:none;
+    border-radius:var(--r-sm);
+    background:linear-gradient(135deg,#5eead4,#0d9488);
+    color:#fff;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+    transition:transform .15s, filter .15s, box-shadow .15s;
+    box-shadow:0 4px 18px rgba(94,234,212,.28);
+    font-family:inherit;
+}
+
+button:hover{
+    transform:translateY(-1px);
+    filter:brightness(1.08);
+}
+
+button:active{
+    transform:translateY(0);
+}
+
+/* ---- role display ---- */
+
+.eyebrow{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.28em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    margin-bottom:6px;
+}
+
+#role{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:36px;
+    font-weight:700;
+    margin-top:6px;
+    color:#fff;
+    text-shadow:0 0 24px rgba(94,234,212,.5);
+    line-height:1.2;
+}
+
+#role .placeholder{
+    color:var(--ink-dim);
+    font-size:22px;
+    font-weight:400;
+    font-family:"IBM Plex Sans Thai",sans-serif;
+}
+
+.realRole{
+    margin-top:12px;
+    font-size:14px;
+    color:var(--mark);
+    font-weight:600;
+    padding:8px 12px;
+    background:var(--mark-soft);
+    border:1px solid rgba(251,191,36,.3);
+    border-radius:var(--r-sm);
+}
+
+#huntInfo{
+    margin-top:10px;
+    font-size:14px;
+    color:var(--wolf);
+    font-weight:600;
+    padding:8px 12px;
+    background:var(--wolf-soft);
+    border:1px solid rgba(239,68,68,.3);
+    border-radius:var(--r-sm);
+}
+
+.hidden{
+    display:none !important;
+}
+
+/* แบนเนอร์แจ้งสถานะขาดการเชื่อมต่อ/กำลังเชื่อมต่อใหม่ */
+.conn-banner{
+    position:fixed;
+    top:8px;
+    left:12px;
+    right:12px;
+    z-index:50;
+    max-width:560px;
+    margin:0 auto;
+    padding:9px 14px;
+    border-radius:var(--r-sm);
+    background:var(--mark-soft);
+    border:1px solid rgba(251,191,36,.4);
+    color:var(--mark);
+    font-size:12.5px;
+    font-weight:600;
+    text-align:center;
+    animation:riseFade .3s ease both;
+}
+
+/* ป้ายบอกกลางวัน/กลางคืน — ลอยมุมขวาบนตอนอยู่ในเกม สลับสีตาม body.is-day/is-night */
+.day-night-badge{
+    position:fixed;
+    top:8px;
+    right:12px;
+    z-index:45;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:7px 12px;
+    border-radius:999px;
+    font-size:12.5px;
+    font-weight:700;
+    backdrop-filter:blur(10px);
+    transition:background .9s ease, border-color .9s ease, color .9s ease;
+    background:var(--moon-soft);
+    border:1px solid rgba(94,234,212,.4);
+    color:#99f6e4;
+}
+.day-night-badge.hidden{ display:none; }
+.day-night-badge .dn-icon{
+    font-size:14px;
+    line-height:1;
+}
+.day-night-badge #dnText{
+    /* เดิมอาศัย font-weight:700 จาก .day-night-badge เฉยๆ แต่ฟอนต์ไทยที่ใช้ (IBM Plex Sans Thai)
+       เส้นเล็กกว่าฟอนต์อังกฤษที่ weight เท่ากัน ทำให้ดูบางเมื่อเทียบกับป้าย/แท็บข้างเคียงที่ตัวหนากว่า
+       เพิ่มน้ำหนักเฉพาะตัวเลข/ข้อความในนี้ให้ชัดขึ้น ไม่กระทบไอคอน 🌙☀️ ที่อยู่ข้างๆ */
+    font-weight:800;
+    letter-spacing:.2px;
+}
+body.is-day .day-night-badge{
+    background:var(--mark-soft);
+    border-color:rgba(251,191,36,.45);
+    color:var(--mark);
+}
+
+.small{
+    font-size:13px;
+    line-height:1.7;
+    color:var(--ink-dim);
+}
+
+/* role info card */
+#roleInfo .card{
+    margin-bottom:0;
+}
+
+#roleInfo h3{
+    font-size:17px;
+}
+
+/* ---- players ---- */
+
+.player{
+    position:relative;
+    overflow:hidden;
+    background:#0c2e38;
+    border:1px solid rgba(255,255,255,.16);
+    /* ห้ามใช้หน่วย cqw กับ property ของ .player เองตรงนี้ (padding/width/height ฯลฯ) — .player คือ
+       ตัว query container เอง (container-type ด้านล่าง) การอ้าง cqw ย้อนกลับมาที่ตัวเองแบบนี้คือ
+       circular reference ที่สเปกกำหนดให้ต้อง fallback เป็น 0 (เจอมาแล้ว: ทำให้การ์ดพังทั้งอันจน
+       ข้อมูลหาย/ไม่เป็นสี่เหลี่ยมจัตุรัส) จึงคง padding เป็น px ตายตัวไว้เหมือนเดิม ส่วน cqw ทั้งหมด
+       ด้านล่างในไฟล์นี้ใช้เฉพาะกับ "ลูกของ .player" (.pname/badge ต่างๆ) เท่านั้น ซึ่งไม่ circular */
+    padding:6px 4px;
+    border-radius:var(--r-md);
+    /* container query สำหรับสเกลฟอนต์/ไอคอน/แบดจ์ภายในการ์ดให้เล็กลง-โตขึ้นตามขนาดจริงของการ์ด
+       (ไม่ใช่ตามความกว้างจอ) หน่วย cqw ที่ใช้กับลูกๆ ของ .player ด้านล่างทั้งหมดคือ % ของความกว้าง
+       การ์ดใบนี้เอง ดังนั้นเวลา --player-card-ceiling ลดลงจนการ์ดเล็กลง ทุกอย่างข้างในจะเล็กลงตาม
+       สัดส่วนเดียวกันเป๊ะๆ แทนที่จะค้างขนาดเดิมจนล้น/ตัดคำ (อ้างอิงจากขนาดการ์ดดีฟอลต์ 88px
+       ดู applyPlayerGridDensity) */
+    container-type:inline-size;
+    container-name:playercard;
+    box-shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 2px 8px rgba(0,0,0,.25);
+    transition:border-color .2s, box-shadow .2s, transform .15s, background .2s;
+    cursor:pointer;
+    min-width:0;
+    min-height:0;
+    aspect-ratio:1/1;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+}
+
+.player.selected{
+    border-color:var(--moon);
+    box-shadow:0 0 0 1px var(--moon), 0 0 24px rgba(94,234,212,.35);
+}
+
+.player .pname{
+    font-weight:600;
+    font-size:12.5cqw;
+    color:#fff;
+    word-break:break-word;
+    line-height:1.2;
+}
+
+.player-role-icon{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:22.73cqw;
+    height:22.73cqw;
+    line-height:1;
+    opacity:.85;
+    pointer-events:none;
+    filter:drop-shadow(0 1px 4px rgba(0,0,0,.5));
+    transition:right .15s;
+}
+.player-role-icon img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:50%;
+    display:block;
+}
+/* ไอคอนเปิดเผยบทบาทจากการ "ส่อง" (หมาหยั่งรู้/ผู้หยั่งรู้) — ใหญ่ กลางการ์ด ไม่บังชื่อ
+   (อยู่ใน flow ปกติต่อจาก .pname ไม่ใช่ absolute เลยไม่มีทางทับชื่อได้) */
+.player-scout-reveal{
+    width:58%;
+    aspect-ratio:1/1;
+    margin-top:4.55cqw;
+    border-radius:11.36cqw;
+    overflow:hidden;
+    box-shadow:0 0 0 2px rgba(94,234,212,.6), 0 2px 10px rgba(0,0,0,.4);
+    flex-shrink:0;
+}
+.player-scout-reveal img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block;
+}
+.player-scout-reveal.player-scout-aura{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#082530;
+    border:2px solid rgba(148,163,184,.5);
+    box-shadow:0 2px 10px rgba(0,0,0,.4);
+    font-size:27.27cqw;
+}
+/* ผลของ "นักสืบ" — สัญลักษณ์ =/≠ ตัวใหญ่กลางการ์ด (ใช้โครงเดียวกับ player-scout-aura) */
+.player-scout-reveal.player-scout-detective{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:#082530;
+    border:2px solid rgba(148,163,184,.5);
+    box-shadow:0 2px 10px rgba(0,0,0,.4);
+    font-size:38.64cqw;
+    font-weight:800;
+    line-height:1;
+}
+
+.player-silenced-icon{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:22.73cqw;
+    height:22.73cqw;
+    line-height:1;
+    opacity:.9;
+    pointer-events:none;
+    filter:drop-shadow(0 1px 4px rgba(0,0,0,.5));
+    transition:right .15s;
+}
+.player-silenced-icon img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:50%;
+    display:block;
+}
+
+.player.dead{
+    opacity:.45;
+    filter:grayscale(100%);
+    cursor:default;
+}
+
+/* อนิเมชัน "เพิ่งตาย" — เล่นครั้งเดียวตอน alive เปลี่ยนเป็น false เท่านั้น (ดู renderPlayerGrid)
+   ครอบคลุมทุกสาเหตุการตาย (แม่มดปายา/ลูกหมาป่าลาก/ศาลเตี้ยยิง/หมาป่ากัด/ฆาตกร/ประหาร ฯลฯ)
+   เป้าหมาย: คนที่ไม่ได้อ่านแชทก็ต้องสังเกตเห็นว่ามีคนตายจากการ์ดสั่น+แดงวาบ+กะโหลกเด้ง */
+.player.just-died{
+    animation:justDiedShake .6s cubic-bezier(.36,.07,.19,.97) both;
+}
+.player.just-died::before{
+    content:"";
+    position:absolute;
+    inset:0;
+    z-index:5;
+    pointer-events:none;
+    background:rgba(239,68,68,.55);
+    animation:justDiedFlash .8s ease-out both;
+}
+.player.just-died::after{
+    content:"💀";
+    position:absolute;
+    left:50%;
+    top:50%;
+    z-index:6;
+    font-size:34.09cqw;
+    line-height:1;
+    pointer-events:none;
+    filter:drop-shadow(0 2px 6px rgba(0,0,0,.6));
+    animation:justDiedSkullPop 1.1s cubic-bezier(.34,1.56,.64,1) both;
+}
+@keyframes justDiedShake{
+    0%{ transform:translateX(0); }
+    10%{ transform:translateX(-6px) rotate(-3deg); }
+    20%{ transform:translateX(6px) rotate(3deg); }
+    30%{ transform:translateX(-5px) rotate(-2deg); }
+    40%{ transform:translateX(5px) rotate(2deg); }
+    50%{ transform:translateX(-3px) rotate(-1deg); }
+    60%{ transform:translateX(3px) rotate(1deg); }
+    70%{ transform:translateX(-2px); }
+    85%{ transform:translateX(1px); }
+    100%{ transform:translateX(0); }
+}
+@keyframes justDiedFlash{
+    0%{ opacity:1; }
+    100%{ opacity:0; }
+}
+@keyframes justDiedSkullPop{
+    0%{ transform:translate(-50%,-50%) scale(0) rotate(-25deg); opacity:0; }
+    45%{ transform:translate(-50%,-50%) scale(1.4) rotate(10deg); opacity:1; }
+    65%{ transform:translate(-50%,-50%) scale(1) rotate(0deg); opacity:1; }
+    100%{ transform:translate(-50%,-50%) scale(1) rotate(0deg); opacity:0; }
+}
+
+.player.reconnecting{
+    opacity:.6;
+    border-color:rgba(251,191,36,.45);
+    background:rgba(251,191,36,.04);
+    cursor:default;
+}
+
+.player.offline{
+    opacity:.45;
+    border-color:rgba(148,163,184,.2);
+    background:rgba(148,163,184,.03);
+    cursor:default;
+    filter:grayscale(30%);
+}
+
+/* Hunt target marker */
+.player.hunt-target{
+    border-color:rgba(239,68,68,.5);
+    box-shadow:0 0 0 1px rgba(239,68,68,.3), 0 0 14px rgba(239,68,68,.15);
+}
+
+/* Kicked overlay */
+#kickedOverlay{
+    position:fixed;
+    inset:0;
+    z-index:9999;
+    background:rgba(0,0,0,.82);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    animation:fadeIn .3s ease both;
+}
+
+.kicked-box{
+    background:#082530;
+    border:1px solid rgba(239,68,68,.4);
+    border-radius:16px;
+    padding:40px 48px;
+    text-align:center;
+    box-shadow:0 0 40px rgba(239,68,68,.15);
+}
+
+.kicked-icon{
+    font-size:52px;
+    margin-bottom:16px;
+}
+
+.kicked-title{
+    font-size:22px;
+    font-weight:700;
+    color:#f87171;
+    margin-bottom:8px;
+}
+
+.kicked-sub{
+    font-size:14px;
+    color:#94a3b8;
+}
+
+/* GAME OVER OVERLAY */
+#gameOverOverlay{
+    position:fixed;
+    inset:0;
+    z-index:9999;
+    background:rgba(0,0,0,.86);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    animation:fadeIn .3s ease both;
+}
+
+.gameover-box{
+    width:88%;
+    max-width:360px;
+    background:#082530;
+    border:1px solid var(--line);
+    border-radius:var(--r-lg);
+    padding:32px 28px;
+    text-align:center;
+    box-shadow:0 0 50px rgba(94,234,212,.18);
+}
+
+.gameover-icon{
+    font-size:46px;
+    margin-bottom:8px;
+}
+
+.gameover-role-icon{
+    width:64px;
+    height:64px;
+    border-radius:50%;
+    object-fit:cover;
+    margin:0 auto 10px;
+    display:block;
+    border:2px solid var(--line);
+}
+
+.gameover-roleName{
+    font-size:14px;
+    color:var(--ink-dim);
+    margin-bottom:6px;
+}
+
+.gameover-result{
+    font-size:30px;
+    font-weight:700;
+    margin-bottom:6px;
+}
+
+.gameover-result.win{ color:var(--safe); }
+.gameover-result.lose{ color:var(--wolf); }
+
+.gameover-titleLine{
+    font-size:15px;
+    color:var(--ink);
+    font-weight:600;
+    margin-bottom:22px;
+}
+
+.gameover-continue-btn{
+    width:100%;
+    padding:13px;
+    border:none;
+    border-radius:var(--r-md);
+    background:var(--moon);
+    color:#fff;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+}
+
+.gameover-continue-btn:disabled{
+    opacity:.5;
+}
+
+.gameover-waiting{
+    margin-top:14px;
+    font-size:13px;
+    color:var(--ink-dim);
+}
+
+/* GAME OVER — สรุปบททุกคน */
+.gameOverList{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    margin:6px 0 20px;
+    max-height:38vh;
+    overflow-y:auto;
+    text-align:left;
+}
+
+.gameOverRow{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:10px 12px;
+    border-radius:var(--r-sm);
+    background:rgba(255,255,255,.04);
+    border:1px solid var(--line);
+}
+
+.gameOverRow.win{
+    border-color:rgba(34,197,94,.4);
+    background:var(--safe-soft);
+}
+
+.gameOverRow.lose{
+    border-color:rgba(239,68,68,.3);
+    background:rgba(239,68,68,.06);
+}
+
+.gameOverRow.is-me{
+    box-shadow:0 0 0 1px var(--moon) inset;
+}
+
+.gameOverRow .goName{
+    font-weight:600;
+    font-size:14px;
+}
+
+.gameOverRow .goRole{
+    font-size:12px;
+    color:var(--ink-dim);
+}
+
+.gameOverRow .goTag{
+    font-weight:700;
+    font-size:12.5px;
+    flex-shrink:0;
+}
+
+.gameOverRow.win .goTag{ color:var(--safe); }
+.gameOverRow.lose .goTag{ color:var(--wolf); }
+
+
+.hunt-target-badge{
+    position:relative;
+    width:26px;
+    height:26px;
+    margin-bottom:4px;
+    flex-shrink:0;
+}
+
+.hunt-target-badge .reticle-ring{
+    position:absolute;
+    inset:0;
+    border:2px solid var(--wolf);
+    border-radius:50%;
+    animation:huntBadgePulse 1.6s ease-in-out infinite;
+}
+
+.hunt-target-badge .reticle-dot{
+    position:absolute;
+    top:50%;
+    left:50%;
+    width:5px;
+    height:5px;
+    background:var(--wolf);
+    border-radius:50%;
+    transform:translate(-50%,-50%);
+    box-shadow:0 0 6px rgba(239,68,68,.7);
+}
+
+.hunt-target-badge .reticle-tick{
+    position:absolute;
+    background:var(--wolf);
+}
+
+.hunt-target-badge .reticle-tick.top{ top:-4px; left:50%; width:2px; height:6px; transform:translateX(-50%); }
+.hunt-target-badge .reticle-tick.bottom{ bottom:-4px; left:50%; width:2px; height:6px; transform:translateX(-50%); }
+.hunt-target-badge .reticle-tick.left{ left:-4px; top:50%; width:6px; height:2px; transform:translateY(-50%); }
+.hunt-target-badge .reticle-tick.right{ right:-4px; top:50%; width:6px; height:2px; transform:translateY(-50%); }
+
+@keyframes huntBadgePulse{
+    0%,100%{ box-shadow:0 0 6px rgba(239,68,68,.45); transform:scale(1); }
+    50%{ box-shadow:0 0 14px rgba(239,68,68,.8); transform:scale(1.1); }
+}
+
+.status-dot{
+    display:inline-block;
+    width:7.95cqw;
+    height:7.95cqw;
+    border-radius:50%;
+    margin-left:5.68cqw;
+    vertical-align:middle;
+    box-shadow:0 0 4px currentColor;
+}
+.status-dot.dot-alive{ background:#22c55e; }
+.status-dot.dot-dead{ background:#ef4444; }
+.status-dot.dot-offline{ background:#6b7280; }
+.status-dot.dot-reconnecting{ background:#fbbf24; }
+
+.empty-note{
+    font-size:13px;
+    color:var(--ink-dim);
+    padding:14px;
+    border:1px dashed var(--line);
+    border-radius:var(--r-sm);
+    text-align:center;
+}
+
+#selectInfo:not(:empty){
+    margin-top:-4px;
+    margin-bottom:12px;
+    font-size:13px;
+    color:var(--moon);
+    font-weight:600;
+}
+
+/* หัวการ์ดผู้เล่น (ชื่อช่วง + ชิปกรอง) — ทำให้เล็กที่สุดเท่าที่ยังอ่านออก เพื่อยกพื้นที่ให้กริดผู้เล่นให้มากที่สุด
+   (เดิมสูง ~50px เพราะชิป "ตายแล้ว" ตกบรรทัด → ชิปทุกอันยืดสูงตามเป็นวงกลมใหญ่ + หัวข้อ/ไอคอนขนาดเต็ม) */
+.players-card-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:nowrap;
+    gap:4px 6px;
+}
+
+.players-card-head h3{
+    margin:0;
+    font-size:12.5px;
+    line-height:1.25;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    min-width:0;
+    flex-shrink:1;
+    display:flex;
+    align-items:center;
+    gap:4px;
+}
+
+/* บรรทัดรายละเอียดเสริม (จำนวนโหวต/นับถอยหลัง) — ยังจองที่ไว้ 1 บรรทัดเสมอกันกริดกระโดดตอนเข้า/ออกโหมดโหวต
+   แต่ทำให้เตี้ยลง (เดิมจองรวมระยะห่างราว 25px แม้ไม่มีข้อความ) */
+.players-card-head + .sub{
+    margin:1px 0 3px;
+    min-height:13px;
+    font-size:11px;
+    line-height:1.2;
+}
+
+.player-filter-chips{
+    display:flex;
+    gap:3px;
+    flex-wrap:nowrap;
+    flex-shrink:0;
+}
+
+/* ชิปกรอง "ทั้งหมด/มีชีวิต/ตายแล้ว": ต้อง width:auto + nowrap เพราะ button ทั่วไป (ด้านบนไฟล์) ตั้ง width:100%
+   ให้ทุกปุ่ม พอเป็น flex item หลายตัวมันหดแย่งกันจนข้อความตกบรรทัด และมี padding 14px/เงาเรืองมาจาก button
+   ทั่วไปด้วย — ปิดหมดให้เป็นชิปบรรทัดเดียวเตี้ย ๆ (สอง @media เดิมของชิปอยู่ก่อน .filterChip จึงถูกทับตลอด ไม่เคยมีผล
+   เลยตัดทิ้ง เหลือค่าเดียวที่เล็กพออยู่ทุกขนาดจอ) */
+.filterChip{
+    width:auto;
+    flex:0 0 auto;
+    white-space:nowrap;
+    font-size:10.5px;
+    font-weight:600;
+    line-height:1.2;
+    padding:3px 8px;
+    border-radius:999px;
+    border:1px solid var(--line);
+    background:#082530;
+    color:var(--ink-dim);
+    box-shadow:none;
+    cursor:pointer;
+    transition:.15s;
+    font-family:"IBM Plex Sans Thai",sans-serif;
+}
+
+.filterChip:hover{
+    border-color:rgba(94,234,212,.4);
+}
+
+.filterChip.active{
+    background:var(--moon-soft);
+    border-color:var(--moon);
+    color:#99f6e4;
+}
+
+.player.search-hidden{
+    display:none !important;
+}
+
+#players{
+    display:grid;
+    /*
+       ไม่ผูกจำนวนคอลัมน์กับ 480/481/1279px อีกแล้ว เพราะ breakpoint บอก "ความกว้างจอ"
+       แต่ไม่ได้บอกว่าพื้นที่จริงของการ์ดผู้เล่นเหลือเท่าไร (เช่น Split View, แชทที่กว้างขึ้น,
+       หรือหน้าต่างที่ลากได้ต่อเนื่อง) จึงให้ JS คำนวณจำนวนคอลัมน์/ขนาดการ์ดจากพื้นที่จริงทุกครั้ง
+       แล้วเขียน --player-grid-template เป็นชุดเดียวกัน เพื่อไม่ให้ CSS คำนวณจำนวนคอลัมน์สวนทางอีกชั้น
+
+       ก่อน JS วัดพื้นที่สำเร็จ ค่า fallback ด้านล่างยังใช้ auto-fit ได้ เพื่อให้กริดมีสภาพใช้งานได้ชั่วคราว
+       แต่เมื่อ JS ทำงานแล้ว --player-grid-template จะเป็นค่าจริงที่สัมพันธ์กับ --player-card-size โดยตรง
+       แถวสุดท้ายที่คนไม่เต็มแถวถูกจัดด้วย grid-column-start จาก JS เพื่อไม่ให้กล่องการ์ดถูกเลื่อนออกนอกกรอบ
+    */
+    /* ขนาดการ์ดจริง = --player-card-size ที่ JS คำนวณจาก "พื้นที่กริดที่มีอยู่จริง" ให้พอดีทั้งแนวตั้งและแนวนอน
+       ถ้า JS ยังไม่ทำงาน/กริดยังถูกซ่อน จะใช้ fallback ด้านบนไปก่อน แล้ว ResizeObserver จะคำนวณใหม่ทันทีที่มีพื้นที่จริง */
+    --player-card-fit:var(--player-card-size, clamp(34px, 7vw, var(--player-card-ceiling, 88px)));
+    /* JS กำหนดทั้ง "จำนวนคอลัมน์" และ "ขนาดการ์ด" เป็นค่าคู่เดียวกันแล้ว เพื่อกัน
+       auto-fit คำนวณจำนวนคอลัมน์ใหม่ไม่ตรงกับขนาดที่ JS เพิ่งคำนวณ (ต้นเหตุของแถวล่างล้น) */
+    grid-template-columns:var(--player-grid-template, repeat(auto-fit, minmax(var(--player-card-fit), var(--player-card-fit))));
+    /* ล็อกความสูงแถวไว้ตรงๆ ด้วยสูตรเดียวกับความกว้างคอลัมน์ (แทนที่จะปล่อยให้ auto คำนวณจาก
+       aspect-ratio ของการ์ดเพียงอย่างเดียว) กันเคสที่เอนจิน/เว็บวิวบางตัวคำนวณความสูงแถวผิดพลาด
+       จนแถวถัดไปเลื่อนไปซ้อนทับแถวก่อนหน้า (ผู้ใช้รายงานว่ากริดผู้เล่นซ้อนกันจนกดพลาดในบางอุปกรณ์) —
+       ตั้งเป็นสูตรต่อแถวแบบนี้ยังคงยอมให้การ์ดโตขึ้น/เล็กลงได้ตามจอและจำนวนคนเหมือนคอลัมน์ด้านบน
+    */
+    grid-auto-rows:var(--player-card-fit);
+    justify-content:start;
+    gap:clamp(4px, .6vw, 7px);
+    /* เว้นขอบ 3px รอบด้าน (เดิมเว้นแค่ขวา 2px): การ์ดเต็มความกว้างแถวพอดีแล้ว ขอบวงแหวน/แสงเรืองของการ์ดที่ถูกเลือก
+       ไม่ควรโดน overflow ของ #players ตัดที่ขอบซ้าย/ขวา/บน — fitPlayerGrid หักระยะนี้ออกจากพื้นที่ที่วัดให้แล้ว */
+    padding:3px;
+}
+
+/*
+   Game vertical layout (จอมือถือ/หน้าต่างแคบ):
+   - #chatCard ได้ "พื้นขั้นต่ำ" ที่ชัดเจนด้วย --game-chat-min-height เพื่อไม่ให้จำนวนผู้เล่น
+     กลายเป็นตัวแปรที่บีบแชทจนเหลือเพียงเศษพิกเซล — แชทจะไม่มีวันถูกบีบจนอ่าน/พิมพ์ไม่ได้เพราะขั้นต่ำนี้
+   - #playersCard เป็นแพเนลหลักของเกม (มีผู้เล่นให้ดู/กดเลือกอยู่เสมอ) จึงได้สัดส่วนพื้นที่ที่เหลือ
+     มากกว่าแชทเมื่อพื้นที่มีเกินพอ (flex-grow 1.6 ต่อ 1) แต่ทั้งคู่ยังเป็น flex item ที่ยืด/หดได้
+     ไม่มีใครถูก "ฟิก" ขนาดตายตัว — แค่ให้น้ำหนักผู้เล่นก่อนเมื่อแบ่งพื้นที่ส่วนเกิน
+   - #players ไม่สร้าง scrollbar ของตัวเอง: JS จะย่อการ์ดและจัดคอลัมน์ให้ผู้เล่นที่เห็นทั้งหมดอยู่ในพื้นที่จริง
+   - ใช้ min-height:0 ที่ชั้น flex สำคัญ เพราะค่าเริ่มต้นของ flex item คือ min-content;
+     ถ้าไม่รีเซ็ตตรงนี้ ผู้เล่นจำนวนมากจะดัน parent ให้สูงเกินพื้นที่ที่มีจริง
+   - ไม่มี breakpoint เกี่ยวกับจำนวนคน: 5, 15, 30 หรือเกือบ 100 คนใช้กติกาเดียวกัน (ดูการ์ดเล็กลงเองที่
+     #players ด้านบนแทน)
+*/
+#playersCard{
+    flex:1.6 1 0;
+    min-height:0;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+    /* padding เล็กกว่า .card ปกติ (10px 12px) — ให้กริดผู้เล่นได้พื้นที่มากขึ้น */
+    padding:8px 10px;
+}
+
+#players{
+    flex:1 1 0;
+    min-height:0;
+    min-width:0;
+    /* ห้ามเลื่อนในกริดผู้เล่นเด็ดขาด (เลื่อนแล้วสายตาจับจุดโฟกัสยาก ต้องเห็นทุกคนในหน้าเดียว) — fitPlayerGrid()
+       ใน player.main.js หดการ์ดทุกใบให้ใส่ครบพอดีพื้นที่เสมอ ไม่ว่าจะมีกี่คน */
+    overflow:hidden;
+    align-content:start;
+}
+
+/*
+   Resize performance: Chrome/Safari ต้องคำนวณ grid ใหม่ทุกเฟรมขณะลากขอบหน้าต่าง
+   จึงไม่ควรให้เอฟเฟกต์ราคาแพงอย่าง backdrop-filter/box-shadow และ transition ของการ์ด
+   แข่งขันกับงาน layout ในช่วงนั้น. JS จะใส่ .is-resizing เฉพาะระหว่างที่มีการ resize ต่อเนื่อง
+   แล้วคืนเอฟเฟกต์หลังหยุดลากเล็กน้อย — ไม่แตะขนาด/ตำแหน่งจริงของ layout จึงไม่มีอาการ
+   "รอวางก่อนแล้วค่อยจัดใหม่" จาก animation ที่ค้างค่าไว้.
+*/
+body.is-resizing .app,
+body.is-resizing #chatCard,
+body.is-resizing .player{
+    backdrop-filter:none !important;
+    -webkit-backdrop-filter:none !important;
+}
+
+body.is-resizing .player{
+    transition:none !important;
+}
+
+/*
+   แต่ละการ์ดเป็นหน่วยย่อยที่ไม่จำเป็นต้องให้ layout/paint ภายในไหลย้อนกลับไปกระทบ grid
+   การแยก layout/paint ตรงนี้ช่วยลดพื้นที่ที่ browser ต้องตรวจใหม่ตอนลาก Split View/Stage Manager
+   โดยยังคงขนาดจาก grid ภายนอกตามปกติ.
+*/
+.player{
+    /* กริดนี้ตั้งใจให้เห็นผู้เล่นทั้งหมดในหน้าเดียวและไม่มีการ scroll ภายใน #players
+       จึงไม่ใช้ content-visibility:auto ที่สามารถสร้าง placeholder ระหว่าง layout/paint ของการ์ดจำนวนมาก
+       ซึ่งบน mobile บาง engine ทำให้การ์ดที่เพิ่งเปิดเผยมีขนาดชั่วคราวผิดจาก grid track ได้ */
+    contain:layout paint;
+    touch-action:manipulation;
+}
+
+/* ===== LOBBY / GAME TRANSITION ===== */
+#playersCard,
+#chatCard,
+#selectInfo{
+    opacity:0;
+    pointer-events:none;
+    transform:translateY(12px);
+    transition:opacity .35s ease, transform .35s ease;
+}
+.game-visible #playersCard,
+.game-visible #chatCard,
+.game-visible #selectInfo{
+    opacity:1;
+    pointer-events:auto;
+    transform:translateY(0);
+}
+.game-visible #chatCard{ transition-delay:.08s; }
+
+#joinCard{
+    transition:opacity .3s ease, transform .3s ease;
+}
+#joinCard.leaving{
+    opacity:0;
+    transform:translateY(-10px);
+    pointer-events:none;
+}
+
+#bottomBar{
+    opacity:0;
+    pointer-events:none;
+    transform:translateX(-50%) translateY(8px);
+    transition:opacity .3s ease .2s, transform .3s ease .2s;
+}
+/* #bottomBar อยู่นอก .app (เพื่อ fixed เกาะขอบจอ) จึงต้องใช้ class ของตัวเองตรงๆ
+   ไม่สามารถพึ่ง ".game-visible #bottomBar" (descendant selector) ได้
+   หมายเหตุ: ต้องคง translateX(-50%) ไว้ใน transform เดียวกันเสมอ เพราะ #bottomBar
+   จัดกึ่งกลางด้วย left:50%+translateX(-50%) — ถ้าตั้ง transform ใหม่โดยไม่มี translateX(-50%)
+   บาร์จะเลื่อนไปขวาเพราะ transform ค่าใหม่จะทับค่าเก่าทั้งหมด ไม่ใช่รวมกัน */
+#bottomBar.bar-visible{
+    opacity:1;
+    pointer-events:auto;
+    transform:translateX(-50%) translateY(0);
+}
+
+/* chat card takes all remaining space */
+#chatCard{
+    flex:1 1 0;
+    min-height:0;
+    display:flex;
+    flex-direction:column;
+    background:var(--panel);
+    border:1px solid var(--line);
+    backdrop-filter:blur(12px);
+    border-radius:var(--r-lg);
+    padding:10px 12px 8px;
+    overflow:hidden;
+}
+
+/* ===== KEYBOARD MODE =====
+   แทนที่ระบบเดิมที่ขยับแค่ #chatRow ด้วย transform (ทำให้ข้อความแชท/แท็บยังอยู่หลังคีย์บอร์ด) —
+   ตอนนี้ #chatCard ทั้งก้อน (แท็บ + ข้อความ + ช่องพิมพ์) กลายเป็น fixed overlay ที่ใช้พื้นที่ของ
+   Visual Viewport จริงทั้งหมด (เหนือคีย์บอร์ดพอดี) เกมด้านหลัง (.app/กริดผู้เล่น/roles panel/bottomBar)
+   ไม่ถูกแตะต้องเลย แค่โดนคลาสนี้บังไว้ด้วย z-index เท่านั้น
+
+   ตำแหน่ง/ขนาดจริง (top/left/width/height) ถูกเซ็ตเป็น inline style จาก player.main.js ทุกครั้งที่อัปเดต
+   (อ่านจาก visualViewport.offsetTop/offsetLeft/width/height โดยตรง) ไม่ใช่ผ่านตัวแปร --vv-* ด้านบน
+   เพราะ inline style ชนะทุก breakpoint ของ #chatCard (660px/900px) แน่นอนโดยไม่ต้องพึ่ง !important
+   หรือไล่เพิ่ม specificity แข่งกับ media query เดิม — ค่า --vv-* ยังถูกเซ็ตไว้คู่กันเผื่อส่วนอื่นต้องใช้ */
+/* สาเหตุที่เดิม "ไม่ขึ้นเต็ม visual viewport" (root cause จริงจากโค้ด):
+   (1) กฎ @media(min-width:660px) ".app.game-visible #chatCard" (specificity 1,2,0) ชนะ "#chatCard.keyboard-mode"
+       (1,1,0) → z-index:50 / min-height / padding-top:40px / border-radius:0 ของโหมดปกติทับค่าของ keyboard-mode
+   (2) .app มี position:relative + z-index:1 = stacking context → z-index 99990 ของ #chatCard ที่อยู่ข้างในไม่มีผล
+       เหนือ #bottomBar (z-index:900, อยู่นอก .app) และ overlay อื่นนอก .app
+   แก้: เพิ่ม specificity ให้ชนะกฎเดิมทุกตัว + ยก .app ขึ้นเหนือ #bottomBar เฉพาะตอน keyboard-mode
+   (ไม่แตะ layout/ขนาด/ตำแหน่งของเกมเลย เปลี่ยนแค่ลำดับการซ้อน) */
+html body .app #chatCard.keyboard-mode{
+    position:fixed; /* top/left/width/height: inline style จาก JS (อ่านจาก visualViewport) */
+    right:auto;
+    bottom:auto;
+    margin:0;
+    max-width:none;
+    max-height:none;
+    min-height:0;
+    display:flex;
+    flex-direction:column;
+    opacity:1;
+    transform:none; /* กัน translateY จาก lobby/game transition ค้าง */
+    border-radius:0;
+    z-index:99990; /* เหนือ #bottomBar (900) แต่ต่ำกว่า ww-modal (99999) */
+    padding:max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) 8px max(12px, env(safe-area-inset-left, 0px));
+    /* ไม่มี safe-area ที่ padding-bottom — ขอบล่างต้องชนขอบบนคีย์บอร์ดพอดี */
+    box-shadow:0 -10px 30px rgba(0,0,0,.5);
+    /* ห้าม transition ตำแหน่ง/ขนาดระหว่างคีย์บอร์ด resize (layer ต้องตามทันที) */
+    transition:box-shadow .2s ease;
+}
+body.chat-keyboard-mode .app{
+    z-index:901; /* ยก stacking context ของ .app เหนือ #bottomBar (900) — ไม่กระทบ layout */
+}
+#chatCard.keyboard-mode .chatTabs{ flex:0 0 auto; }
+#chatCard.keyboard-mode #chatBoxGlobal,
+#chatCard.keyboard-mode #chatBoxWolf,
+#chatCard.keyboard-mode #chatBoxInstigator,
+#chatCard.keyboard-mode #chatBoxCult,
+#chatCard.keyboard-mode #chatBoxBandit{
+    flex:1 1 0;
+    min-height:0;
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+}
+#chatCard.keyboard-mode .chatRow{ flex:0 0 auto; }
+/* iOS จะซูมหน้าเองถ้า input font-size < 16px ตอน focus (ทำให้ visual viewport เพี้ยน) */
+#chatCard.keyboard-mode .chatRow input{ font-size:16px; }
+
+/* กัน body/​.app scroll ตามช่องพิมพ์ระหว่างคีย์บอร์ดเปิด (overflow:hidden เดิมมีอยู่แล้วที่ body แต่กันซ้ำ
+   ชัดๆ ตรงนี้ เผื่อบาง browser พยายาม scroll ตาม focus element) — ไม่แตะ .app/เกมด้านหลังเลย */
+body.chat-keyboard-mode{
+    overflow:hidden;
+}
+
+/* ---- chat ---- */
+
+#chatBoxGlobal,
+#chatBoxWolf,
+#chatBoxInstigator,
+#chatBoxCult,
+#chatBoxBandit{
+    flex:1 1 0;
+    min-height:0;
+    overflow-y:auto;
+    padding:8px 10px;
+    border-radius:var(--r-md);
+    background:#082530;
+    border:1px solid var(--line);
+    box-shadow:inset 0 0 20px rgba(0,0,0,.3);
+    margin-bottom:8px;
+}
+
+#chatBoxGlobal:empty::after,
+#chatBoxWolf:empty::after,
+#chatBoxInstigator:empty::after,
+#chatBoxCult:empty::after,
+#chatBoxBandit:empty::after{
+    content:"ยังไม่มีข้อความ — เริ่มทักทายเพื่อนร่วมหมู่บ้าน";
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    height:100%;
+    text-align:center;
+    color:var(--ink-dim);
+    font-size:13px;
+}
+
+.chatTabs{
+    display:flex;
+    gap:6px;
+    margin-bottom:8px;
+    flex-shrink:0;
+}
+
+.chatTab{
+    flex:1;
+    text-align:center;
+    padding:6px 10px;
+    border-radius:var(--r-md);
+    border:1px solid var(--line);
+    background:rgba(255,255,255,.03);
+    color:var(--ink-dim);
+    font-size:12px;
+    font-weight:600;
+    cursor:pointer;
+    transition:.15s;
+    user-select:none;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+}
+
+.tab-badge{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-width:17px;
+    height:17px;
+    padding:0 4px;
+    border-radius:999px;
+    font-size:10px;
+    font-weight:700;
+    font-family:"JetBrains Mono",monospace;
+    background:rgba(255,255,255,.15);
+    color:#fff;
+    line-height:1;
+    transition:opacity .2s;
+}
+
+.tab-badge.zero{
+    opacity:0;
+    pointer-events:none;
+}
+
+.chatTab.active .tab-badge{
+    background:rgba(59,130,246,.35);
+}
+
+.chatTab.active.wolfTab .tab-badge{
+    background:rgba(239,68,68,.35);
+}
+
+.chatTab.active{
+    color:#fff;
+    border-color:rgba(59,130,246,.4);
+    background:rgba(59,130,246,.15);
+}
+
+.chatTab.active.wolfTab{
+    color:#fff;
+    border-color:rgba(239,68,68,.4);
+    background:var(--wolf-soft);
+}
+
+/* แชททีมยุยง 🎭 — ธีมสีชมพู/แดงอมม่วง แยกจากแชทหมาป่า (แดง) และแชทรวม (ฟ้า) */
+#tabInstigator.chatTab.active{
+    color:#fff;
+    border-color:rgba(244,114,182,.45);
+    background:rgba(244,114,182,.15);
+}
+
+#tabInstigator.chatTab.active .tab-badge{
+    background:rgba(244,114,182,.35);
+}
+
+/* แชทลัทธิ 🔯 — ธีมสีเหลืองทอง แยกจากแชทอื่นทั้งหมด */
+#tabCult.chatTab.active{
+    color:#fff;
+    border-color:rgba(234,179,8,.45);
+    background:rgba(234,179,8,.15);
+}
+
+#tabCult.chatTab.active .tab-badge{
+    background:rgba(234,179,8,.35);
+}
+
+.chatRow{
+    display:flex;
+    flex-direction:column;
+    gap:0;
+    flex-shrink:0;
+    position:relative;
+    z-index:5;
+}
+
+.chatRow select{
+    width:100%;
+    margin:0;
+}
+
+.chatRow .chatInputRow{
+    display:flex;
+    gap:6px;
+    align-items:center;
+}
+
+.chatRow input{
+    flex:1;
+    margin:0;
+    padding:9px 12px;
+    font-size:13px;
+}
+
+.chatRow button{
+    width:auto;
+    flex:0 0 60px;
+    padding:9px 8px;
+    font-size:13px;
+}
+
+.legend{
+    display:none;
+}
+
+.silenced-notice{
+    display:none;
+    align-items:center;
+    gap:8px;
+    padding:9px 12px;
+    border-radius:10px;
+    background:rgba(148,163,184,.12);
+    border:1px solid rgba(148,163,184,.3);
+    color:#94a3b8;
+    font-size:13px;
+    font-weight:600;
+    width:100%;
+}
+
+.silenced-notice.visible{
+    display:flex;
+}
+
+.chatRow input:disabled,
+.chatRow button:disabled{
+    opacity:.35;
+    cursor:not-allowed;
+    pointer-events:none;
+}
+
+/* ---- roles in game summary ---- */
+.roles-list{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+}
+
+.role-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:9px 12px;
+    background:#082530;
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    font-size:13px;
+}
+
+.role-row-name{
+    color:var(--ink);
+    font-weight:500;
+}
+
+.role-row-count{
+    font-family:"JetBrains Mono",monospace;
+    font-size:12px;
+    font-weight:700;
+    padding:2px 8px;
+    border-radius:6px;
+    background:var(--moon-soft);
+    color:var(--moon);
+    border:1px solid rgba(94,234,212,.25);
+}
+
+.role-row.wolf-role{
+    border-color:rgba(239,68,68,.2);
+}
+
+.role-row.wolf-role .role-row-count{
+    background:var(--wolf-soft);
+    color:var(--wolf);
+    border-color:rgba(239,68,68,.3);
+}
+
+.role-row.solo-role{
+    border-color:rgba(251,191,36,.2);
+}
+
+.role-row.solo-role .role-row-count{
+    background:var(--mark-soft);
+    color:var(--mark);
+    border-color:rgba(251,191,36,.3);
+}
+
+.role-row.mine-role{
+    border-color:var(--moon);
+    box-shadow:0 0 0 1px rgba(94,234,212,.25) inset;
+}
+
+.mine-tag{
+    color:var(--moon);
+    font-weight:600;
+    font-size:11px;
+}
+
+.roles-section-label{
+    font-family:"JetBrains Mono",monospace;
+    font-size:10px;
+    letter-spacing:.2em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    margin:10px 0 4px;
+}
+
+/* ---- role row: expandable description toggle ---- */
+.role-row-wrap{
+    display:flex;
+    flex-direction:column;
+}
+
+.role-row-left{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    min-width:0;
+}
+
+.role-row-left .role-row-name{
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.role-toggle-btn{
+    flex-shrink:0;
+    width:22px;
+    height:22px;
+    min-width:22px;
+    padding:0;
+    margin:0;
+    border:1px solid var(--line);
+    border-radius:6px;
+    background:#061a20;
+    color:var(--ink-dim);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    box-shadow:none;
+}
+
+.role-toggle-btn:hover{
+    border-color:var(--moon);
+    color:var(--moon);
+    transform:none;
+    filter:none;
+}
+
+.role-toggle-btn:active{
+    transform:none;
+}
+
+.role-toggle-arrow{
+    display:inline-block;
+    font-size:9px;
+    line-height:1;
+    transition:transform .25s ease;
+}
+
+.role-toggle-btn.open{
+    border-color:var(--moon);
+    color:var(--moon);
+    background:var(--moon-soft);
+}
+
+.role-toggle-btn.open .role-toggle-arrow{
+    transform:rotate(90deg);
+}
+
+.role-desc-panel{
+    margin-top:-2px;
+    padding:10px 12px;
+    background:rgba(94,234,212,.06);
+    border:1px solid var(--line);
+    border-top:none;
+    border-radius:0 0 var(--r-sm) var(--r-sm);
+    animation:rise .2s ease both;
+}
+
+.role-desc-panel.hidden{
+    display:none;
+}
+
+.role-desc-title{
+    color:#fff;
+    font-weight:600;
+    font-size:12.5px;
+    margin-bottom:4px;
+}
+
+.role-desc-text{
+    font-size:12.5px;
+    line-height:1.65;
+    color:var(--ink-dim);
+}
+
+/* คำอธิบายอาชีพ (รูป+ชื่อ+เนื้อหา): เดิมใช้ flexbox (รูปซ้าย + เนื้อหาขวา) ซึ่งทำให้ "คอลัมน์เนื้อหา" ถูกเบียด
+   แคบลงเท่าความกว้างที่เหลือจากรูปไปตลอดทั้งก้อน แม้ข้อความจะยาวเลยพ้นขอบล่างของรูปไปแล้วก็ตาม (พื้นที่ว่าง
+   ใต้รูปทางซ้ายจึงไม่ได้ใช้ ข้อความยังเว้น indent เท่าความกว้างรูปต่อไปทั้งที่ไม่ทับรูปแล้ว) — เปลี่ยนมาใช้ float
+   แทน: รูปลอยชิดซ้าย ข้อความไหลอ้อมรูปเฉพาะช่วงที่ยังอยู่ในแนวรูป พอพ้นขอบล่างรูปแล้วขยายเต็มความกว้าง
+   container ทันที (ดันไปทางซ้ายสุดต่อได้โดยไม่ทับรูป) ใช้ display:flow-root แทน clearfix เพื่อให้ container
+   ครอบคลุมความสูงของรูปที่ลอยอยู่ด้านในถูกต้อง */
+.role-desc-flex{
+    display:flow-root;
+}
+
+.role-desc-img{
+    float:left;
+    margin:0 10px 6px 0;
+    width:52px;
+    height:52px;
+    object-fit:cover;
+    border-radius:10px;
+    border:1px solid var(--line);
+    background:#061a20;
+}
+
+.role-desc-img.big{
+    width:72px;
+    height:72px;
+    border-radius:14px;
+}
+
+.role-desc-body{
+    /* เดิมเป็น flex item (flex:1;min-width:0;) — ไม่จำเป็นแล้วหลังเปลี่ยนรูปเป็น float ด้านบน
+       (ข้อความเป็น block ธรรมดา ไหลอ้อมรูปเองตามธรรมชาติ ไม่ต้องกำหนดความกว้าง/flex-basis อีก) */
+}
+
+/* ===== BOTTOM BAR ===== */
+
+/* เพิ่ม padding ล่างเพื่อไม่ให้ content ซ่อนอยู่หลัง bar */
+body{
+    padding-bottom:0;
+}
+
+#bottomBar{
+    position:fixed;
+    bottom:0;
+    left:50%;
+    transform:translateX(-50%);
+    width:min(560px, 100vw);
+    z-index:900;
+    background:rgba(14,19,32,.92);
+    backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px);
+    border-top:1px solid rgba(255,255,255,.1);
+    border-radius:0;
+    padding:8px 16px env(safe-area-inset-bottom, 8px);
+    display:flex;
+    align-items:center;
+    gap:12px;
+    box-shadow:0 -4px 20px rgba(0,0,0,.4);
+    flex-shrink:0;
+}
+
+#maskBtn{
+    width:40px;
+    height:40px;
+    flex-shrink:0;
+    border-radius:50%;
+    background:var(--moon-soft);
+    border:1px solid rgba(94,234,212,.35);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:20px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    box-shadow:none;
+    padding:0;
+}
+
+#maskBtn:hover{
+    background:rgba(94,234,212,.28);
+    box-shadow:0 0 16px rgba(94,234,212,.4);
+    transform:scale(1.08);
+}
+
+#maskBtn:active{
+    transform:scale(.95);
+}
+
+#barRoleText{
+    flex:1;
+    min-width:0;
+}
+
+#barRoleName{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:18px;
+    font-weight:700;
+    color:#fff;
+    line-height:1.2;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+#barRoleSub{
+    font-size:11px;
+    color:var(--ink-dim);
+    margin-top:1px;
+}
+
+#barHuntBadge{
+    font-size:12px;
+    color:var(--wolf);
+    font-weight:600;
+    background:var(--wolf-soft);
+    border:1px solid rgba(239,68,68,.3);
+    border-radius:999px;
+    padding:3px 10px;
+    white-space:nowrap;
+    flex-shrink:0;
+}
+
+#barHuntBadge.hidden{ display:none; }
+
+#barIllusionBadge{
+    font-size:12px;
+    color:#f97316;
+    font-weight:600;
+    background:rgba(249,115,22,.12);
+    border:1px solid rgba(249,115,22,.35);
+    border-radius:999px;
+    padding:3px 10px;
+    white-space:nowrap;
+    flex-shrink:0;
+    max-width:150px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+#barIllusionBadge.hidden{ display:none; }
+
+#shieldBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(56,189,248,.16);
+    border:1px solid rgba(56,189,248,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#shieldBtn:hover{
+    background:rgba(56,189,248,.28);
+    box-shadow:0 0 16px rgba(56,189,248,.4);
+    transform:scale(1.08);
+}
+
+#shieldBtn:active{ transform:scale(.95); }
+
+#shieldBtn.hidden{ display:none; }
+
+#shieldBtn.active{
+    background:rgba(56,189,248,.4);
+    box-shadow:0 0 16px rgba(56,189,248,.55);
+}
+
+#shieldBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+/* โล่หมาป่าผู้พิทักษ์บนปุ่มกดสกิล — ตอนนี้เป็นรูป shield.jpg แทนอิโมจิ 🛡️ แล้ว (หนูน้อยผู้ใสซื่อยังเป็น
+   อิโมจิ 🌼 เหมือนเดิม อยู่ในสเปซเดียวกัน ไม่ต้อง override) จัดให้กลมพอดีวงกลมของปุ่ม #shieldBtn */
+#shieldIcon img{
+    width:22px;
+    height:22px;
+    object-fit:cover;
+    border-radius:50%;
+    display:block;
+}
+
+#shieldCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(56,189,248,.6);
+    color:#38bdf8;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+/* ปุ่ม 🐾 ของลูกหมาป่า — เลือกเป้าลากตายด้วยได้ตลอดเวลา ไม่มีจำนวนจำกัด (เปลี่ยนเป้าได้เรื่อยๆ)
+   จึงไม่มี badge ตัวเลขเหมือน #shieldCount/#curseDot ใช้แค่ opacity/glow บอกสถานะพอ */
+#pawBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(249,115,22,.16);
+    border:1px solid rgba(249,115,22,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#pawBtn:hover{
+    background:rgba(249,115,22,.28);
+    box-shadow:0 0 16px rgba(249,115,22,.4);
+    transform:scale(1.08);
+}
+
+#pawBtn:active{ transform:scale(.95); }
+
+#pawBtn.hidden{ display:none; }
+
+#pawBtn.active{
+    background:rgba(249,115,22,.4);
+    box-shadow:0 0 16px rgba(249,115,22,.55);
+}
+
+#pawBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+/* ปุ่ม 👄 ของเด็กขี้โวยวาย — เลือกเป้าไว้ล่วงหน้าได้ตลอดเวลา ไม่มีจำนวนจำกัด (เปลี่ยนเป้าได้เรื่อยๆ)
+   ใช้สีชมพูแยกจากส้มของลูกหมาป่า กันสับสนว่าเป็นสกิลเดียวกัน */
+#mouthBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(236,72,153,.16);
+    border:1px solid rgba(236,72,153,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#mouthBtn:hover{
+    background:rgba(236,72,153,.28);
+    box-shadow:0 0 16px rgba(236,72,153,.4);
+    transform:scale(1.08);
+}
+
+#mouthBtn:active{ transform:scale(.95); }
+
+#mouthBtn.hidden{ display:none; }
+
+#mouthBtn.active{
+    background:rgba(236,72,153,.4);
+    box-shadow:0 0 16px rgba(236,72,153,.55);
+}
+
+#mouthBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#curseBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(168,85,247,.16);
+    border:1px solid rgba(168,85,247,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#curseBtn:hover{
+    background:rgba(168,85,247,.28);
+    box-shadow:0 0 16px rgba(168,85,247,.4);
+    transform:scale(1.08);
+}
+
+#curseBtn:active{ transform:scale(.95); }
+
+#curseBtn.hidden{ display:none; }
+
+#curseBtn.active{
+    background:rgba(168,85,247,.4);
+    box-shadow:0 0 16px rgba(168,85,247,.55);
+}
+
+#curseBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#cultRecruitBtn, #cultSacrificeBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(234,179,8,.16);
+    border:1px solid rgba(234,179,8,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#cultRecruitBtn:hover, #cultSacrificeBtn:hover{
+    background:rgba(234,179,8,.28);
+    box-shadow:0 0 16px rgba(234,179,8,.4);
+    transform:scale(1.08);
+}
+
+#cultRecruitBtn:active, #cultSacrificeBtn:active{ transform:scale(.95); }
+
+#cultRecruitBtn.hidden, #cultSacrificeBtn.hidden{ display:none; }
+
+#cultRecruitBtn.active, #cultSacrificeBtn.active{
+    background:rgba(234,179,8,.4);
+    box-shadow:0 0 16px rgba(234,179,8,.55);
+}
+
+#cultRecruitBtn.depleted, #cultSacrificeBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#curseDot{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:10px;
+    height:10px;
+    border-radius:999px;
+    background:#a855f7;
+    border:1px solid #082530;
+    display:none;
+}
+
+#curseDot.show{ display:block; }
+
+#gunBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(248,113,113,.16);
+    border:1px solid rgba(248,113,113,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#gunBtn:hover{
+    background:rgba(248,113,113,.28);
+    box-shadow:0 0 16px rgba(248,113,113,.4);
+    transform:scale(1.08);
+}
+
+#gunBtn:active{ transform:scale(.95); }
+
+#gunBtn.hidden{ display:none; }
+
+#gunBtn.active{
+    background:rgba(248,113,113,.45);
+    box-shadow:0 0 16px rgba(248,113,113,.6);
+}
+
+#gunBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#gunCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(248,113,113,.6);
+    color:#f87171;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+#peekBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(250,204,21,.16);
+    border:1px solid rgba(250,204,21,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#peekBtn:hover{
+    background:rgba(250,204,21,.28);
+    box-shadow:0 0 16px rgba(250,204,21,.4);
+    transform:scale(1.08);
+}
+
+#peekBtn:active{ transform:scale(.95); }
+
+#peekBtn.hidden{ display:none; }
+
+#peekBtn.active{
+    background:rgba(250,204,21,.45);
+    box-shadow:0 0 16px rgba(250,204,21,.6);
+}
+
+#peekBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#peekCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(250,204,21,.6);
+    color:#facc15;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+#holyWaterBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(56,189,248,.16);
+    border:1px solid rgba(56,189,248,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#holyWaterBtn:hover{
+    background:rgba(56,189,248,.28);
+    box-shadow:0 0 16px rgba(56,189,248,.4);
+    transform:scale(1.08);
+}
+
+#holyWaterBtn:active{ transform:scale(.95); }
+
+#holyWaterBtn.hidden{ display:none; }
+
+#holyWaterBtn.active{
+    background:rgba(56,189,248,.45);
+    box-shadow:0 0 16px rgba(56,189,248,.6);
+}
+
+#holyWaterBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#holyWaterCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(56,189,248,.6);
+    color:#38bdf8;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+#illusionKillBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(249,115,22,.16);
+    border:1px solid rgba(249,115,22,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#illusionKillBtn:hover{
+    background:rgba(249,115,22,.28);
+    box-shadow:0 0 16px rgba(249,115,22,.4);
+    transform:scale(1.08);
+}
+
+#illusionKillBtn:active{ transform:scale(.95); }
+
+#illusionKillBtn.hidden{ display:none; }
+
+#illusionKillBtn.depleted{
+    opacity:.4;
+    box-shadow:none;
+}
+
+#illusionKillCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(249,115,22,.6);
+    color:#f97316;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+#poisonBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(168,85,247,.16);
+    border:1px solid rgba(168,85,247,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#poisonBtn:hover{
+    background:rgba(168,85,247,.28);
+    box-shadow:0 0 16px rgba(168,85,247,.4);
+    transform:scale(1.08);
+}
+
+#poisonBtn:active{ transform:scale(.95); }
+
+#poisonBtn.hidden{ display:none; }
+
+#poisonBtn.active{
+    background:rgba(168,85,247,.45);
+    box-shadow:0 0 16px rgba(168,85,247,.6);
+}
+
+#poisonBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#poisonCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(168,85,247,.6);
+    color:#a855f7;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+#protectBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(34,197,94,.16);
+    border:1px solid rgba(34,197,94,.4);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#protectBtn:hover{
+    background:rgba(34,197,94,.28);
+    box-shadow:0 0 16px rgba(34,197,94,.4);
+    transform:scale(1.08);
+}
+
+#protectBtn:active{ transform:scale(.95); }
+
+#protectBtn.hidden{ display:none; }
+
+#protectBtn.active{
+    background:rgba(34,197,94,.45);
+    box-shadow:0 0 16px rgba(34,197,94,.6);
+}
+
+#protectBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#protectCount{
+    position:absolute;
+    bottom:-3px;
+    right:-3px;
+    min-width:16px;
+    height:16px;
+    padding:0 3px;
+    border-radius:999px;
+    background:#082530;
+    border:1px solid rgba(34,197,94,.6);
+    color:#22c55e;
+    font-size:10px;
+    font-weight:700;
+    line-height:14px;
+    text-align:center;
+}
+
+/* ปุ่มใบ้ (ยายแก่) ถูกตัดออกแล้ว — เปลี่ยนมาแตะการ์ดเป้าตรงๆ ได้เลยเหมือนหมอ/บอดี้การ์ด (ดู .player-silence-badge แทน) */
+
+/* ปุ่ม "สละลางสังหรณ์" ของหมาหยั่งรู้ — ย้ายมาไว้ที่แถบล่างขวา (จุดเดียวกับที่ทุกบทบาทใช้สกิลของตัวเอง)
+   แทนที่จะฝังเป็นปุ่มอยู่ในกล่องข้อความสถานะกลางจอเหมือนเดิม เป็นการกระทำครั้งเดียวจบ (ไม่มีโหมดค้าง)
+   เลยไม่มี .active/ตัวเลขนับเหมือนปุ่มอื่น กดได้ทั้งวันทั้งคืน (ไม่จำกัดแค่กลางคืน) มีแค่สถานะปกติ/depleted (ตายแล้ว) */
+#oracleBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(192,132,252,.16);
+    border:1px solid rgba(192,132,252,.5);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#oracleBtn:hover{
+    background:rgba(192,132,252,.28);
+    box-shadow:0 0 16px rgba(192,132,252,.4);
+    transform:scale(1.08);
+}
+
+#oracleBtn:active{ transform:scale(.95); }
+
+#oracleBtn.hidden{ display:none; }
+
+#oracleBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+/* ปุ่ม "เปิดเผยตัวเป็นนายก" — pattern เดียวกับ #oracleBtn (การกระทำครั้งเดียวจบ ไม่มีโหมดค้าง
+   ไม่มี .active/ตัวเลขนับ) กดได้ทั้งวันทั้งคืน มีแค่สถานะปกติ/depleted (ตายแล้ว หรือใช้สิทธิ์ไปแล้ว) */
+#mayorBtn{
+    position:relative;
+    flex-shrink:0;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    background:rgba(251,191,36,.16);
+    border:1px solid rgba(251,191,36,.5);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:18px;
+    cursor:pointer;
+    transition:transform .15s, background .2s, box-shadow .15s;
+    padding:0;
+}
+
+#mayorBtn:hover{
+    background:rgba(251,191,36,.28);
+    box-shadow:0 0 16px rgba(251,191,36,.4);
+    transform:scale(1.08);
+}
+
+#mayorBtn:active{ transform:scale(.95); }
+
+#mayorBtn.hidden{ display:none; }
+
+#mayorBtn.depleted{
+    opacity:.4;
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+/* ===== ROLE POPUP ===== */
+
+#rolePopupOverlay{
+    position:fixed;
+    inset:0;
+    z-index:1000;
+    background:rgba(6,9,18,.75);
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+    animation:fadeIn .2s ease;
+}
+
+#rolePopupOverlay.hidden{ display:none; }
+
+#rolePopup{
+    position:fixed;
+    left:50%;
+    top:50%;
+    transform:translate(-50%,-50%);
+    z-index:1001;
+    width:min(480px, calc(100vw - 32px));
+    /* 100vh = ความสูงจอ "ตอนแถบเบราว์เซอร์หดหมด" (large viewport) — บน iPad/มือถือที่แถบบน/ล่างของเบราว์เซอร์
+       ยังโผล่อยู่ ค่านี้สูงกว่าพื้นที่มองเห็นจริงเป็นร้อยพิกเซล ป๊อปอัปเลยสูงเกินจอ ล้นทั้งบนและล่าง (หัวข้อ/ปุ่ม ✕
+       โดนตัดขอบบน รายการล่างสุดโดนตัดขอบล่าง) — ใช้ svh (ความสูงส่วนที่มองเห็นแน่ ๆ เหมือน html/body/.app ด้านบน)
+       เป็นหลัก เหลือ vh ไว้ให้เบราว์เซอร์เก่าที่ไม่รู้จักหน่วย svh และเว้นขอบบน-ล่างข้างละ 28px */
+    max-height:min(640px, calc(100vh - 56px));
+    max-height:min(640px, calc(100svh - 56px));
+    display:flex;
+    flex-direction:column;
+    background:#0a2932;
+    border:1px solid rgba(255,255,255,.1);
+    border-radius:var(--r-lg);
+    box-shadow:0 24px 64px rgba(0,0,0,.7), 0 0 0 1px rgba(94,234,212,.15);
+    overflow:hidden;
+    animation:popIn .25s cubic-bezier(.34,1.56,.64,1);
+}
+
+#rolePopup.hidden{ display:none; }
+
+#rolePopupHeader{
+    padding:18px 20px 14px;
+    border-bottom:1px solid var(--line);
+    flex-shrink:0;
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:12px;
+}
+
+#rolePopupClose{
+    width:32px;
+    height:32px;
+    border-radius:50%;
+    background:rgba(255,255,255,.07);
+    border:1px solid var(--line);
+    color:var(--ink-dim);
+    font-size:18px;
+    line-height:1;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex-shrink:0;
+    padding:0;
+    box-shadow:none;
+    width:32px;
+    transition:background .15s, color .15s;
+}
+
+#rolePopupClose:hover{
+    background:rgba(255,255,255,.14);
+    color:#fff;
+    transform:none;
+    filter:none;
+}
+
+#rolePopupBody{
+    overflow-y:auto;
+    padding:18px 20px 24px;
+    flex:1;
+}
+
+#popupRoleName{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:32px;
+    font-weight:700;
+    color:#fff;
+    text-shadow:0 0 24px rgba(94,234,212,.5);
+    line-height:1.2;
+    margin-bottom:4px;
+}
+
+.popup-role-count{
+    font-size:14px;
+    font-weight:700;
+    color:var(--moon);
+    margin-bottom:4px;
+}
+.popup-role-count:empty{
+    display:none;
+}
+
+#popupRealRole{
+    font-size:13px;
+    color:var(--mark);
+    font-weight:600;
+    padding:6px 12px;
+    background:var(--mark-soft);
+    border:1px solid rgba(251,191,36,.3);
+    border-radius:var(--r-sm);
+    margin-bottom:12px;
+}
+
+#popupRealRole.hidden{ display:none; }
+
+#popupHuntInfo{
+    font-size:13px;
+    color:var(--wolf);
+    font-weight:600;
+    padding:6px 12px;
+    background:var(--wolf-soft);
+    border:1px solid rgba(239,68,68,.3);
+    border-radius:var(--r-sm);
+    margin-bottom:12px;
+}
+
+#popupHuntInfo.hidden{ display:none; }
+
+#popupRoleDesc{
+    margin-top:14px;
+}
+
+#popupRoleDesc h3{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-weight:700;
+    color:#fff;
+    font-size:16px;
+    margin:0 0 6px;
+}
+
+.popup-divider{
+    height:1px;
+    background:var(--line);
+    margin:18px 0;
+}
+
+#popupRolesInGame{}
+
+/*
+   Wide layout: ตั้งแต่พื้นที่ที่มีที่พอสำหรับ "ผู้เล่น + แชท" เป็นต้นไป ให้แชทปักขวาเสมอ
+   และใช้ความกว้างแบบ clamp แทน 300px ตายตัว. ผลคือการลาก Split View/Stage Manager
+   จะค่อย ๆ เพิ่ม/ลดพื้นที่ทั้งสองฝั่งโดยไม่สลับดีไซน์ที่ 660/900/1279px.
+
+   --game-chat-width มีขั้นต่ำ 240px เพื่อให้แท็บแชทและช่องพิมพ์ยังใช้งานได้จริง และมีเพดาน 380px
+   เพื่อไม่ให้จอ desktop กว้างมากไปกินพื้นที่กริดเกินจำเป็น. กริดผู้เล่นจึงได้พื้นที่ที่เหลือทั้งหมด.
+   ความสูงแชทใช้ top/bottom แบบ fixed ต่อ viewport เพราะจุดประสงค์ของโหมดนี้คือแชทไม่ไหลตามความสูง
+   ของกริด; ถ้ากริดมีหลายแถว ให้ scroll ที่ #players แทน.
+*/
+@media (min-width:660px){
+    .app.game-visible{
+        margin-left:0;
+        margin-right:var(--game-chat-width);
+        max-width:none;
+        width:calc(100% - var(--game-chat-width));
+        /* บาร์สกิลอยู่ใต้แชทฝั่งขวาแล้ว (ดู #bottomBar ด้านล่าง) คอลัมน์ซ้ายไม่ต้องเว้น 64px ให้บาร์อีก
+           กริดผู้เล่นยืดลงมาเกือบชิดขอบล่างแทนที่จะเหลือแถบว่างเปล่า */
+        padding-bottom:max(8px, env(safe-area-inset-bottom, 0px));
+    }
+
+    .app.game-visible #chatCard{
+        position:fixed;
+        right:0;
+        top:0;
+        bottom:var(--game-bottom-clearance);
+        width:var(--game-chat-width);
+        max-width:none;
+        min-height:var(--game-chat-min-height);
+        border-radius:0;
+        z-index:50;
+        padding-top:40px;
+    }
+
+    /* บาร์ล่าง (🎭 บทของฉัน + ปุ่มสกิล) ปักใต้แผงแชทฝั่งขวา กว้างเท่าแชทพอดี ตั้งแต่ 660px ขึ้นไป (เดิมลอยกึ่งกลางใต้กริด
+       ผู้เล่น จนถึง 899px ค่อยย้าย) — ย้ายมาอยู่ใต้แชทแล้ว กริดผู้เล่นฝั่งซ้ายเลยไม่ต้องเว้นที่ล่างให้บาร์อีก จึงยืดลงมา
+       ชิดขอบล่างได้ (ดู padding-bottom ของ .app.game-visible ด้านบนในบล็อกนี้) ใช้ตัวแปรความกว้างเดียวกับแชท
+       จึงไม่เกิดอาการบาร์กับแชทเหลื่อมกันตอนลาก resize */
+    .app.game-visible ~ #bottomBar{
+        left:auto;
+        right:0;
+        width:var(--game-chat-width);
+        max-width:none;
+        margin:0;
+        border-radius:0;
+        /* แคบเท่าแชท (240px+) — ลดช่องว่าง/ขอบข้างลงให้ชื่อบทกับปุ่มสกิลหลายปุ่มยังพอดีแถวเดียว */
+        gap:8px;
+        padding-left:10px;
+        padding-right:10px;
+        transform:translateY(8px);
+    }
+    .app.game-visible ~ #bottomBar.bar-visible{
+        transform:translateY(0);
+    }
+
+    /* ป้ายกลางวัน/กลางคืนอยู่กึ่งกลางของแผงแชท โดยอ้างอิงตัวแปรความกว้างเดียวกัน
+       แทนการสมมติว่าแชทกว้าง 300px ตลอดเวลา */
+    .app.game-visible ~ #dayNightBadge{
+        top:12px;
+        right:calc(var(--game-chat-width) / 2);
+        transform:translateX(50%);
+        z-index:55;
+    }
+}
+
+/*
+   Ultra-wide layout (จอกว้างพอจะมี 3 คอลัมน์): แบ่ง 3 คอลัมน์ชัดเจนแทน 2 คอลัมน์เดิม
+   ซ้ายสุด = บทในเกมรอบนี้ (#rolesPanelCard, fixed) — กลาง = กริดผู้เล่น (.app ที่เหลือ) —
+   ขวาสุด = แชท (#chatCard, fixed, เหมือนเดิมจาก breakpoint 660px) พาแนลใช้สกิล (#bottomBar)
+   ย้ายไปอยู่ใต้แชทฝั่งขวาแทนที่จะลอยกึ่งกลางใต้กริด — ใช้ความกว้างเดียวกับแชทพอดี
+   ใช้ --game-bottom-clearance เดิมของ #chatCard เป็นที่เว้นให้บาร์นี้อยู่แล้ว จึงไม่ต้องปรับ #chatCard เพิ่ม
+
+   ต่ำกว่า breakpoint นี้ (660–899px): #rolesPanelCard ถูกซ่อนไปเลย (ดูด้านล่างไฟล์นี้) แทนที่จะปล่อยให้
+   เป็น .card ปกติลอยเต็มความกว้างเหนือกริดผู้เล่น (ผู้ใช้รายงานว่าดันพื้นที่ผู้เล่นลงจนมองไม่เห็น) —
+   ช่วงความกว้างนั้นดูบทในเกมผ่านป๊อปอัปเดิม (ปุ่ม 🎭) แทน จนกว่าจอจะกว้างพอมีคอลัมน์ที่ 3 จริงๆ
+*/
+@media (min-width:900px){
+    .app.game-visible{
+        margin-left:var(--game-roles-width);
+        width:calc(100% - var(--game-roles-width) - var(--game-chat-width));
+    }
+
+    .app.game-visible #rolesPanelCard{
+        position:fixed;
+        left:0;
+        top:0;
+        bottom:0;
+        width:var(--game-roles-width);
+        max-width:none;
+        border-radius:0;
+        z-index:50;
+        padding:40px 14px 16px;
+        overflow-y:auto;
+        display:block;
+    }
+
+    /* (บาร์สกิลใต้แชทฝั่งขวา: ย้ายไปกำหนดที่บล็อก min-width:660px ด้านบนแล้ว ใช้กับทุกจอ ≥ 660px) */
+}
+
+/* ต่ำกว่า 900px: ยังไม่มีที่พอสำหรับคอลัมน์ที่ 3 — ซ่อน #rolesPanelCard ไปเลยแทนที่จะปล่อยให้มันเป็น
+   .card ปกติในโฟลว์ปกติ (ซึ่งจะลอยเต็มความกว้างเหนือกริดผู้เล่นและดันผู้เล่นลงจนมองไม่เห็น) */
+@media (max-width:899px){
+    #rolesPanelCard{
+        display:none !important;
+    }
+}
+
+/* ===== VOTE MODE / WOLF KILL MODE =====
+   แสดงในกริดผู้เล่นเดิม (#players) แทนที่จะเป็นป๊อปอัปลอยแยกต่างหาก
+   เหลือไว้แค่ keyframes ที่ใช้ร่วมกับที่อื่นในไฟล์ */
+
+@keyframes fadeIn{
+    from{ opacity:0; }
+    to{ opacity:1; }
+}
+
+@keyframes popIn{
+    from{ opacity:0; transform:translate(-50%,-46%) scale(.94); }
+    to{ opacity:1; transform:translate(-50%,-50%) scale(1); }
+}
+
+body.vote-open{
+    overflow:hidden;
+}
+
+/* ป้ายบอกช่วง/โหมดปัจจุบัน — ตอนนี้แสดงอยู่ในหัวข้อการ์ด (#phaseIcon/#phaseText) แทนแล้ว
+   ไอคอนให้ใหญ่หน่อยเพื่อให้เห็นชัดแม้จะอยู่ในหัวข้อเล็กๆ */
+#phaseIcon{
+    font-size:13px;
+    line-height:1;
+}
+
+/* ===== โหมดโหวต/โหมดหมาป่าเลือกฆ่า แสดงบนการ์ดผู้เล่นในกริดเดิม (#players) =====
+   ก่อนหน้านี้เคยให้การ์ดขยายสูงขึ้น (aspect-ratio:auto + min-height:88px) ตอนเข้าโหมด เพื่อมีที่
+   โชว์ badge จำนวนโหวต/เป้าหมายที่เลือกไว้ — แต่ทำให้กริดผู้เล่นทั้งกริดยืดยาวขึ้นทุกครั้งที่เข้าโหมด
+   ห้ามให้กริดผู้เล่นเปลี่ยนขนาด/สัดส่วนเด็ดขาดไม่ว่าจะอยู่โหมดไหน (การ์ดต้องเป็นสี่เหลี่ยมจัตุรัสเท่ากันเป๊ะ
+   ทุกโหมดเสมอ ใช้ค่า .player ปกติ ไม่มี override ที่นี่แล้ว) — ข้อมูลเสริมของโหมด (จำนวนโหวต/เป้าหมาย
+   ที่เลือก/ข้อความเตือน) ย้ายไปแสดงเป็นแถบเล็กๆ ซ้อนทับ (position:absolute) ที่ขอบล่างการ์ดแทน
+   (ดู .mode-info-stack/.vote-count-badge/.vote-voter-list ด้านล่าง) จึงไม่กินพื้นที่ในกริดเพิ่มอีกต่อไป
+   หมายเหตุ: ห้ามแก้ grid-template-columns เด็ดขาด — จำนวนคอลัมน์ต่อแถวต้องเท่ากับกริดตั้งต้นของเกม
+   เสมอ (#players ด้านบน) ไม่ว่าจะเข้าโหมดไหนก็ตาม */
+
+.player.my-target{
+    border-color:var(--safe);
+    box-shadow:0 0 0 1px var(--safe), 0 0 16px rgba(34,197,94,.2);
+    background:rgba(34,197,94,.06);
+}
+
+.player.my-kill-target{
+    border-color:var(--wolf);
+    box-shadow:0 0 0 1px var(--wolf), 0 0 16px rgba(239,68,68,.25);
+    background:rgba(239,68,68,.07);
+}
+
+.player.my-shield-target{
+    border-color:#38bdf8;
+    box-shadow:0 0 0 1px #38bdf8, 0 0 16px rgba(56,189,248,.3);
+    background:rgba(56,189,248,.08);
+}
+
+/* ไอคอน "🪄" ระบุว่าเลือกร่ายเวทใส่คนนี้แล้ว (หมาป่านักเวท) — ซ้อนทับ (absolute) มุมล่างขวาการ์ด
+   เหมือนไอคอนอาชีพ/โล่ ไม่อยู่ใน flow ปกติแล้ว (เดิม display:inline-block + margin-top ทำให้การ์ด
+   ต้องสูงขึ้นเพื่อมีที่พอ) กันไม่ให้กริดผู้เล่นเปลี่ยนขนาดตอนเข้าโหมดร่ายเวท */
+.shield-placed-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    font-size:17.05cqw;
+    line-height:1;
+    z-index:3;
+    filter:drop-shadow(0 1px 4px rgba(0,0,0,.5));
+    pointer-events:none;
+}
+
+/* โล่หมาป่าพิทักษ์ — ไอคอนใหญ่ ย่อขยายเด้งๆ ที่มุมขวาล่างของการ์ด (ตำแหน่งเดียวกับไอคอนอาชีพ)
+   เห็นเฉพาะหมาป่าพิทักษ์เจ้าของโล่เท่านั้น เปลี่ยนเป้าได้ตลอด ไม่ใช่การล็อกถาวร */
+.player-shield-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(56,189,248,.2);
+    box-shadow:0 0 0 2px rgba(56,189,248,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+/* pulsing = กำลังอยู่ระหว่างเลือกเป้า (ยังไม่ล็อก) — เด้งย่อขยายชวนให้เลือก
+   ไม่มี class นี้ = ล็อกเป้าแล้ว/ปิดโหมดเลือกแล้ว หยุดเด้ง อยู่นิ่งๆ */
+.player-shield-badge.pulsing{
+    animation:shieldBadgePulse 1.4s ease-in-out infinite;
+}
+
+/* โล่หมาป่าผู้พิทักษ์บนการ์ดคนที่โดนวางโล่ — ตอนนี้เป็นรูป shield.jpg แทนอิโมจิ 🛡️ แล้ว (บทอื่นที่ใช้ badge
+   เดียวกันนี้ — หนูน้อยผู้ใสซื่อ 🌼/บอดี้การ์ด 🛡️ อิโมจิ/นักเลง 👊 — ยังเป็นอิโมจิเหมือนเดิม ไม่มี img ให้ rule
+   นี้จับ จึงไม่กระทบ) ให้รูปเต็มวงกลมของ badge พอดี */
+.player-shield-badge img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:50%;
+    display:block;
+}
+
+@keyframes shieldBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(56,189,248,.6), 0 0 6px rgba(56,189,248,.45); }
+    50%{ transform:scale(1.22); box-shadow:0 0 0 2px rgba(56,189,248,.95), 0 0 18px rgba(56,189,248,.85); }
+}
+
+/* 🔥 เป้าที่นักเล่นกลปลอมบทไว้คืนนี้ — ไอคอนที่มุมขวาล่างของการ์ด (ตำแหน่งเดียวกับไอคอนอาชีพ)
+   เห็นเฉพาะนักเล่นกลเจ้าของสกิลเท่านั้น เปลี่ยนเป้าได้ตลอดคืน ไม่ใช่การล็อกถาวร (อยู่นิ่งๆ ไม่เด้ง เหมือนโล่/ยาป้องกัน) */
+.player-illusion-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(249,115,22,.2);
+    box-shadow:0 0 0 2px rgba(249,115,22,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+/* 🕵️ นักสืบ — badge "เลือกคนที่ 1 แล้ว รอเลือกคนที่ 2" เห็นเฉพาะนักสืบเจ้าของสกิลเอง
+   ใช้รูปทรงแคปซูลแทนวงกลม เพราะมีทั้งไอคอนและเลข "1" ไม่ใช่แค่ emoji เดี่ยวๆ เหมือน badge อื่น */
+.player-detective-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    min-width:29.55cqw;
+    height:29.55cqw;
+    padding:0 7.95cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:2.27cqw;
+    font-size:14.77cqw;
+    font-weight:700;
+    border-radius:14.77cqw;
+    background:rgba(94,234,212,.22);
+    box-shadow:0 0 0 2px rgba(94,234,212,.7), 0 2px 10px rgba(0,0,0,.4);
+    color:#f0fdfa;
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+.player-detective-badge.pulsing{
+    animation:detectiveBadgePulse 1.4s ease-in-out infinite;
+}
+@keyframes detectiveBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(94,234,212,.6), 0 0 6px rgba(94,234,212,.45); }
+    50%{ transform:scale(1.12); box-shadow:0 0 0 2px rgba(94,234,212,.95), 0 0 18px rgba(94,234,212,.85); }
+}
+
+/* 💖 กามเทพ — badge "เลือกคนที่ 1 แล้ว รอเลือกคนที่ 2" เห็นเฉพาะกามเทพเจ้าของสกิลเอง
+   ใช้โครงเดียวกับ badge นักสืบทุกประการ แค่เปลี่ยนโทนสีเป็นชมพู/แดงแทนม่วง */
+.player-cupid-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    min-width:29.55cqw;
+    height:29.55cqw;
+    padding:0 7.95cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:2.27cqw;
+    font-size:14.77cqw;
+    font-weight:700;
+    border-radius:14.77cqw;
+    background:rgba(244,114,182,.22);
+    box-shadow:0 0 0 2px rgba(244,114,182,.7), 0 2px 10px rgba(0,0,0,.4);
+    color:#ffe3f1;
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+.player-cupid-badge.pulsing{
+    animation:cupidBadgePulse 1.4s ease-in-out infinite;
+}
+@keyframes cupidBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(244,114,182,.6), 0 0 6px rgba(244,114,182,.45); }
+    50%{ transform:scale(1.12); box-shadow:0 0 0 2px rgba(244,114,182,.95), 0 0 18px rgba(244,114,182,.85); }
+}
+
+/* 💘 คู่รัก — badge นิ่งๆ มุมบนซ้ายของการ์ด บอกว่าคนนี้ (หรือแม้แต่ตัวเราเอง) ถูกจับคู่เป็นคู่รักแล้ว
+   เห็นเฉพาะสองคนที่ถูกกามเทพจับคู่ไว้เท่านั้น (คนอื่นไม่เห็นเลย กันข้อมูลรั่ว) อยู่คนละมุมกับ badge อื่นๆ
+   ทั้งหมดที่อยู่มุมล่างขวา จึงไม่ต้องมีตรรกะเลื่อนตำแหน่งหลบกันเหมือน badge อื่น */
+.player-lover-badge{
+    position:absolute;
+    top:4.55cqw;
+    left:5.68cqw;
+    min-width:25cqw;
+    height:25cqw;
+    padding:0 4.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:14.77cqw;
+    border-radius:12.5cqw;
+    background:rgba(244,63,94,.25);
+    box-shadow:0 0 0 2px rgba(244,63,94,.75), 0 2px 8px rgba(0,0,0,.35);
+    pointer-events:none;
+    z-index:3;
+    animation:loverBadgeGlow 2.2s ease-in-out infinite;
+}
+@keyframes loverBadgeGlow{
+    0%,100%{ box-shadow:0 0 0 2px rgba(244,63,94,.55), 0 0 4px rgba(244,63,94,.4); }
+    50%{ box-shadow:0 0 0 2px rgba(244,63,94,.9), 0 0 12px rgba(244,63,94,.75); }
+}
+
+/* 💘 คู่รัก (เฉพาะคู่รักจริง ไม่ใช่ลัทธิ) — ย้ายมาไว้มุมล่างขวาถัดจากไอคอนอาชีพแทนมุมบนซ้ายเดิม
+   ใช้โครงเดียวกับ badge อื่นๆ ในมุมนี้ (เลื่อนซ้ายด้วย inline style เมื่อมีไอคอนอาชีพโผล่ร่วมมุมเดียวกัน) */
+.player-lover-badge-bottom{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    min-width:25cqw;
+    height:25cqw;
+    padding:0 4.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:14.77cqw;
+    border-radius:12.5cqw;
+    background:rgba(244,63,94,.25);
+    box-shadow:0 0 0 2px rgba(244,63,94,.75), 0 2px 8px rgba(0,0,0,.35);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s;
+    animation:loverBadgeGlow 2.2s ease-in-out infinite;
+}
+
+/* 🔯 ลัทธิ "อยู่ในลัทธิเดียวกัน" — badge สถานะนิ่งๆ ถาวร (ไม่ใช่การเลือกที่กำลังทำอยู่แบบคู่รัก/สังเวย)
+   จึงตัดพื้นหลังวงกลม+เรืองแสง (loverBadgeGlow) ออก ไม่ให้ดูเหมือนปุ่ม/สถานะกำลังรอการกระทำ แต่ยังใช้
+   ตำแหน่ง/ระบบเลื่อนสล็อตเดียวกับ badge อื่นทุกตัว (claimBottomRightBadgeSlot) กันไม่ให้ไปทับ badge มุมเดียวกันตัวอื่น
+   เดิมใช้อิโมจิ 🔯 ลอยเปล่าๆ (มี text-shadow กันจม) — เปลี่ยนเป็นรูป sect_members.jpg แบบวงกลมเล็กแทน
+   (โครงเดียวกับ .player-instigator-link-badge) ยังคง drop-shadow ไว้กันจมไปกับพื้นการ์ดตอนไม่มีกล่องรอง */
+/* 🔯 ลัทธิ "อยู่ในลัทธิเดียวกัน" — ย้ายกลับไปมุมบนขวา (สมมาตรกับ .player-instigator-link-badge ที่อยู่มุมบนซ้าย)
+   ไม่ใช้ระบบ claimBottomRightBadgeSlot อีกต่อไป เพราะอยู่คนละมุมกับ badge อื่นๆ ทั้งหมดในสล็อตนั้น ไม่มีทางชนกัน
+   สไตล์ "เต็มวง" (พื้นหลัง+ห่วงกรอบ) แบบเดียวกับ .player-instigator-link-badge เป๊ะๆ แค่ใช้รูปสมาชิกลัทธิแทน */
+.player-cult-badge{
+    position:absolute;
+    top:4.55cqw;
+    right:5.68cqw;
+    width:25cqw;
+    height:25cqw;
+    padding:1.14cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:50%;
+    background:rgba(234,179,8,.25);
+    box-shadow:0 0 0 2px rgba(234,179,8,.75), 0 2px 8px rgba(0,0,0,.35);
+    pointer-events:none;
+    z-index:3;
+    overflow:hidden;
+}
+.player-cult-badge img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:50%;
+    display:block;
+}
+
+/* 👉 โจร (หัวโจร) เลือกฆ่าร่วมกับคนนี้ไว้ — นิ้วชี้วางที่มุมขวาบนของการ์ด เอียง 45 องศาชี้ทแยงลงมาทาง
+   ชื่อผู้เล่นที่อยู่บนสุดของการ์ด (ไม่ใช้ระบบ claimBottomRightBadgeSlot เหมือน badge อื่นๆ เพราะอยู่คนละมุม) */
+.player-bandit-point-badge{
+    position:absolute;
+    top:2.27cqw;
+    right:2.27cqw;
+    font-size:22.73cqw;
+    line-height:1;
+    pointer-events:none;
+    z-index:4;
+    transform:rotate(135deg);
+    filter:drop-shadow(0 1px 3px rgba(0,0,0,.85)) drop-shadow(0 0 4px rgba(0,0,0,.6));
+}
+
+/* 🗡️ ผู้สมรู้ร่วมคิดเลือกฆ่าร่วมกับคนนี้ไว้ — มีดวางตรงกลางการ์ด (ทับกลางกริดผู้เล่นเลย) แยกจากไอคอน
+   อาชีพ/ป้ายอื่นๆ ทั้งหมดที่อยู่มุมล่างขวา ไม่แย่งสล็อตกับ badge ไหนเลยเพราะอยู่คนละตำแหน่ง */
+.player-bandit-sword-badge{
+    position:absolute;
+    top:50%;
+    left:50%;
+    transform:translate(-50%, -50%) rotate(20deg);
+    font-size:34.09cqw;
+    line-height:1;
+    pointer-events:none;
+    z-index:4;
+    filter:drop-shadow(0 2px 5px rgba(0,0,0,.85)) drop-shadow(0 0 6px rgba(0,0,0,.6));
+}
+
+/* 🎭 ผู้ยุยง — badge "เลือกคนที่ 1 แล้ว รอเลือกคนที่ 2" เห็นเฉพาะผู้ยุยงเจ้าของสกิลเอง
+   ทำงานแบบเดียวกับ badge กามเทพเป๊ะๆ (โครงเดียวกัน ตำแหน่งเดียวกัน) แค่ใช้รูปผู้ยุยงแทน emoji หัวใจ */
+.player-instigator-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    min-width:29.55cqw;
+    height:29.55cqw;
+    padding:2.27cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:2.27cqw;
+    border-radius:14.77cqw;
+    background:rgba(244,114,182,.22);
+    box-shadow:0 0 0 2px rgba(244,114,182,.7), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+    overflow:hidden;
+}
+.player-instigator-badge img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:50%;
+}
+.player-instigator-badge.pulsing{
+    animation:instigatorBadgePulse 1.4s ease-in-out infinite;
+}
+@keyframes instigatorBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(244,114,182,.6), 0 0 6px rgba(244,114,182,.45); }
+    50%{ transform:scale(1.12); box-shadow:0 0 0 2px rgba(244,114,182,.95), 0 0 18px rgba(244,114,182,.85); }
+}
+
+/* 🎭 คู่ที่ถูกผู้ยุยงจับไว้ — badge นิ่งๆ มุมบนซ้ายของการ์ด บอกว่าคนนี้ (หรือแม้แต่ตัวเราเอง) ถูกจับคู่ไว้แล้ว
+   เห็นเฉพาะสองคนที่ถูกผู้ยุยงจับคู่ไว้เท่านั้น ทำงานแบบเดียวกับ badge คู่รักเป๊ะๆ แค่ใช้รูปผู้ยุยงแทน emoji หัวใจ */
+.player-instigator-link-badge{
+    position:absolute;
+    top:4.55cqw;
+    left:5.68cqw;
+    min-width:25cqw;
+    height:25cqw;
+    padding:1.14cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:12.5cqw;
+    background:rgba(244,63,94,.25);
+    box-shadow:0 0 0 2px rgba(244,63,94,.75), 0 2px 8px rgba(0,0,0,.35);
+    pointer-events:none;
+    z-index:3;
+    overflow:hidden;
+    animation:instigatorLinkBadgeGlow 2.2s ease-in-out infinite;
+}
+.player-instigator-link-badge img{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    border-radius:50%;
+}
+@keyframes instigatorLinkBadgeGlow{
+    0%,100%{ box-shadow:0 0 0 2px rgba(244,63,94,.55), 0 0 4px rgba(244,63,94,.4); }
+    50%{ box-shadow:0 0 0 2px rgba(244,63,94,.9), 0 0 12px rgba(244,63,94,.75); }
+}
+
+/* ไอคอนเล็กแทรกในข้อความ title ของบทบาทที่ใช้รูปแทน emoji (เช่น ผู้ยุยง) */
+.role-title-icon{
+    width:20px;
+    height:20px;
+    border-radius:50%;
+    object-fit:cover;
+    vertical-align:middle;
+    margin-right:2px;
+}
+
+.player.my-protect-target{
+    border-color:#22c55e;
+    box-shadow:0 0 0 1px #22c55e, 0 0 16px rgba(34,197,94,.3);
+    background:rgba(34,197,94,.08);
+}
+
+/* เป้าที่ลูกหมาป่าจองไว้ลากตายด้วย — กรอบการ์ดไฮไลต์สีส้ม (เห็นเฉพาะลูกหมาป่าเจ้าของสกิลเอง) */
+.player.my-wolfcub-target{
+    border-color:#f97316;
+    box-shadow:0 0 0 1px #f97316, 0 0 16px rgba(249,115,22,.3);
+    background:rgba(249,115,22,.08);
+}
+
+/* 🐾 ลูกหมาป่า — ไอคอนใหญ่ ย่อขยายเด้งๆ ที่มุมขวาล่างของการ์ด เหมือนโล่หมาป่าพิทักษ์เป๊ะๆ
+   เห็นเฉพาะลูกหมาป่าเจ้าของสกิลเท่านั้น เปลี่ยนเป้าได้ตลอด ไม่ใช่การล็อกถาวร */
+.player-pawprint-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(249,115,22,.2);
+    box-shadow:0 0 0 2px rgba(249,115,22,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+/* pulsing = กำลังอยู่ระหว่างเลือกเป้า (ยังไม่ล็อก) — เด้งย่อขยายชวนให้เลือก
+   ไม่มี class นี้ = ล็อกเป้าแล้ว/ปิดโหมดเลือกแล้ว หยุดเด้ง อยู่นิ่งๆ */
+.player-pawprint-badge.pulsing{
+    animation:pawBadgePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pawBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(249,115,22,.6), 0 0 6px rgba(249,115,22,.45); }
+    50%{ transform:scale(1.22); box-shadow:0 0 0 2px rgba(249,115,22,.95), 0 0 18px rgba(249,115,22,.85); }
+}
+
+/* เป้าที่เด็กขี้โวยวายจองไว้แฉบทบาทหากตัวเองตาย — กรอบการ์ดไฮไลต์สีชมพู (เห็นเฉพาะเจ้าของสกิลเอง) */
+.player.my-loudmouth-target{
+    border-color:#ec4899;
+    box-shadow:0 0 0 1px #ec4899, 0 0 16px rgba(236,72,153,.3);
+    background:rgba(236,72,153,.08);
+}
+
+/* 👄 เด็กขี้โวยวาย — ไอคอนใหญ่ ย่อขยายเด้งๆ ที่มุมขวาล่างของการ์ด เหมือนอุ้งเท้าลูกหมาป่าเป๊ะๆ
+   เห็นเฉพาะเจ้าของสกิลเท่านั้น เปลี่ยนเป้าได้ตลอด ไม่ใช่การล็อกถาวร */
+.player-mouth-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(236,72,153,.2);
+    box-shadow:0 0 0 2px rgba(236,72,153,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+.player-mouth-badge.pulsing{
+    animation:mouthBadgePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mouthBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(236,72,153,.6), 0 0 6px rgba(236,72,153,.45); }
+    50%{ transform:scale(1.22); box-shadow:0 0 0 2px rgba(236,72,153,.95), 0 0 18px rgba(236,72,153,.85); }
+}
+
+.player.my-silence-target{
+    border-color:#f59e0b;
+    box-shadow:0 0 0 1px #f59e0b, 0 0 16px rgba(245,158,11,.3);
+    background:rgba(245,158,11,.08);
+}
+
+/* ใบ้ของยายแก่ — ไอคอนใหญ่ ย่อขยายเด้งๆ ที่มุมขวาล่างของการ์ด ใช้อนิเมชั่นแบบเดียวกับยาป้องกันของแม่มดเป๊ะๆ
+   เห็นเฉพาะยายแก่เจ้าของสกิลเท่านั้น (คนอื่นไม่เห็นระหว่างคืน กันข้อมูลรั่ว) เปลี่ยนเป้าได้ตลอดคืน ไม่ใช่การล็อกถาวร */
+.player-silence-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(245,158,11,.2);
+    box-shadow:0 0 0 2px rgba(245,158,11,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+.player-silence-badge.pulsing{
+    animation:silenceBadgePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes silenceBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(245,158,11,.6), 0 0 6px rgba(245,158,11,.45); }
+    50%{ transform:scale(1.22); box-shadow:0 0 0 2px rgba(245,158,11,.95), 0 0 18px rgba(245,158,11,.85); }
+}
+
+/* ยาป้องกันของแม่มด — ไอคอนใหญ่ ย่อขยายเด้งๆ ที่มุมขวาล่างของการ์ด เหมือนโล่หมาป่าพิทักษ์เป๊ะๆ
+   เห็นเฉพาะแม่มดเจ้าของยาเท่านั้น เปลี่ยนเป้าได้ตลอด ไม่ใช่การล็อกถาวร */
+.player-protect-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(34,197,94,.2);
+    box-shadow:0 0 0 2px rgba(34,197,94,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+/* pulsing = กำลังอยู่ระหว่างเลือกเป้า (ยังไม่ล็อก) — เด้งย่อขยายชวนให้เลือก เหมือนโล่หมาป่าพิทักษ์ */
+.player-protect-badge.pulsing{
+    animation:protectBadgePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes protectBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(34,197,94,.6), 0 0 6px rgba(34,197,94,.45); }
+    50%{ transform:scale(1.22); box-shadow:0 0 0 2px rgba(34,197,94,.95), 0 0 18px rgba(34,197,94,.85); }
+}
+
+/* เป้าที่หมอเลือกรักษาไว้ (❤️) และเป้าที่บอดี้การ์ดเลือกป้องกันไว้ (ใช้ player-shield-badge ร่วมกัน) —
+   เลือกตรงๆ ด้วยการแตะการ์ดเป้าเลย ไม่มีปุ่มเข้าโหมดแยกแบบยายแก่/แม่มด จึงไม่มีอนิเมชั่นเด้ง (ไม่ผูก .pulsing) */
+.player-heal-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(244,63,94,.2);
+    box-shadow:0 0 0 2px rgba(244,63,94,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+/* ยาพิษของแม่มด — ไอคอนใหญ่ ย่อขยายเด้งๆ เหมือนกัน แต่ใช้ครั้งเดียวจบ ไม่มีสถานะ "ล็อกแล้ว" ค้างนิ่ง
+   (ตัดสินใจกดแล้วมีป๊อปอัพยืนยันทันที ไม่ต้องมีสถานะเลือกไว้ก่อนแบบยาป้องกัน/โล่) */
+.player-poison-badge{
+    position:absolute;
+    bottom:4.55cqw;
+    right:5.68cqw;
+    width:29.55cqw;
+    height:29.55cqw;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:17.05cqw;
+    border-radius:50%;
+    background:rgba(168,85,247,.2);
+    box-shadow:0 0 0 2px rgba(168,85,247,.65), 0 2px 10px rgba(0,0,0,.4);
+    pointer-events:none;
+    z-index:3;
+    transition:right .15s, transform .15s;
+}
+
+.player-poison-badge.pulsing{
+    animation:poisonBadgePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes poisonBadgePulse{
+    0%,100%{ transform:scale(1); box-shadow:0 0 0 2px rgba(168,85,247,.6), 0 0 6px rgba(168,85,247,.45); }
+    50%{ transform:scale(1.22); box-shadow:0 0 0 2px rgba(168,85,247,.95), 0 0 18px rgba(168,85,247,.85); }
+}
+
+.player.kill-restricted{
+    cursor:not-allowed;
+    opacity:.55;
+    border-style:dashed;
+}
+
+/* กล่องรวม badge จำนวนโหวต/ข้อความเตือนของโหมดปัจจุบัน — ซ้อนทับ (absolute) ที่ขอบล่างการ์ดเสมอ
+   แทนที่จะอยู่ใน flow ปกติ (เดิมทำให้การ์ดต้องขยายสูงขึ้นเพื่อมีที่พอ) การ์ดจึงเป็นสี่เหลี่ยมจัตุรัส
+   ขนาดเท่าเดิมได้ทุกโหมด — ตัวหนังสือเล็กลง/ตัดด้วย ellipsis ถ้ายาวเกินความกว้างการ์ด
+   z-index ต่ำกว่าไอคอนโล่/ป้องกัน/ใบ้/ยาพิษ (3) เจตนา กันไม่ให้บังปุ่มกดเวลาซ้อนกันในมุมเดียว */
+.mode-info-stack{
+    position:absolute;
+    left:2.27cqw;
+    right:2.27cqw;
+    bottom:2.27cqw;
+    z-index:2;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:1.14cqw;
+    pointer-events:none;
+}
+
+.vote-count-badge{
+    display:inline-block;
+    max-width:100%;
+    font-size:9.66cqw;
+    line-height:1.3;
+    padding:1.14cqw 5.68cqw;
+    border-radius:999px;
+    background:rgba(239,68,68,.85);
+    color:#fff;
+    border:1px solid rgba(239,68,68,.6);
+    font-family:"JetBrains Mono",monospace;
+    font-weight:700;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.vote-count-badge.reached{
+    background:#ef4444;
+    color:#fff;
+    border-color:#ef4444;
+}
+
+.vote-voter-list{
+    max-width:100%;
+    font-size:9.09cqw;
+    line-height:1.25;
+    color:#fff;
+    background:rgba(10,14,24,.78);
+    padding:1.14cqw 5.68cqw;
+    border-radius:6.82cqw;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+/* ===== ROLE REVEAL ANIMATION ===== */
+
+#roleRevealOverlay{
+    position:fixed;
+    inset:0;
+    z-index:2000;
+    background:rgba(6,9,18,.95);
+    backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:0;
+    pointer-events:none;
+}
+
+#roleRevealOverlay.hidden{ display:none; }
+
+@keyframes revealFadeIn{
+    from{ opacity:0; }
+    to{ opacity:1; }
+}
+@keyframes revealFadeOut{
+    from{ opacity:1; }
+    to{ opacity:0; }
+}
+@keyframes slotSpin{
+    0%{ transform:translateY(0); filter:blur(2px); opacity:.7; }
+    50%{ transform:translateY(-6px); filter:blur(1px); opacity:.9; }
+    100%{ transform:translateY(0); filter:blur(0); opacity:1; }
+}
+@keyframes revealPop{
+    0%{ transform:scale(.7); opacity:0; }
+    60%{ transform:scale(1.08); opacity:1; }
+    80%{ transform:scale(.97); }
+    100%{ transform:scale(1); }
+}
+@keyframes revealGlow{
+    0%,100%{ text-shadow:0 0 30px rgba(94,234,212,.6), 0 0 60px rgba(94,234,212,.3); }
+    50%{ text-shadow:0 0 50px rgba(94,234,212,1), 0 0 100px rgba(94,234,212,.5); }
+}
+@keyframes revealSlideDown{
+    from{ opacity:0; transform:translateY(-16px); }
+    to{ opacity:1; transform:translateY(0); }
+}
+@keyframes huntAim{
+    0%{ transform:scale(2) rotate(-30deg); opacity:0; }
+    20%{ opacity:1; }
+    60%{ transform:scale(1.1) rotate(5deg); }
+    80%{ transform:scale(1) rotate(0deg); }
+    100%{ transform:scale(1) rotate(0deg); opacity:1; }
+}
+@keyframes huntPulse{
+    0%,100%{ box-shadow:0 0 0 0 rgba(239,68,68,.5), inset 0 0 0 0 rgba(239,68,68,.2); }
+    50%{ box-shadow:0 0 0 8px rgba(239,68,68,0), inset 0 0 0 2px rgba(239,68,68,.15); }
+}
+@keyframes crosshairScan{
+    0%{ transform:translate(-50%,-50%) scale(1.4); opacity:0; }
+    15%{ opacity:1; }
+    80%{ transform:translate(-50%,-50%) scale(1); }
+    100%{ transform:translate(-50%,-50%) scale(1); opacity:1; }
+}
+@keyframes lineH{
+    from{ transform:scaleX(0); opacity:0; }
+    to{ transform:scaleX(1); opacity:1; }
+}
+@keyframes lineV{
+    from{ transform:scaleY(0); opacity:0; }
+    to{ transform:scaleY(1); opacity:1; }
+}
+
+#revealLabel{
+    font-family:"JetBrains Mono",monospace;
+    font-size:11px;
+    letter-spacing:.3em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    margin-bottom:22px;
+    animation:revealSlideDown .5s ease both;
+}
+
+#revealSlotBox{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:48px;
+    font-weight:700;
+    color:#fff;
+    min-width:280px;
+    text-align:center;
+    padding:18px 32px;
+    border:1px solid rgba(94,234,212,.25);
+    border-radius:var(--r-lg);
+    background:rgba(94,234,212,.07);
+    margin-bottom:28px;
+    position:relative;
+    overflow:hidden;
+    line-height:1.2;
+}
+
+#revealSlotBox::before{
+    content:"";
+    position:absolute;
+    inset:0;
+    background:linear-gradient(180deg,rgba(10,13,20,.85) 0%,transparent 30%,transparent 70%,rgba(10,13,20,.85) 100%);
+    pointer-events:none;
+    z-index:1;
+}
+
+#revealSlotText{
+    position:relative;
+    z-index:2;
+    display:block;
+}
+
+#revealSlotText.slot-spinning{
+    animation:slotSpin .12s ease infinite;
+}
+
+#revealSlotText.slot-final{
+    animation:revealPop .45s cubic-bezier(.34,1.56,.64,1) both, revealGlow 2s ease infinite .5s;
+}
+
+#revealDesc{
+    font-size:14px;
+    color:var(--ink-dim);
+    text-align:center;
+    max-width:280px;
+    line-height:1.7;
+    animation:revealSlideDown .4s ease both .3s;
+    opacity:0;
+    animation-fill-mode:both;
+}
+
+/* Hunt target box */
+#revealHuntBox{
+    margin-top:28px;
+    position:relative;
+    padding:16px 24px 16px 56px;
+    border:1px solid rgba(239,68,68,.4);
+    border-radius:var(--r-md);
+    background:rgba(239,68,68,.08);
+    min-width:240px;
+    animation:huntPulse 2s ease infinite;
+    display:none;
+}
+
+#revealHuntBox.visible{ display:block; }
+
+#revealHuntIcon{
+    position:absolute;
+    left:16px;
+    top:50%;
+    transform:translateY(-50%);
+    font-size:26px;
+    animation:huntAim .8s cubic-bezier(.34,1.56,.64,1) both .3s;
+}
+
+#revealHuntLabel{
+    font-family:"JetBrains Mono",monospace;
+    font-size:10px;
+    letter-spacing:.2em;
+    text-transform:uppercase;
+    color:rgba(239,68,68,.7);
+    margin-bottom:4px;
+}
+
+#revealHuntName{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:24px;
+    font-weight:700;
+    color:var(--wolf);
+    text-shadow:0 0 16px rgba(239,68,68,.5);
+    line-height:1.2;
+    position:relative;
+}
+
+/* Crosshair that lands on hunt target name */
+.crosshair{
+    position:absolute;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    width:44px;
+    height:44px;
+    pointer-events:none;
+    animation:crosshairScan .7s cubic-bezier(.34,1.2,.64,1) both .2s;
+}
+.crosshair::before,.crosshair::after{
+    content:"";
+    position:absolute;
+    background:var(--wolf);
+}
+.crosshair::before{
+    /* horizontal */
+    width:100%;
+    height:2px;
+    top:50%;
+    left:0;
+    transform:translateY(-50%);
+    animation:lineH .35s ease both .9s;
+    transform-origin:center;
+    opacity:0;
+    animation-fill-mode:both;
+}
+.crosshair::after{
+    /* vertical */
+    width:2px;
+    height:100%;
+    left:50%;
+    top:0;
+    transform:translateX(-50%);
+    animation:lineV .35s ease both .9s;
+    transform-origin:center;
+    opacity:0;
+    animation-fill-mode:both;
+}
+.crosshair-ring{
+    position:absolute;
+    top:50%;left:50%;
+    transform:translate(-50%,-50%);
+    width:44px;height:44px;
+    border:2px solid var(--wolf);
+    border-radius:50%;
+    opacity:0;
+    animation:fadeIn .3s ease both .85s;
+}
+.crosshair-dot{
+    position:absolute;
+    top:50%;left:50%;
+    width:5px;height:5px;
+    background:var(--wolf);
+    border-radius:50%;
+    transform:translate(-50%,-50%);
+    opacity:0;
+    animation:fadeIn .2s ease both 1s;
+}
+
+/* Stars/particles */
+.reveal-stars{
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    overflow:hidden;
+}
+.reveal-star{
+    position:absolute;
+    width:3px;
+    height:3px;
+    background:#fff;
+    border-radius:50%;
+    opacity:0;
+}
+@keyframes starPop{
+    0%{ opacity:0; transform:scale(0) translate(0,0); }
+    50%{ opacity:1; }
+    100%{ opacity:0; transform:scale(1) translate(var(--tx),var(--ty)); }
+}
+/* กรอบข้อความแชท: ลดขนาดลงเพื่อกินพื้นที่น้อยลง (เดิม padding 6px 9px + margin-bottom 6px กว้างเกินความ
+   จำเป็นหลังจากรวมชื่อ+ข้อความเป็นบรรทัดเดียวกันแล้ว — ลดทั้ง padding รอบกรอบและระยะห่างระหว่างข้อความ) */
+.msg{
+    border-radius:var(--r-sm);
+    padding:4px 7px;
+    margin-bottom:4px;
+    animation:rise .2s ease;
+    line-height:1.3;
+    word-break:break-word;
+    border:1px solid var(--line);
+    background:rgba(255,255,255,.02);
+    font-size:12px;
+}
+
+.msgGlobal{
+    background:rgba(59,130,246,.12);
+    border-color:rgba(59,130,246,.25);
+}
+
+.msgWolf{
+    background:var(--wolf-soft);
+    border-color:rgba(239,68,68,.25);
+}
+
+.msgInstigator{
+    background:rgba(244,114,182,.12);
+    border-color:rgba(244,114,182,.3);
+}
+
+.msgCult{
+    background:rgba(234,179,8,.12);
+    border-color:rgba(234,179,8,.3);
+}
+
+.msgBandit{
+    background:rgba(148,163,184,.12);
+    border-color:rgba(148,163,184,.3);
+}
+
+.msgHost{
+    background:var(--moon-soft);
+    border-color:rgba(94,234,212,.3);
+}
+
+.msgPrivate{
+    background:var(--safe-soft);
+    border-color:rgba(34,197,94,.3);
+}
+
+/* ชื่อผู้ส่ง + ข้อความ ให้เริ่มอยู่บรรทัดเดียวกันเสมอ (เช่น "ชื่อ:ข้อความ") — เดิม .msgName เป็น div
+   บล็อกแยกบรรทัดต่างหากจากข้อความ ตอนนี้ทั้งคู่เป็น span อยู่ใน .msgLine เดียวกัน (ต่อท้าย ":" ให้ในมาร์กอัป
+   เอง ไม่ใช่ CSS content เพื่อให้เลือกคัดลอกข้อความได้ปกติ) ถ้าข้อความยาวเกินบรรทัด จะไหลต่อบรรทัดถัดไป
+   ตามปกติของ inline content โดยชื่อยังอยู่ต้นข้อความเสมอ ไม่ใช่ลอยเป็นบรรทัดของตัวเองอีกต่อไป */
+.msgLine{
+    line-height:1.3;
+}
+.msgName{
+    font-weight:700;
+    color:#fff;
+    font-size:11px;
+}
+.msgText{
+    font-size:12px;
+}
+
+.msgType{
+    display:none;
+}
+
+.msgSystem,
+.msgSystem .msgName{
+    color:var(--safe);
+}
+
+/* ข้อความที่แจ้งว่ามีคนตาย (ไม่ว่าสาเหตุอะไร — ถูกฆ่ากลางคืน/ประหาร/ยาพิษ/ลากตาย/ยิงตาย ฯลฯ)
+   ต้องเป็นสีแดงเสมอ ให้เห็นชัดกว่าข้อความระบบทั่วไป (เขียว) — server เป็นผู้ตัดสิน (isDeath)
+   ว่าข้อความไหนคือการตายจริง ไม่ใช่ client เดาจากคำในข้อความเอง วางไว้หลัง .msgSystem
+   เพื่อให้ specificity/ลำดับเท่ากันแต่มาทีหลัง ชนะสีเขียวของ .msgSystem */
+.msgDeath,
+.msgDeath .msgName{
+    color:var(--wolf);
+}
+
+/* ข้อความประกาศ "เปิดเผยตัวนายก" (server ส่ง isMayor:true มาเฉพาะข้อความนี้) — สีทอง
+   แยกจากสีเขียวของข้อความระบบทั่วไป วางไว้หลัง .msgDeath เพื่อให้ specificity เท่ากันแต่มาทีหลัง ชนะ */
+.msgMayor,
+.msgMayor .msgName{
+    color:#facc15;
+}
+
+/* ===== ww-modal: ป็อปอัป alert/confirm แบบ CSS เอง ไม่ใช้ alert()/confirm() ของเบราว์เซอร์
+   เพราะ alert()/confirm() เป็น native dialog ที่ "บล็อก" ทั้งหน้าและ JS thread ทั้งหมด
+   ระหว่างรอผู้เล่นกดตกลง ซึ่งบนมือถือบางทีค้างนานหรือดีเลย์การประมวลผล socket/reconnect ===== */
+.ww-modal-overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,.65);
+    display:flex; align-items:center; justify-content:center;
+    z-index:99999; padding:20px; animation:wwFadeIn .15s ease-out;
+}
+@keyframes wwFadeIn{ from{opacity:0;} to{opacity:1;} }
+.ww-modal-box{
+    background:#0e3742; color:#fff; border-radius:16px; padding:26px 22px;
+    max-width:360px; width:100%; box-shadow:0 12px 40px rgba(0,0,0,.55);
+    text-align:center; border:1px solid rgba(255,255,255,.08);
+}
+.ww-modal-msg{ font-size:15.5px; line-height:1.55; margin-bottom:20px; white-space:pre-line; }
+.ww-modal-actions{ display:flex; gap:10px; }
+.ww-modal-btn{
+    flex:1; padding:12px 14px; border:none; border-radius:10px;
+    font-size:14.5px; font-weight:700; cursor:pointer; font-family:inherit;
+}
+.ww-modal-ok{ background:#14b8a6; color:#fff; }
+.ww-modal-ok:active{ background:#0d9488; }
+.ww-modal-cancel{ background:#374151; color:#e5e7eb; }
+.ww-modal-ok.ww-modal-danger{ background:#dc2626; }
+.ww-modal-ok.ww-modal-danger:active{ background:#b91c1c; }
+.ww-modal-cancel:active{ background:#123f4b; }
+
+/* ===== PREVIOUS ROOM DECISION =====
+   ผู้เล่นที่มีห้องเดิมค้างอยู่ต้องเห็นตัวเลือกก่อน auto-join:
+   กลับเข้าเกมเดิม หรือ หาห้องใหม่ — โดยมือถือใช้ bottom-sheet เพื่อไม่บังข้อมูลเกินจำเป็น
+   และ desktop/tablet ใช้ dialog กลางจอที่มี hierarchy ชัดเจน */
+body.lobby-beach #playerResumeOverlay{
+    z-index:10050;
+    padding:16px;
+    background:rgba(4,18,24,.70);
+    backdrop-filter:blur(5px);
+}
+body.lobby-beach .playerResumeBox{
+    width:min(460px, calc(100vw - 32px));
+    max-height:min(680px, calc(100svh - 32px));
+    overflow:auto;
+    padding:24px;
+    border-radius:24px;
+    text-align:left;
+    color:#153b47;
+    background:
+        radial-gradient(circle at 86% 8%, rgba(251,191,36,.30), transparent 20%),
+        linear-gradient(155deg, rgba(255,255,255,.97), rgba(226,250,247,.98));
+    border:1px solid rgba(13,148,136,.22);
+    box-shadow:0 24px 70px rgba(0,0,0,.48), 0 0 0 1px rgba(255,255,255,.36) inset;
+}
+body.lobby-beach .playerResumeIcon{
+    width:62px;
+    height:62px;
+    display:grid;
+    place-items:center;
+    border-radius:18px;
+    margin-bottom:14px;
+    font-size:31px;
+    background:linear-gradient(145deg, #cffafe, #99f6e4);
+    border:1px solid rgba(13,148,136,.20);
+    box-shadow:0 8px 24px rgba(13,148,136,.15);
+}
+body.lobby-beach .playerResumeKicker{
+    margin-bottom:4px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:.22em;
+    color:#0f766e;
+}
+body.lobby-beach .playerResumeTitle{
+    margin:0;
+    color:#123b4a;
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:25px;
+    font-weight:700;
+    line-height:1.25;
+}
+body.lobby-beach .playerResumeSub{
+    margin:8px 0 16px;
+    color:#63808a;
+    font-size:12.5px;
+    line-height:1.6;
+}
+body.lobby-beach .playerResumeRoomCard{
+    padding:18px;
+    margin-bottom:14px;
+    border-radius:18px;
+    background:linear-gradient(145deg, rgba(236,254,255,.92), rgba(204,251,241,.76));
+    border:1px solid rgba(13,148,136,.18);
+}
+body.lobby-beach .playerResumeRoomCode{
+    margin-bottom:5px;
+    color:#0f4c5c;
+    font-family:"JetBrains Mono",monospace;
+    font-size:31px;
+    font-weight:700;
+    letter-spacing:.14em;
+    line-height:1.1;
+}
+body.lobby-beach .playerResumeRoomHost,
+body.lobby-beach .playerResumeRoomMeta{
+    color:#557781;
+    font-size:12px;
+    line-height:1.5;
+}
+body.lobby-beach .playerResumeNotice{
+    margin-bottom:16px;
+    padding:11px 12px;
+    border-radius:12px;
+    background:rgba(251,191,36,.12);
+    border:1px solid rgba(245,158,11,.20);
+    color:#875a09;
+    font-size:11.5px;
+    line-height:1.55;
+}
+body.lobby-beach .playerResumeNotice b{ color:#6b4a08; }
+body.lobby-beach .playerResumeActions{
+    display:flex;
+    gap:10px;
+    align-items:stretch;
+}
+body.lobby-beach .playerResumeActions button{
+    flex:1 1 0;
+    width:auto;
+    min-width:0;
+    margin:0;
+}
+body.lobby-beach .playerResumeNewBtn{
+    background:#e2eef0;
+    color:#315864;
+    border:1px solid rgba(49,88,100,.16);
+    box-shadow:none;
+}
+body.lobby-beach .playerResumeNewBtn:hover{ filter:brightness(1.02); }
+body.lobby-beach .playerResumeContinueBtn{
+    background:linear-gradient(135deg,#14b8a6,#0f766e);
+    box-shadow:0 8px 22px rgba(13,148,136,.24);
+}
+body.previous-room-open{ overflow:hidden; }
+
+@media (max-width:600px){
+    body.lobby-beach #playerResumeOverlay{
+        align-items:flex-end;
+        padding:8px;
+    }
+    body.lobby-beach .playerResumeBox{
+        width:100%;
+        max-height:min(620px, calc(100svh - 12px));
+        padding:18px;
+        border-radius:22px 22px 14px 14px;
+    }
+    body.lobby-beach .playerResumeIcon{
+        width:54px;
+        height:54px;
+        border-radius:16px;
+        font-size:27px;
+        margin-bottom:11px;
+    }
+    body.lobby-beach .playerResumeTitle{ font-size:22px; }
+    body.lobby-beach .playerResumeSub{ margin-bottom:13px; }
+    body.lobby-beach .playerResumeRoomCard{ padding:15px; }
+    body.lobby-beach .playerResumeRoomCode{ font-size:27px; }
+    body.lobby-beach .playerResumeActions{ flex-direction:column-reverse; }
+    body.lobby-beach .playerResumeActions button{ flex:none; min-height:48px; }
+}
+
+/* ===== ROOM PICKER ฝั่งผู้เล่น (เลือกห้องจากรายการ ตอนมีหลายห้องเปิดพร้อมกัน) — ใช้ ww-modal-overlay
+   เดิมเป็น backdrop แต่ขยาย .ww-modal-box ให้กว้างขึ้นด้วย .playerRoomPickerBox เพื่อให้พอดีกับกริด 2
+   คอลัมน์ (การ์ดห้อง+ช่องค้นหา) แทนกล่อง alert แคบๆ เดิม โครงสร้างการ์ด/กริดหน้าตาเหมือนกริด
+   "ห้องที่ยังเปิดอยู่" ฝั่งโฮสต์ (host.css .roomPickerGrid) ทุกประการเพื่อให้ผู้เล่น/โฮสต์คุ้นตาเหมือนกัน ===== */
+.playerRoomPickerBox{
+    max-width:520px;
+    text-align:left;
+    max-height:min(560px, 82svh);
+    display:flex;
+    flex-direction:column;
+}
+
+.playerRoomPickerTitle{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-weight:700;
+    font-size:19px;
+    color:#fff;
+    margin-bottom:12px;
+}
+
+.roomSearchInput{
+    width:100%;
+    padding:11px 14px;
+    margin:0 0 12px;
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    background:#082530;
+    color:var(--ink);
+    box-sizing:border-box;
+    outline:none;
+    font-size:14px;
+    transition:border-color .2s, box-shadow .2s;
+    font-family:inherit;
+    flex-shrink:0;
+}
+
+.roomSearchInput:focus{
+    border-color:var(--moon);
+    box-shadow:0 0 0 3px var(--moon-soft);
+}
+
+.roomSearchInput::placeholder{
+    color:var(--ink-dim);
+}
+
+.roomPickerEmpty{
+    text-align:center;
+    font-size:12.5px;
+    color:var(--ink-dim);
+    padding:16px 4px;
+}
+
+.roomPickerGrid{
+    display:grid;
+    grid-template-columns:repeat(2, 1fr);
+    gap:10px;
+    overflow-y:auto;
+    padding-right:2px;
+}
+
+@media (max-width: 420px){
+    .roomPickerGrid{
+        grid-template-columns:1fr;
+    }
+}
+
+.roomPickCard{
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+    padding:12px;
+    border:1px solid var(--line);
+    border-radius:var(--r-sm);
+    background:#082530;
+    cursor:pointer;
+    transition:transform .15s, border-color .15s;
+}
+
+.roomPickCard:active{
+    transform:scale(.97);
+}
+
+.roomPickCard.roomPickDisabled{
+    cursor:not-allowed;
+    opacity:.55;
+}
+
+.roomPickCode{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-weight:700;
+    font-size:18px;
+    color:#fff;
+    letter-spacing:.06em;
+}
+
+.roomPickMeta, .roomPickStatus{
+    font-size:11.5px;
+    color:var(--ink-dim);
+}
+
+.roomPickLock{
+    font-size:13px;
+    vertical-align:middle;
+}
+
+.playerRoomPickerBox .ww-modal-cancel{
+    width:100%;
+    margin-top:14px;
+    flex-shrink:0;
+}
+
+
+/* ==========================================================================
+   DAY THEME (body.is-day) — UI สว่างรับกับฉากกลางวัน
+   --------------------------------------------------------------------------
+   ปัญหาเดิม: ฉากกลางวันสว่าง (ฟ้า/ทะเล/หาดทองพื้นหลังเต็มจอ) แต่ UI ยังใช้ชุดสีกลางคืน
+   ป้ายผู้ทดสอบ/ปุ่มกลับหน้าโฮสต์/ข้อความที่วางบนฉากตรงๆ เป็นสีอ่อนบนพื้นอ่อนจนมองไม่เห็น
+   และกริดผู้เล่น/แชทเป็นพื้นน้ำเงินเข้มตัดกับฉาก
+
+   วิธีแก้: สลับชุดโทเค็นสีทั้งชุดเป็นกระจกฝ้าสีขาว + ตัวอักษรน้ำเงินอมเขียวเข้ม
+   (คอนทราสต์ ≥ 4.5:1) แล้ว override สีที่เขียนตรงๆ รายคอมโพเนนต์
+   - โทเค็นผูกกับ .app และ #bottomBar เท่านั้น (ป๊อปอัปบท/จบเกม/เฉลยบทที่อยู่นอก .app
+     ยังเป็นพื้นมืดเหมือนเดิม จึงต้องไม่ได้ตัวอักษรเข้มไปด้วย)
+   - กลางคืนไม่ถูกแตะ (ทุกกฎอยู่ใต้ body.is-day)
+   ========================================================================== */
+
+.card, #chatCard{
+    transition:background-color .9s ease, border-color .9s ease, box-shadow .9s ease;
+}
+
+body.is-day .app,
+body.is-day #bottomBar{
+    /* body ตั้ง color:var(--ink) ไว้ที่ระดับราก ลูกหลานจึง "สืบทอดค่าสีสว่างที่คำนวณแล้ว" ไม่ใช่โทเค็น
+       — ต้องตั้ง color ใหม่ที่ .app/#bottomBar ด้วย ข้อความที่ไม่ได้กำหนดสีเอง (เช่นเนื้อความแชท)
+       จะได้เป็นสีเข้ม */
+    color:var(--ink);
+    --panel:rgba(255,255,255,.82);
+    --line:rgba(8,74,96,.20);
+    --ink:#08323f;
+    --ink-dim:#2a5968;
+    --moon:#0c6b85;
+    --moon-soft:rgba(14,116,144,.13);
+    --wolf:#b91c1c;
+    --wolf-soft:rgba(185,28,28,.10);
+    --safe:#15803d;
+    --safe-soft:rgba(21,128,61,.12);
+    --mark:#9a5306;
+    --mark-soft:rgba(180,83,9,.13);
+
+    --day-surface:rgba(255,255,255,.90);
+    --day-surface-hi:#ffffff;
+    --day-edge:rgba(8,74,96,.22);
+}
+
+/* ปุ่มพื้นฐาน (เฉพาะที่ไม่มีสไตล์ของตัวเอง) — :where() ทำให้ความจำเพาะเท่ากับ button เดิม
+   คลาส/ID ของปุ่มแต่ละตัวจึงยังชนะเหมือนเดิม */
+:where(body.is-day) button{
+    background:linear-gradient(135deg,#0d84a1,#0a6179);
+    box-shadow:0 4px 14px rgba(8,74,96,.28);
+}
+
+/* ---- ข้อความ/แบนเนอร์ที่วางบนฉากตรงๆ ---- */
+body.is-day .app .small,
+body.is-day .app #selectInfo{
+    color:#06303c;
+    text-shadow:0 1px 8px rgba(255,255,255,.65);
+}
+body.is-day .app #selectInfo:not(:empty){ font-weight:600; }
+
+body.is-day .app .conn-banner{
+    background:rgba(255,251,235,.96);
+    border-color:rgba(180,83,9,.5);
+    color:#8a4a05;
+}
+body.is-day .day-night-badge{
+    background:rgba(255,255,255,.90);
+    border-color:rgba(180,83,9,.50);
+    color:#8a4a05;
+    box-shadow:0 4px 14px rgba(8,74,96,.18);
+}
+body.is-day #wwVersionBadge{ color:rgba(8,50,63,.5) !important; }
+
+/* ---- การ์ดกระจกฝ้า ---- */
+body.is-day .app .card,
+body.is-day .app #chatCard{
+    border-color:rgba(255,255,255,.92);
+    box-shadow:0 8px 28px rgba(8,74,96,.16);
+}
+body.is-day .app .card h2,
+body.is-day .app .card h3,
+body.is-day .app .player .pname,
+body.is-day .app .msgName,
+body.is-day #barRoleName{
+    color:var(--ink);
+}
+/* ชื่อตัวเองบนการ์ด: JS ใส่สีเหลือง #facc15 แบบ inline (เด่นบนพื้นมืด) — บนพื้นขาวมองไม่เห็น
+   เลยต้องใช้ !important ทับ inline ให้เป็นทองเข้มแทน */
+body.is-day .app .player .pname[style*="#facc15"]{ color:#8a4a05 !important; }
+
+/* ---- ช่องกรอก / ชิป ---- */
+body.is-day .app input,
+body.is-day .app select,
+body.is-day .app .roomSearchInput,
+body.is-day .app .filterChip,
+body.is-day .app .role-row,
+body.is-day .app .roomPickCard{
+    background-color:var(--day-surface);
+    border-color:var(--day-edge);
+}
+body.is-day .app input.locked{ background-color:rgba(8,74,96,.08); }
+body.is-day .app select{
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+        linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+}
+body.is-day .app .filterChip:hover{ border-color:var(--moon); }
+body.is-day .app .filterChip.active{
+    background:rgba(14,116,144,.16);
+    border-color:var(--moon);
+    color:#0a4f64;
+}
+body.is-day .app .role-toggle-btn{
+    background:var(--day-surface);
+    border-color:var(--day-edge);
+}
+
+/* ---- กริดผู้เล่น: ช่องสี่เหลี่ยมขาวฝ้ารับกับการ์ด แทนช่องน้ำเงินเข้ม ---- */
+body.is-day .app .player{
+    background:var(--day-surface);
+    border-color:var(--day-edge);
+    box-shadow:0 2px 6px rgba(8,74,96,.14);
+}
+body.is-day .app .player.selected{
+    border-color:var(--moon);
+    box-shadow:0 0 0 1px var(--moon), 0 0 18px rgba(14,116,144,.35);
+}
+body.is-day .app .player.dead{
+    background:rgba(226,236,240,.80);
+    opacity:.62; /* เดิม .45 จางจนชื่อคนตายอ่านไม่ออกบนพื้นสว่าง */
+}
+body.is-day .app .player.hunt-target{
+    box-shadow:0 0 0 1px rgba(185,28,28,.4), 0 0 14px rgba(185,28,28,.2);
+}
+/* ช่องที่ถูกเลือกไว้ (โหวต/เล็ง/ปกป้อง ฯลฯ) — เดิมเป็นสีโปร่งจางๆ บนพื้นเข้ม พอพื้นเป็นขาวต้องเติมสีทึบอ่อนแทน
+   ไม่งั้นช่องจะโปร่งจนเห็นการ์ดข้างหลังทะลุ */
+body.is-day .app .player.my-target,
+body.is-day .app .player.my-protect-target{ background:#dcf5e4; }
+body.is-day .app .player.my-kill-target{ background:#fde2e2; }
+body.is-day .app .player.my-shield-target{ background:#d9f0fb; }
+body.is-day .app .player.my-wolfcub-target{ background:#ffe9d5; }
+body.is-day .app .player.my-loudmouth-target{ background:#fde0ee; }
+body.is-day .app .player.my-silence-target{ background:#fdf0d0; }
+body.is-day .app .player-scout-reveal.player-scout-aura,
+body.is-day .app .player-scout-reveal.player-scout-detective{ background:#eef7fa; }
+
+/* ---- แชท ---- */
+body.is-day .app #chatBoxGlobal,
+body.is-day .app #chatBoxWolf,
+body.is-day .app #chatBoxInstigator,
+body.is-day .app #chatBoxCult,
+body.is-day .app #chatBoxBandit{
+    background:rgba(255,255,255,.72);
+    border-color:var(--day-edge);
+    box-shadow:none;
+}
+body.is-day .app .msg{ background:rgba(255,255,255,.55); }
+body.is-day .app .msgGlobal{ background:rgba(59,130,246,.10); }
+body.is-day .app .msgWolf{ background:var(--wolf-soft); }
+body.is-day .app .msgInstigator{ background:rgba(244,114,182,.12); }
+body.is-day .app .msgCult{ background:rgba(234,179,8,.14); }
+body.is-day .app .msgBandit{ background:rgba(100,116,139,.12); }
+body.is-day .app .msgHost{ background:var(--moon-soft); }
+body.is-day .app .msgPrivate{ background:var(--safe-soft); }
+body.is-day .app .msgMayor,
+body.is-day .app .msgMayor .msgName{ color:#8a5a00; }
+
+body.is-day .app .chatTab{
+    background:rgba(255,255,255,.55);
+    border-color:var(--day-edge);
+}
+body.is-day .app .tab-badge{
+    background:rgba(8,74,96,.14);
+    color:var(--ink);
+}
+body.is-day .app .chatTab.active{ color:#1d4ed8; background:rgba(59,130,246,.14); }
+body.is-day .app .chatTab.active.wolfTab{ color:#b91c1c; background:var(--wolf-soft); }
+body.is-day .app #tabInstigator.chatTab.active{ color:#be185d; background:rgba(244,114,182,.16); }
+body.is-day .app #tabCult.chatTab.active{ color:#8a5a00; background:rgba(234,179,8,.18); }
+body.is-day .app .chatTab.active .tab-badge{ background:rgba(59,130,246,.30); }
+body.is-day .app .chatTab.active.wolfTab .tab-badge{ background:rgba(185,28,28,.28); }
+body.is-day .app .silenced-notice{ color:#475569; }
+html body.is-day .app #chatCard.keyboard-mode{
+    box-shadow:0 -10px 30px rgba(8,74,96,.25);
+}
+
+/* ---- บาร์ล่าง (บทของฉัน + ปุ่มสกิล) — อยู่นอก .app ---- */
+body.is-day #bottomBar{
+    background:rgba(255,255,255,.86);
+    border-top-color:rgba(255,255,255,.95);
+    box-shadow:0 -6px 24px rgba(8,74,96,.18);
+}
+
+/* shared non-blocking notifications used by ww-ui.js */
+.ww-toast-container{position:fixed;left:50%;bottom:max(18px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:100000;pointer-events:none;width:min(92vw,520px);display:flex;justify-content:center;}
+.ww-toast{width:fit-content;max-width:100%;padding:11px 15px;border:1px solid rgba(255,255,255,.12);border-radius:13px;background:rgba(13,18,32,.96);color:#eef2ff;box-shadow:0 12px 35px rgba(0,0,0,.38);font-size:13px;line-height:1.5;text-align:center;opacity:0;transform:translateY(12px);transition:opacity .18s,transform .18s;backdrop-filter:blur(12px);}
+.ww-toast.show{opacity:1;transform:translateY(0);}
+.ww-toast-info{border-color:rgba(124,92,255,.35);}
+.ww-toast-error{border-color:rgba(239,68,68,.42);}
+.ww-toast-success{border-color:rgba(34,197,94,.38);}
+
+
+/* ============================================================================
+   BEACH LOBBY REDESIGN
+   Lobby is intentionally its own visual world. Once the player joins a room,
+   .lobby-beach is removed and the existing day/night game skin takes over.
+   ============================================================================ */
+body.lobby-beach{
+    --lobby-sky-1:#ffcc9c;
+    --lobby-sky-2:#f4a97f;
+    --lobby-sky-3:#79cfe0;
+    --lobby-sea-1:#42bfd0;
+    --lobby-sea-2:#168ea8;
+    --lobby-sand-1:#f7d99a;
+    --lobby-sand-2:#c99c62;
+    --lobby-ink:#17384a;
+    --lobby-muted:#577080;
+    --lobby-panel:rgba(255,252,244,.78);
+    --lobby-line:rgba(255,255,255,.68);
+    --lobby-accent:#0f899b;
+    --lobby-accent-dark:#0b6273;
+    --lobby-gold:#efaa3d;
+    background:
+        radial-gradient(circle 120px at 78% 16%, rgba(255,246,190,.95), rgba(255,207,119,.45) 40%, transparent 72%),
+        linear-gradient(180deg,
+            var(--lobby-sky-1) 0%,
+            var(--lobby-sky-2) 25%,
+            var(--lobby-sky-3) 44%,
+            var(--lobby-sea-1) 44%,
+            var(--lobby-sea-2) 70%,
+            var(--lobby-sand-1) 70%,
+            var(--lobby-sand-2) 100%);
+    color:var(--lobby-ink);
+}
+body.lobby-beach::before{
+    content:"";
+    position:fixed;
+    inset:0;
+    z-index:0;
+    pointer-events:none;
+    opacity:.72;
+    background-image:
+        radial-gradient(ellipse 120px 7px at 18% 69%, rgba(255,255,255,.35), transparent 72%),
+        radial-gradient(ellipse 190px 8px at 52% 72%, rgba(255,255,255,.26), transparent 72%),
+        radial-gradient(ellipse 125px 7px at 84% 69%, rgba(255,255,255,.32), transparent 72%),
+        linear-gradient(160deg, transparent 71%, rgba(255,255,255,.14) 71.2%, transparent 71.8%);
+}
+body.lobby-beach::after{
+    content:"";
+    position:fixed;
+    left:-6vw;
+    right:-6vw;
+    bottom:-2px;
+    height:31vh;
+    min-height:145px;
+    z-index:0;
+    pointer-events:none;
+    opacity:.78;
+    background:
+        radial-gradient(circle at 18% 12%, rgba(255,255,255,.18) 0 1.2px, transparent 1.7px),
+        radial-gradient(circle at 36% 42%, rgba(255,255,255,.14) 0 1px, transparent 1.6px),
+        radial-gradient(circle at 63% 20%, rgba(255,255,255,.16) 0 1px, transparent 1.6px),
+        radial-gradient(circle at 84% 48%, rgba(255,255,255,.14) 0 1px, transparent 1.6px),
+        linear-gradient(180deg, rgba(255,255,255,.10), transparent 18%, rgba(123,79,41,.11));
+    border-radius:52% 52% 0 0 / 16% 16% 0 0;
+    transform:rotate(-1.5deg);
+}
+body.lobby-beach .scene-layer{z-index:0;}
+body.lobby-beach .scene-stars{display:none;}
+body.lobby-beach .scene-disc{
+    top:10vh;
+    right:12%;
+    width:78px;
+    height:78px;
+    background:radial-gradient(circle at 35% 32%, #fff4bf, #f8b84e 67%, #ee9d38 100%);
+    box-shadow:0 0 64px 22px rgba(255,202,98,.48);
+}
+body.lobby-beach .scene-layer::before,
+body.lobby-beach .scene-layer::after{
+    content:"";
+    position:absolute;
+    z-index:1;
+    pointer-events:none;
+    bottom:7vh;
+    width:100px;
+    height:180px;
+    opacity:.18;
+    background:linear-gradient(95deg, transparent 43%, #355f4d 44% 48%, transparent 49%),
+               radial-gradient(ellipse 70px 23px at 70% 10%, #355f4d 0 42%, transparent 44%);
+    filter:blur(.2px);
+}
+body.lobby-beach .scene-layer::before{left:-34px; transform:scaleX(.8) rotate(-7deg);}
+body.lobby-beach .scene-layer::after{right:-20px; transform:scaleX(-.72) rotate(-4deg); bottom:3vh;}
+body.lobby-beach .app:not(.game-visible){
+    justify-content:center;
+    padding:clamp(14px, 3vh, 28px) max(12px, env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom));
+    overflow-y:auto;
+    overflow-x:hidden;
+    scrollbar-width:none;
+}
+body.lobby-beach .app:not(.game-visible)::-webkit-scrollbar{display:none;}
+body.lobby-beach #joinCard{
+    width:min(100%, 580px);
+    margin:0 auto;
+    padding:0;
+    background:var(--lobby-panel);
+    border:1px solid var(--lobby-line);
+    border-radius:28px;
+    color:var(--lobby-ink);
+    box-shadow:0 24px 60px rgba(66,77,71,.20), 0 3px 0 rgba(255,255,255,.34) inset;
+    backdrop-filter:blur(18px) saturate(1.08);
+    -webkit-backdrop-filter:blur(18px) saturate(1.08);
+    overflow:hidden;
+    animation:lobbyCardIn .55s cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes lobbyCardIn{
+    from{opacity:0; transform:translateY(18px) scale(.985);}
+    to{opacity:1; transform:translateY(0) scale(1);}
+}
+body.lobby-beach #joinCard::before{
+    content:"";
+    display:block;
+    height:5px;
+    background:linear-gradient(90deg,#f1b65b,#53c4ca,#168ea8,#f1b65b);
+}
+body.lobby-beach .lobby-hero{
+    padding:22px 24px 18px;
+    background:linear-gradient(180deg, rgba(255,255,255,.42), rgba(255,255,255,.14));
+}
+body.lobby-beach .lobby-kicker{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-family:"JetBrains Mono",monospace;
+    font-size:10px;
+    letter-spacing:.20em;
+    font-weight:700;
+    color:#397180;
+}
+body.lobby-beach .lobby-kicker-dot{
+    width:7px;height:7px;border-radius:50%;
+    background:#23a786;
+    box-shadow:0 0 0 4px rgba(35,167,134,.12), 0 0 12px rgba(35,167,134,.38);
+}
+body.lobby-beach .lobby-title-row{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:16px;
+    margin-top:8px;
+}
+body.lobby-beach .lobby-hero h2{
+    margin:0 0 4px;
+    color:#17384a;
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:clamp(27px, 5.7vw, 34px);
+    line-height:1.15;
+    letter-spacing:.01em;
+}
+body.lobby-beach .lobby-hero .sub{
+    margin:0;
+    color:#5d7581;
+    font-size:13px;
+    line-height:1.55;
+}
+body.lobby-beach .lobby-sun{
+    flex:0 0 auto;
+    width:48px;
+    height:48px;
+    display:grid;
+    place-items:center;
+    border-radius:16px;
+    background:linear-gradient(145deg, rgba(255,255,255,.7), rgba(255,232,171,.72));
+    border:1px solid rgba(255,255,255,.75);
+    box-shadow:0 8px 20px rgba(239,170,61,.14);
+    font-size:24px;
+}
+body.lobby-beach .player-name-display{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex-wrap:wrap;
+    gap:5px 8px;
+    margin:0 24px 14px;
+    padding:9px 12px;
+    border:1px solid rgba(22,142,168,.16);
+    border-radius:14px;
+    background:rgba(255,255,255,.44);
+    color:#607885;
+    font-size:12px;
+}
+body.lobby-beach .player-name-display span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#78909a;}
+body.lobby-beach .player-name-display b{color:#17384a; font-size:13px;}
+body.lobby-beach .lobby-statusbar{
+    margin:0 24px 16px;
+    display:flex;
+    align-items:center;
+    gap:11px;
+    padding:11px 13px;
+    border-radius:15px;
+    background:rgba(255,255,255,.48);
+    border:1px solid rgba(255,255,255,.70);
+}
+body.lobby-beach .lobby-status-dot{
+    width:9px;height:9px;border-radius:50%;flex:none;
+    background:#f0ab45;
+    box-shadow:0 0 0 4px rgba(240,171,69,.13);
+}
+body.lobby-beach .lobby-status-dot[data-state="ready"]{
+    background:#1bb486;
+    box-shadow:0 0 0 4px rgba(27,180,134,.12);
+}
+body.lobby-beach .lobby-status-dot[data-state="busy"]{
+    background:#dc8d47;
+    box-shadow:0 0 0 4px rgba(220,141,71,.12);
+}
+body.lobby-beach .lobby-status-copy{display:flex;flex-direction:column;min-width:0;flex:1;}
+body.lobby-beach .lobby-status-label{font-size:10px;line-height:1.1;color:#7a9099;letter-spacing:.08em;}
+body.lobby-beach .lobby-status-text{font-size:12.5px;font-weight:700;color:#23495a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+body.lobby-beach .lobby-status-live{font-family:"JetBrains Mono",monospace;font-size:9px;font-weight:700;letter-spacing:.14em;color:#178b73;}
+body.lobby-beach .lobby-room-panel{
+    margin:0 16px;
+    padding:15px;
+    border-radius:20px;
+    background:rgba(255,255,255,.50);
+    border:1px solid rgba(255,255,255,.70);
+    box-shadow:0 8px 26px rgba(31,74,86,.06);
+}
+body.lobby-beach .lobby-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px;}
+body.lobby-beach .lobby-section-kicker{font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.13em;color:#6f8993;}
+body.lobby-beach .lobby-section-title{margin-top:3px;font-size:14px;font-weight:800;color:#244b5b;}
+body.lobby-beach .lobby-room-badge{
+    flex:none;
+    max-width:45%;
+    padding:5px 9px;
+    border-radius:999px;
+    background:#edf8f5;
+    border:1px solid #c9e9df;
+    color:#1d8a74;
+    font-size:10px;
+    font-weight:800;
+    white-space:nowrap;
+}
+body.lobby-beach .lobby-feature-room{
+    position:relative;
+    padding:15px 16px 14px;
+    border-radius:18px;
+    background:linear-gradient(135deg, rgba(245,252,247,.90), rgba(231,248,249,.78));
+    border:1px solid rgba(116,194,198,.23);
+    overflow:hidden;
+}
+body.lobby-beach .lobby-feature-room::after{
+    content:"";
+    position:absolute;
+    width:170px;height:170px;
+    right:-80px;bottom:-104px;
+    border-radius:50%;
+    background:radial-gradient(circle, rgba(70,190,198,.14), transparent 67%);
+}
+body.lobby-beach .lobby-feature-topline{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+body.lobby-beach .lobby-feature-icon{font-size:16px;}
+body.lobby-beach .lobby-feature-state{font-size:11px;font-weight:800;color:#2d7f83;}
+body.lobby-beach .lobby-room-code{
+    margin-top:5px;
+    font-family:"JetBrains Mono",monospace;
+    font-weight:800;
+    font-size:clamp(25px,5.8vw,34px);
+    line-height:1.08;
+    letter-spacing:.12em;
+    color:#0d5367;
+}
+body.lobby-beach .lobby-room-host{margin-top:5px;font-size:12px;color:#62808a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+body.lobby-beach .lobby-room-meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:11px;color:#47707d;font-size:10.5px;}
+body.lobby-beach .lobby-room-meta span{padding:5px 8px;border-radius:9px;background:rgba(255,255,255,.54);border:1px solid rgba(255,255,255,.58);}
+body.lobby-beach .lobby-room-meta b{color:#225464;}
+body.lobby-beach .lobby-capacity-track{height:5px;margin-top:12px;border-radius:999px;background:rgba(63,150,161,.11);overflow:hidden;}
+body.lobby-beach .lobby-capacity-track span{display:block;height:100%;border-radius:inherit;width:8%;background:linear-gradient(90deg,#49b7bf,#168ea8);transition:width .25s ease;}
+body.lobby-beach .lobby-room-controls{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin-top:11px;}
+body.lobby-beach .lobby-field.hidden{display:none;}
+body.lobby-beach .lobby-field label{display:flex;align-items:center;gap:5px;margin:0 0 5px 2px;font-size:10.5px;font-weight:800;color:#587582;}
+body.lobby-beach .lobby-field label span{font-weight:500;color:#899ea7;}
+body.lobby-beach .lobby-field input{
+    width:100%;
+    margin:0;
+    min-height:44px;
+    padding:10px 12px;
+    border-radius:12px;
+    border:1px solid rgba(52,124,139,.18);
+    background:rgba(250,255,255,.72);
+    color:#16465a;
+    font-size:13px;
+    box-shadow:inset 0 1px 2px rgba(23,56,74,.03);
+}
+body.lobby-beach .lobby-field input:focus{border-color:#43aeb7;box-shadow:0 0 0 3px rgba(67,174,183,.13);}
+body.lobby-beach .lobby-field input::placeholder{color:#87a0aa;}
+body.lobby-beach .lobby-room-picker-btn{
+    display:flex;
+    align-items:center;
+    gap:11px;
+    min-height:54px;
+    margin-top:11px;
+    padding:9px 11px;
+    border-radius:14px;
+    border:1px solid rgba(38,129,144,.16);
+    background:rgba(255,255,255,.62);
+    color:#1e5366;
+    box-shadow:none;
+    text-align:left;
+}
+body.lobby-beach .lobby-room-picker-btn:hover{transform:none;filter:none;background:rgba(255,255,255,.78);}
+body.lobby-beach .lobby-room-picker-btn:active{transform:scale(.992);}
+body.lobby-beach .lobby-picker-icon{width:34px;height:34px;display:grid;place-items:center;flex:none;border-radius:10px;background:#eaf7f5;font-size:17px;}
+body.lobby-beach .lobby-picker-copy{display:flex;flex-direction:column;min-width:0;flex:1;}
+body.lobby-beach .lobby-picker-copy strong{font-size:12.5px;color:#215568;}
+body.lobby-beach .lobby-picker-copy small{margin-top:1px;font-size:10.5px;color:#78919a;}
+body.lobby-beach .lobby-picker-arrow{font-size:22px;color:#2e8490;line-height:1;}
+body.lobby-beach .lobby-join-btn{
+    display:grid;
+    grid-template-columns:36px minmax(0,1fr) 30px;
+    align-items:center;
+    gap:6px;
+    min-height:56px;
+    margin:13px 24px 0;
+    padding:10px 12px;
+    border-radius:15px;
+    background:linear-gradient(135deg,#1598a8,#0b7186);
+    box-shadow:0 12px 24px rgba(11,113,134,.20), inset 0 1px 0 rgba(255,255,255,.17);
+    font-size:15px;
+    font-weight:800;
+}
+body.lobby-beach .lobby-join-btn:hover{transform:translateY(-1px);filter:brightness(1.04);}
+body.lobby-beach .lobby-join-btn:active{transform:scale(.992);}
+body.lobby-beach .lobby-join-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:rgba(255,255,255,.13);font-size:18px;}
+body.lobby-beach .lobby-join-btn>span:nth-child(2){text-align:left;}
+body.lobby-beach .lobby-join-arrow{font-size:20px;text-align:right;opacity:.82;}
+body.lobby-beach .join-waiting{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    margin:12px 24px 0;
+    padding:10px 12px;
+    border-radius:12px;
+    background:rgba(245,248,238,.72);
+    border:1px solid rgba(76,126,107,.12);
+    color:#668077;
+    font-family:"IBM Plex Sans Thai",sans-serif;
+    font-size:11px;
+    line-height:1.45;
+}
+body.lobby-beach .lobby-wait-spinner{
+    width:14px;height:14px;border:2px solid rgba(30,121,113,.18);border-top-color:#2b9687;border-radius:50%;animation:lobbySpin .75s linear infinite;flex:none;
+}
+@keyframes lobbySpin{to{transform:rotate(360deg)}}
+body.lobby-beach .lobby-footnote{display:flex;align-items:center;justify-content:center;gap:5px;padding:12px 24px 16px;color:#77909a;font-size:9.5px;}
+body.room-picker-open{overflow:hidden;}
+body.lobby-beach .playerRoomPickerBox{
+    max-width:620px;
+    width:min(620px, calc(100vw - 24px));
+    max-height:min(700px, 88svh);
+    padding:17px;
+    border-radius:24px;
+    text-align:left;
+    background:rgba(246,252,249,.93);
+    color:#17384a;
+    border:1px solid rgba(255,255,255,.86);
+    box-shadow:0 28px 80px rgba(19,59,71,.28), 0 2px 0 rgba(255,255,255,.7) inset;
+    backdrop-filter:blur(18px) saturate(1.08);
+    -webkit-backdrop-filter:blur(18px) saturate(1.08);
+    animation:lobbyPickerIn .2s ease-out both;
+}
+@keyframes lobbyPickerIn{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+body.lobby-beach .playerRoomPickerHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:13px;}
+body.lobby-beach .playerRoomPickerKicker{font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.15em;font-weight:800;color:#39808b;}
+body.lobby-beach .playerRoomPickerTitle{margin:2px 0 1px;font-family:"Charm","IBM Plex Sans Thai",serif;font-size:23px;font-weight:700;color:#17384a;}
+body.lobby-beach .playerRoomPickerSub{font-size:10.5px;color:#6e8892;}
+body.lobby-beach .playerRoomPickerClose{
+    width:40px!important;height:40px!important;min-width:40px;
+    padding:0!important;margin:0!important;border-radius:12px!important;
+    background:#e9f4f1!important;color:#2d6b78!important;
+    box-shadow:none!important;font-size:25px!important;font-weight:400!important;line-height:1!important;
+}
+body.lobby-beach .playerRoomPickerClose:hover{transform:none;filter:none;background:#e1efeb!important;}
+body.lobby-beach .playerRoomPickerToolbar{display:flex;align-items:center;gap:9px;}
+body.lobby-beach .playerRoomSearchWrap{position:relative;min-width:0;flex:1;}
+body.lobby-beach .roomSearchInput{margin:0!important;min-height:44px;padding:10px 42px 10px 36px;border-radius:13px;border:1px solid rgba(48,118,131,.16);background:rgba(255,255,255,.76);color:#204d5f;}
+body.lobby-beach .roomSearchInput:focus{border-color:#43aeb7;box-shadow:0 0 0 3px rgba(67,174,183,.13);}
+body.lobby-beach .playerRoomSearchIcon{position:absolute;left:12px;top:50%;transform:translateY(-52%);z-index:2;font-size:20px;color:#6c9099;pointer-events:none;}
+body.lobby-beach .playerRoomSearchClear{
+    position:absolute;right:6px;top:5px;width:34px!important;height:34px!important;padding:0!important;margin:0!important;border-radius:10px!important;background:#eef5f2!important;color:#5f7e88!important;box-shadow:none!important;font-size:20px!important;line-height:1!important;
+}
+body.lobby-beach .playerRoomSearchClear:hover{transform:none;filter:none;}
+body.lobby-beach .playerRoomRefresh{
+    flex:none;width:44px!important;height:44px!important;padding:0!important;margin:0!important;border-radius:13px!important;background:#edf7f4!important;color:#2d7a83!important;box-shadow:none!important;font-size:22px!important;
+}
+body.lobby-beach .playerRoomRefresh:hover{transform:none;filter:none;background:#e2f2ee!important;}
+body.lobby-beach .playerRoomRefresh.is-loading{animation:lobbySpin .75s linear infinite;}
+body.lobby-beach .playerRoomPickerSummary{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 2px 9px;color:#7b9199;font-size:9.5px;}
+body.lobby-beach .playerRoomPickerSummary span:first-child{color:#306d7a;font-weight:800;}
+body.lobby-beach .roomPickerGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:1px 2px 3px;overflow-y:auto;min-height:0;}
+body.lobby-beach .roomPickerGrid::-webkit-scrollbar{width:5px;}
+body.lobby-beach .roomPickerGrid::-webkit-scrollbar-thumb{background:rgba(32,126,139,.22);}
+body.lobby-beach .roomPickCard{
+    display:block;
+    width:100%;
+    min-width:0;
+    padding:12px;
+    margin:0;
+    border:1px solid rgba(48,118,131,.14);
+    border-radius:16px;
+    background:rgba(255,255,255,.76);
+    color:#244f60;
+    text-align:left;
+    box-shadow:0 5px 15px rgba(26,76,88,.05);
+    cursor:pointer;
+}
+body.lobby-beach .roomPickCard:hover{transform:translateY(-2px);filter:none;border-color:rgba(40,146,157,.32);box-shadow:0 10px 24px rgba(26,76,88,.10);}
+body.lobby-beach .roomPickCard:active{transform:scale(.988);}
+body.lobby-beach .roomPickCard:disabled{opacity:.65;cursor:not-allowed;transform:none!important;filter:grayscale(.08);}
+body.lobby-beach .roomPickCardTop{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:18px;}
+body.lobby-beach .roomPickState,.roomPickPrivate,.roomPickOpen{font-size:9px;font-weight:800;white-space:nowrap;}
+body.lobby-beach .roomPickState{display:inline-flex;align-items:center;gap:4px;color:#25826f;}
+body.lobby-beach .roomPickState i{font-style:normal;font-size:11px;}
+body.lobby-beach .roomPickState-started{color:#9a7061;}
+body.lobby-beach .roomPickState-full{color:#9b7651;}
+body.lobby-beach .roomPickPrivate{color:#8a6d67;}
+body.lobby-beach .roomPickOpen{color:#2b8873;}
+body.lobby-beach .roomPickCodeRow{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px;}
+body.lobby-beach .roomPickCode{font-family:"JetBrains Mono",monospace;font-size:19px;font-weight:800;letter-spacing:.08em;color:#114f62;}
+body.lobby-beach .roomPickArrow{font-size:20px;color:#69a0a8;line-height:1;}
+body.lobby-beach .roomPickMeta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(44,112,124,.09);font-size:9.5px;color:#78919b;}
+body.lobby-beach .roomPickMeta strong{max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#3e6573;font-size:10.5px;}
+body.lobby-beach .roomPickCapacity{margin-top:8px;}
+body.lobby-beach .roomPickCapacityLabel{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#6c858e;font-size:9px;}
+body.lobby-beach .roomPickCapacityTrack{display:block;height:4px;margin-top:4px;border-radius:999px;background:rgba(54,128,138,.10);overflow:hidden;}
+body.lobby-beach .roomPickCapacityTrack i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#4cb9bf,#198ba0);}
+body.lobby-beach .roomPickAction{display:flex;align-items:center;justify-content:space-between;margin-top:9px;color:#357986;font-size:9px;font-weight:800;}
+body.lobby-beach .roomPickAction span{font-size:13px;}
+body.lobby-beach .roomPickerLoading{grid-column:1 / -1;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:180px;color:#6f8d97;}
+body.lobby-beach .roomPickerLoading>span{display:inline-block;width:7px;height:7px;margin:0 2px;border-radius:50%;background:#3ca8b1;animation:lobbyDots 1s infinite ease-in-out both;}
+body.lobby-beach .roomPickerLoading>span:nth-child(2){animation-delay:.12s}.roomPickerLoading>span:nth-child(3){animation-delay:.24s}
+@keyframes lobbyDots{0%,80%,100%{transform:scale(.55);opacity:.45}40%{transform:scale(1);opacity:1}}
+body.lobby-beach .roomPickerLoading em{margin-top:9px;font-style:normal;font-size:10px;}
+body.lobby-beach .roomPickerEmpty{grid-column:1 / -1;padding:26px 12px 30px;text-align:center;color:#6d858e;display:flex;flex-direction:column;align-items:center;}
+body.lobby-beach .roomPickerEmptyIcon{font-size:34px;filter:drop-shadow(0 5px 10px rgba(33,88,99,.11));margin-bottom:6px;}
+body.lobby-beach .roomPickerEmpty strong{font-size:13px;color:#2e6070;}
+body.lobby-beach .roomPickerEmpty span{max-width:320px;margin-top:3px;font-size:10px;line-height:1.5;}
+body.lobby-beach .wwVersionBadge{color:rgba(23,56,74,.42)!important;}
+body.lobby-beach .conn-banner{top:max(8px,env(safe-area-inset-top));background:rgba(255,249,228,.92);border-color:rgba(215,163,72,.35);color:#7d6630;}
+@media (max-width:680px){
+    body.lobby-beach .app:not(.game-visible){padding-left:10px;padding-right:10px;}
+    body.lobby-beach #joinCard{border-radius:24px;}
+    body.lobby-beach .lobby-hero{padding:20px 18px 16px;}
+    body.lobby-beach .player-name-display{margin-left:18px;margin-right:18px;}
+    body.lobby-beach .lobby-statusbar{margin-left:18px;margin-right:18px;}
+    body.lobby-beach .lobby-room-panel{margin-left:12px;margin-right:12px;padding:13px;}
+    body.lobby-beach .lobby-join-btn{margin-left:18px;margin-right:18px;}
+    body.lobby-beach .join-waiting{margin-left:18px;margin-right:18px;}
+    body.lobby-beach .roomPickerGrid{grid-template-columns:1fr;}
+    body.lobby-beach .playerRoomPickerBox{width:calc(100vw - 16px);max-height:min(760px,91svh);border-radius:22px;padding:14px;}
+}
+@media (max-width:430px){
+    body.lobby-beach .scene-disc{width:62px;height:62px;right:11%;}
+    body.lobby-beach .lobby-title-row{gap:9px;}
+    body.lobby-beach .lobby-sun{width:42px;height:42px;border-radius:14px;font-size:21px;}
+    body.lobby-beach .lobby-room-code{font-size:27px;}
+    body.lobby-beach .lobby-room-meta{gap:6px;}
+    body.lobby-beach .lobby-room-meta span{padding:5px 7px;}
+    body.lobby-beach .playerRoomPickerTitle{font-size:21px;}
+}
+@media (max-width:360px){
+    body.lobby-beach .lobby-hero{padding-top:17px;}
+    body.lobby-beach .lobby-hero h2{font-size:25px;}
+    body.lobby-beach .lobby-room-code{font-size:24px;}
+    body.lobby-beach .lobby-status-text{font-size:11.5px;}
+    body.lobby-beach .lobby-room-picker-btn{min-height:50px;}
+    body.lobby-beach .lobby-join-btn{min-height:53px;}
+}
+@media (prefers-reduced-motion: reduce){
+    body.lobby-beach .lobby-wait-spinner, body.lobby-beach .playerRoomRefresh.is-loading, body.lobby-beach .roomPickerLoading>span{animation:none!important;}
+}
+
+/* Final lobby interaction polish: Flex is deliberately used for the primary action so text/icon
+   alignment remains stable across Chromium, iOS WebKit and non-browser preview engines. */
+body.lobby-beach .lobby-join-btn{
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+body.lobby-beach .lobby-join-btn>span:nth-child(2){
+    flex:1;
+    min-width:0;
+    text-align:left;
+}
+body.lobby-beach .lobby-join-icon,
+body.lobby-beach .lobby-join-arrow{flex:0 0 auto;}
+
+@media (max-width:680px){
+    body.lobby-beach .playerRoomPickerBox{
+        align-self:flex-end;
+        width:calc(100vw - 12px);
+        max-height:min(780px,92svh);
+        margin:0 auto;
+        border-radius:22px 22px 17px 17px;
+    }
+    body.lobby-beach .ww-modal-overlay:has(.playerRoomPickerBox){
+        align-items:flex-end;
+        padding:6px;
+    }
+}
+
+/* Keep the room-finder control structurally simple and stable on mobile WebKit. */
+body.lobby-beach .lobby-room-picker-btn{
+    position:relative;
+    display:block;
+    min-height:58px;
+    padding:9px 40px 9px 57px;
+}
+body.lobby-beach .lobby-picker-icon{
+    position:absolute;
+    left:11px;
+    top:50%;
+    transform:translateY(-50%);
+}
+body.lobby-beach .lobby-picker-copy{
+    display:block;
+    padding-top:1px;
+}
+body.lobby-beach .lobby-picker-copy strong,
+body.lobby-beach .lobby-picker-copy small{display:block;}
+body.lobby-beach .lobby-picker-arrow{
+    position:absolute;
+    right:11px;
+    top:50%;
+    transform:translateY(-50%);
+}
+
+body.lobby-beach .lobby-picker-copy{
+    position:absolute;
+    left:57px;
+    right:40px;
+    top:10px;
+    padding:0;
+    overflow:hidden;
+}
+body.lobby-beach .lobby-picker-copy strong{
+    line-height:17px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+body.lobby-beach .lobby-picker-copy small{
+    margin-top:1px;
+    line-height:15px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+body.lobby-beach #playerRoomPickerOverlay{
+    background:rgba(12,64,75,.68);
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+}
+body.lobby-beach .playerRoomPickerBox{
+    background:rgba(248,253,250,.985);
+}
+
+/* ============================================================================
+   FLUID LAYOUT ENGINE — continuous resize pass
+   ----------------------------------------------------------------------------
+   จุดประสงค์คือให้ "ขนาด" ของเกมไหลตามพื้นที่จริงระหว่างลาก resize ไม่ต้องรอ
+   resize จบหรือให้ JS สลับโหมดด้วย breakpoint ก่อน. Breakpoint ที่เหลืออยู่ใช้
+   เฉพาะการเปลี่ยนโครงสร้างที่จำเป็นจริง ๆ; width/gap/clearance เป็นค่าต่อเนื่อง.
+   ============================================================================ */
+:root{
+    --fluid-game-chat-width:var(--game-chat-width,clamp(232px,28vw,380px));
+    --fluid-game-roles-width:var(--game-roles-width,clamp(220px,22vw,330px));
+    --fluid-game-gap:10px;
+    --fluid-game-edge:10px;
+    --fluid-game-bottom-clearance:var(--game-bottom-clearance,64px);
+}
+
+html,
+body{
+    width:100%;
+    max-width:100%;
+}
+
+.app{
+    width:100%;
+    min-width:0;
+    container-type:inline-size;
+    container-name:player-app;
+}
+
+body{
+    container-type:inline-size;
+    container-name:player-viewport;
+}
+
+/* ใช้ค่าที่คำนวณจาก viewport จริงของ Fluid Layout Engine — เปลี่ยนทุกเฟรมระหว่างลาก */
+@media (min-width:660px){
+    .app.game-visible{
+        margin-right:var(--fluid-game-chat-width);
+        width:calc(100% - var(--fluid-game-chat-width));
+    }
+    .app.game-visible #chatCard{
+        width:var(--fluid-game-chat-width);
+        min-height:clamp(144px,27svh,230px);
+        bottom:var(--fluid-game-bottom-clearance);
+    }
+    .app.game-visible ~ #bottomBar{
+        width:var(--fluid-game-chat-width);
+    }
+}
+
+@media (min-width:900px){
+    .app.game-visible{
+        margin-left:var(--fluid-game-roles-width);
+        width:calc(100% - var(--fluid-game-roles-width) - var(--fluid-game-chat-width));
+    }
+    .app.game-visible #rolesPanelCard{
+        width:var(--fluid-game-roles-width);
+    }
+}
+
+/* Container-query layer: Split View/Stage Manager ที่ app ถูกวางในพื้นที่แคบ
+   จะใช้ "พื้นที่ของเกม" เป็นตัวตัดสิน ไม่ใช่ความละเอียดเครื่อง/จอทั้งหมด */
+@container player-viewport (max-width:899px){
+    .app.game-visible #rolesPanelCard{
+        display:none !important;
+    }
+}
+
+@container player-viewport (max-width:659px){
+    .app.game-visible{
+        margin-left:auto;
+        margin-right:auto;
+        width:100%;
+        max-width:none;
+        padding-left:max(4px,env(safe-area-inset-left,0px));
+        padding-right:max(4px,env(safe-area-inset-right,0px));
+    }
+    .app.game-visible #chatCard{
+        position:relative;
+        width:100%;
+        top:auto;
+        right:auto;
+        bottom:auto;
+        min-height:var(--game-chat-min-height);
+        border-radius:var(--r-lg);
+    }
+}
+
+/* fluid spacing/typography — ไม่มีขั้นกระโดดระหว่าง 481/600/680px */
+.players-card-head{ gap:clamp(4px,.8cqw,9px); }
+.players-card-head h3{ font-size:clamp(11px,1.75cqw,14px); }
+.players-card-head + .sub{ font-size:clamp(9.5px,1.55cqw,12px); }
+#players{ gap:clamp(3px,.7cqw,7px); }
+#playersCard{ padding:clamp(6px,1.15cqw,10px) clamp(7px,1.35cqw,12px); }
+#chatCard{ padding-inline:clamp(8px,1.4cqw,14px); }
+
+/* During live resize, never animate geometry. The next frame already contains the new size. */
+body.is-resizing .app,
+body.is-resizing #playersCard,
+body.is-resizing #chatCard,
+body.is-resizing .player,
+body.is-resizing #bottomBar{
+    transition:none !important;
+}
+body.is-resizing .player{
+    animation:none !important;
+}
+
+@media (prefers-reduced-motion:reduce){
+    body.is-resizing .player{ animation:none !important; }
+}
