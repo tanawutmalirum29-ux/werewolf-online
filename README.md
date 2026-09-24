@@ -202,6 +202,20 @@ Lobby และหน้า admin (ประวัติรายคน) จะ�
 
 **การยืนยันสิทธิ์:** endpoint กลุ่มนี้อยู่หลัง HttpOnly Admin Session ฝั่งเซิร์ฟเวอร์เสมอ — ต้องเข้าสู่ระบบแอดมินก่อน ไม่สามารถใช้แค่การรู้ URL หรือส่ง `auth.admin=true` เพื่อเรียกข้อมูลได้
 
+
+## Bug Replay เฟส 2 — Chaos → Stress → Long-Run → Recovery
+
+ZIP รุ่นนี้เพิ่มชุดตรวจเฟส 2 ที่เรียกใช้ผ่านปุ่ม **⚡ เฟส 2** ในหน้า Admin หรือผ่าน Bug Replay mode `phase2` โดยทุก stage เป็น allow-list ฝั่ง server และใช้ deterministic seed เพื่อ replay ซ้ำได้
+
+ลำดับที่บังคับใช้:
+
+1. **Chaos** — ฉีด fault แบบควบคุมได้: socket disconnect/delay/duplicate/reorder, stale state, HTTP 503/timeout, reload/background และ phase-change concurrency แล้วตรวจ recovery/convergence
+2. **Stress** — จำลองผู้เล่นเสมือน 1, 2, 4, 8, 16, 32, 50, 75 และ 100 คน พร้อม action workload และค่า p50/p95/p99
+3. **Long-Run** — จำลอง lifecycle 12,000 รอบ พร้อม checkpoint ทุก 1,000 รอบ และจับแนวโน้ม listener/timer/DOM node/event queue
+4. **Recovery** — ตรวจ socket reconnect, HTTP retry, reload, background, interrupted action และ room rejoin โดยมี final server/client convergence gate
+
+การตรวจเฟส 2 เป็น **virtual/deterministic harness** สำหรับ release regression จึงไม่ยิงโหลดจำนวน 100 client เข้า production โดยอัตโนมัติจากหน้า Admin; ข้อมูลจากแต่ละ stage ถูกส่งเข้า Runtime Audit เดิมและสรุปผ่าน `PHASE2_RESULT` เพื่อให้ Bug Replay เก็บเป็น timeline/report ได้
+
 ## Deploy
 
 Deploy อยู่บน AWS Elastic Beanstalk (environment: `Werewolf-online-env`)

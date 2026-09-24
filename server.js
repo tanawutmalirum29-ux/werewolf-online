@@ -8,7 +8,8 @@ const os = require("os");
 const compression = require("compression");
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
-const { getAppVersion, getCachedAppVersion } = require("./utils/getAppVersion");
+const { getAppVersion, getCachedAppVersion, startAppVersionRefresh } = require("./utils/getAppVersion");
+const { listBugReplayScenarios, getBugReplayScenario, runBugReplayScenario, createRuntimeAudit } = require("./utils/bug-replay-runner");
 
 // ============================================================
 // DIAGNOSTICS CENTER — เก็บข้อผิดพลาดจาก server + browser เพื่อให้ Admin ดูได้
@@ -43,6 +44,17 @@ const DIAGNOSTIC_CAUSAL_MAX_EDGES = 72;
 const DIAGNOSTIC_CAUSAL_WINDOW_MS = 3 * 60 * 1000;
 const DIAGNOSTIC_CAUSAL_STRONG_WINDOW_MS = 15 * 60 * 1000;
 const diagnosticShares = new Map();
+
+// ============================================================
+// ADMIN BUG REPLAY / SIMULATION RUNNER
+// ============================================================
+// รันชุดจำลองแบบ allow-list; โหมด all หยุดที่ failure แรก ส่วน deep จะเดินต่อเพื่อเก็บ failure หลายจุดใน run เดียว
+// จำกัดจำนวน failure ที่เก็บเผยแพร่เพื่อไม่ให้ Diagnostics/หน้า Admin โตไม่จำกัด
+const BUG_REPLAY_MAX_JOBS = 8;
+const BUG_REPLAY_MAX_FAILURES = 12;
+const BUG_REPLAY_JOB_TTL_MS = 30 * 60 * 1000;
+const bugReplayJobs = new Map();
+let bugReplayActiveRunId = "";
 
 function makeDiagnosticId(prefix = "id") {
     const body = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex");
@@ -907,6 +919,317 @@ function recordDiagnostic({ source = "server", kind = "error", page = "server", 
     return event;
 }
 
+function sanitizeBugReplayText(value, max = 12000) {
+    return String(value ?? "").slice(-max);
+}
+
+function cleanupBugReplayJobs() {
+    const cutoff = Date.now() - BUG_REPLAY_JOB_TTL_MS;
+    for (const [id, job] of bugReplayJobs.entries()) {
+        if (job.finishedAt && job.finishedAt < cutoff) bugReplayJobs.delete(id);
+    }
+    while (bugReplayJobs.size > BUG_REPLAY_MAX_JOBS) {
+        const oldest = [...bugReplayJobs.entries()].sort((a,b) => (a[1].createdAtEpoch || 0) - (b[1].createdAtEpoch || 0))[0];
+        if (!oldest) break;
+        bugReplayJobs.delete(oldest[0]);
+    }
+}
+
+function publicBugReplayJob(job) {
+    if (!job) return null;
+    return {
+        runId: job.runId,
+        status: job.status,
+        mode: job.mode,
+        continueOnFailure: !!job.continueOnFailure,
+        startedAt: job.startedAt,
+        finishedAt: job.finishedAt || null,
+        currentScenarioIndex: Number.isInteger(job.currentScenarioIndex) ? job.currentScenarioIndex : -1,
+        currentScenarioId: job.currentScenarioId || "",
+        currentScenarioTitle: job.currentScenarioTitle || "",
+        currentAction: job.currentAction || "",
+        currentStepIndex: Number.isInteger(job.currentStepIndex) ? job.currentStepIndex : -1,
+        currentTestPath: job.currentTestPath || "",
+        completedScenarios: job.completedScenarios || 0,
+        totalScenarios: job.totalScenarios || 0,
+        completedSteps: job.completedSteps || 0,
+        passedSteps: job.passedSteps || 0,
+        failedSteps: job.failedSteps || 0,
+        slowSteps: job.slowSteps || 0,
+        totalSteps: job.totalSteps || 0,
+        remainingSteps: job.remainingSteps || 0,
+        failureCount: Number(job.totalFailureCount) || (Array.isArray(job.failures) ? job.failures.length : (job.failure ? 1 : 0)),
+        failuresTruncated: (Number(job.totalFailureCount) || 0) > BUG_REPLAY_MAX_FAILURES,
+        auditSummary: job.audit ? job.audit.summary() : null,
+        phase2Reports: Array.isArray(job.phase2Reports) ? job.phase2Reports.slice(-12) : [],
+        failures: Array.isArray(job.failures) ? job.failures.slice(0, BUG_REPLAY_MAX_FAILURES).map((failure) => ({
+            eventId: failure.eventId || "",
+            scenarioIndex: failure.scenarioIndex,
+            scenarioId: failure.scenarioId,
+            scenarioTitle: failure.scenarioTitle,
+            action: failure.action,
+            testPath: failure.testPath,
+            stepIndex: failure.stepIndex,
+            exitCode: failure.exitCode,
+            signal: failure.signal,
+            timedOut: !!failure.timedOut,
+            durationMs: failure.durationMs,
+        })) : [],
+        stoppedByAdmin: !!job.stoppedByAdmin,
+        failedScenario: job.failedScenario ? {
+            index: job.failedScenario.index,
+            id: job.failedScenario.id,
+            title: job.failedScenario.title,
+            action: job.failedScenario.action,
+            description: job.failedScenario.description,
+        } : null,
+        failure: job.failure ? {
+            eventId: job.failure.eventId || "",
+            scenarioIndex: job.failure.scenarioIndex,
+            scenarioId: job.failure.scenarioId,
+            scenarioTitle: job.failure.scenarioTitle,
+            action: job.failure.action,
+            testPath: job.failure.testPath,
+            stepIndex: job.failure.stepIndex,
+            exitCode: job.failure.exitCode,
+            signal: job.failure.signal,
+            timedOut: !!job.failure.timedOut,
+            durationMs: job.failure.durationMs,
+            stdout: sanitizeBugReplayText(job.failure.stdout, 3000),
+            stderr: sanitizeBugReplayText(job.failure.stderr, 5000),
+        } : null,
+        lastOutput: sanitizeBugReplayText(job.lastOutput, 3000),
+    };
+}
+
+function recordBugReplayFailure({ runId, scenarioIndex, summary, failure, job }) {
+    const diagnostic = recordDiagnostic({
+        source: "server",
+        kind: "bug_replay_failure",
+        page: "admin",
+        action: `bug-replay:${summary.id}`,
+        operation: `bug_replay:${runId}`,
+        operationId: runId,
+        message: `Bug Replay พบความผิดปกติในขั้นตอน: ${summary.action} → ${failure.testPath || "unknown test"}`,
+        stack: sanitizeBugReplayText([failure.stderr, failure.stdout].filter(Boolean).join("\n"), 10000),
+        data: {
+            runner: "admin-bug-replay",
+            runId,
+            scenarioIndex,
+            scenarioId: summary.id,
+            scenarioTitle: summary.title,
+            action: summary.action,
+            description: summary.description,
+            stepIndex: failure.stepIndex,
+            testPath: failure.testPath,
+            exitCode: failure.exitCode,
+            signal: failure.signal,
+            timedOut: !!failure.timedOut,
+            durationMs: failure.durationMs,
+            stdout: sanitizeBugReplayText(failure.stdout, 5000),
+            stderr: sanitizeBugReplayText(failure.stderr, 8000),
+            mode: job.mode,
+            completedScenarios: job.completedScenarios,
+            completedSteps: job.completedSteps,
+            failedSteps: job.failedSteps,
+        },
+        context: {
+            code: "BUG_REPLAY_FAILED",
+            failureStage: "bug_replay.scenario",
+            scenarioId: summary.id,
+            scenarioIndex,
+            action: summary.action,
+            testPath: failure.testPath || "",
+            stepIndex: failure.stepIndex,
+            runId,
+            mode: job.mode,
+        },
+        causalHint: { failureStage:"bug_replay.scenario", causeCode:"BUG_REPLAY_FAILED", confidence:"high" },
+        fingerprint: diagnosticFingerprint(["BUG_REPLAY_FAILED", summary.id, failure.testPath, failure.stderr || failure.stdout]),
+    });
+    return { ...failure, eventId: diagnostic.id, scenarioIndex, scenarioId: summary.id, scenarioTitle: summary.title, action: summary.action };
+}
+
+async function startBugReplayJob(mode = "all") {
+    cleanupBugReplayJobs();
+    if (bugReplayActiveRunId) {
+        const active = bugReplayJobs.get(bugReplayActiveRunId);
+        if (active && active.status === "running") return { ok:false, code:"BUG_REPLAY_ALREADY_RUNNING", job:publicBugReplayJob(active) };
+        bugReplayActiveRunId = "";
+    }
+    const safeMode = mode === "deep" ? "deep" : (mode === "phase2" ? "phase2" : "all");
+    const scenarios = listBugReplayScenarios(safeMode);
+    const runId = makeDiagnosticId("replay");
+    const job = {
+        runId,
+        createdAtEpoch: Date.now(),
+        startedAt: new Date().toISOString(),
+        status: "running",
+        mode: safeMode,
+        continueOnFailure: safeMode === "deep",
+        totalScenarios: scenarios.length,
+        currentScenarioIndex: -1,
+        currentScenarioId: "",
+        currentScenarioTitle: "",
+        currentAction: "",
+        currentStepIndex: -1,
+        currentTestPath: "",
+        completedScenarios: 0,
+        completedSteps: 0,
+        passedSteps: 0,
+        failedSteps: 0,
+        totalFailureCount: 0,
+        slowSteps: 0,
+        totalSteps: scenarios.reduce((n, s) => n + Number(s.testCount || 0), 0),
+        remainingSteps: scenarios.reduce((n, s) => n + Number(s.testCount || 0), 0),
+        stoppedByAdmin: false,
+        failure: null,
+        failures: [],
+        failedScenario: null,
+        lastOutput: "",
+        cancelRequested: false,
+        activeChild: null,
+        phase2Reports: [],
+        audit: createRuntimeAudit({ source:"bug-replay", runId, mode:safeMode, page:"admin" }),
+    };
+    bugReplayJobs.set(runId, job);
+    bugReplayActiveRunId = runId;
+    job.audit.record('runner', 'run.start', { runId, mode:safeMode, totalScenarios:job.totalScenarios, totalSteps:job.totalSteps });
+
+    (async () => {
+        try {
+            for (let i = 0; i < scenarios.length; i += 1) {
+                if (job.cancelRequested) {
+                    job.status = "stopped";
+                    job.stoppedByAdmin = true;
+                    break;
+                }
+                const summary = scenarios[i];
+                const scenario = getBugReplayScenario(summary.id);
+                if (!scenario) throw new Error(`BUG_REPLAY_SCENARIO_NOT_FOUND:${summary.id}`);
+                job.currentScenarioIndex = i;
+                job.currentScenarioId = summary.id;
+                job.currentScenarioTitle = summary.title;
+                job.currentAction = summary.action;
+                job.currentStepIndex = -1;
+                job.audit.record('scenario', 'scenario.start', { index:i, id:summary.id, title:summary.title, action:summary.action, testCount:summary.testCount });
+                job.currentTestPath = "";
+                job.remainingSteps = scenarios.slice(i).reduce((n, s) => n + Number(s.testCount || 0), 0);
+
+                const result = await runBugReplayScenario(scenario, {
+                    timeoutMs: safeMode === "phase2" ? 60_000 : 25_000,
+                    continueOnFailure: job.continueOnFailure,
+                    shouldStop: () => !!job.cancelRequested,
+                    audit: job.audit,
+                    onTestStart: ({ child, testPath, stepIndex, totalSteps }) => {
+                        job.activeChild = child;
+                        job.audit.record('runner', 'child.spawn', { scenarioId:summary.id, testPath, stepIndex, totalSteps });
+                        job.currentStepIndex = stepIndex;
+                        job.currentTestPath = testPath;
+                        job.lastOutput = `กำลังจำลอง: ${summary.title} → ${testPath} (${stepIndex + 1}/${totalSteps})`;
+                    },
+                    onOutput: ({ text, stream, testPath }) => {
+                        const outputText = String(text || '');
+                        if (safeMode === "phase2") {
+                            const matches = outputText.match(/^PHASE2_RESULT:(\{.*\})$/gm) || [];
+                            for (const line of matches.slice(-4)) {
+                                try {
+                                    const parsed = JSON.parse(line.slice('PHASE2_RESULT:'.length));
+                                    job.phase2Reports.push({ testPath, result: parsed });
+                                    if (job.phase2Reports.length > 12) job.phase2Reports.splice(0, job.phase2Reports.length - 12);
+                                } catch (_) {}
+                            }
+                        }
+                        job.lastOutput = `[${stream}] ${testPath}\n${sanitizeBugReplayText(outputText, 2500)}`;
+                    },
+                    onStep: (step) => {
+                        job.completedSteps += 1;
+                        if (step.ok) job.passedSteps += 1;
+                        else job.failedSteps += 1;
+                        if (Number(step.durationMs) >= 20_000) job.slowSteps += 1;
+                        job.currentStepIndex = step.index;
+                        job.currentTestPath = step.testPath;
+                        job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
+                        if (step.skipped) job.lastOutput = `⏭️ ข้ามตามข้อกำหนด: ${step.testPath}`;
+                        else if (step.ok) job.lastOutput = `✅ ${step.testPath}`;
+                    },
+                });
+                job.activeChild = null;
+                job.audit.record('scenario', 'scenario.complete', { index:i, id:summary.id, ok:!!result.ok, stopped:!!result.stopped, stepCount:Array.isArray(result.steps) ? result.steps.length : 0, failures:Array.isArray(result.failures) ? result.failures.length : (result.failure ? 1 : 0) });
+
+                const failures = Array.isArray(result.failures) ? result.failures : (result.failure ? [result.failure] : []);
+                if (failures.length) {
+                    for (const failure of failures) {
+                        job.totalFailureCount += 1;
+                        const failureWithDiagnostic = recordBugReplayFailure({ runId, scenarioIndex:i, summary, failure, job });
+                        job.audit.addFinding('test', 'BUG_REPLAY_FAILURE', `Bug Replay failure: ${summary.id} / ${failure.testPath || 'unknown'}`, { scenarioId:summary.id, scenarioIndex:i, testPath:failure.testPath || '', stepIndex:failure.stepIndex, exitCode:failure.exitCode, signal:failure.signal, timedOut:!!failure.timedOut, eventId:failureWithDiagnostic.eventId }, 'error', 'bug-replay');
+                        if (job.failures.length < BUG_REPLAY_MAX_FAILURES) job.failures.push(failureWithDiagnostic);
+                        if (!job.failure) job.failure = failureWithDiagnostic;
+                    }
+                    job.failedScenario = summary;
+                    job.lastOutput = `❌ พบ ${failures.length} ปัญหาใน scenario: ${summary.title}`;
+                }
+
+                if (!result.ok && result.stopped) {
+                    job.status = "stopped";
+                    job.stoppedByAdmin = true;
+                    break;
+                }
+                if (!result.ok && !job.continueOnFailure) {
+                    job.status = "failed";
+                    break;
+                }
+
+                job.completedScenarios += 1;
+                job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
+                if (failures.length) {
+                    job.lastOutput = job.continueOnFailure
+                        ? `⚠️ ผ่านไปต่อหลังพบ ${failures.length} ปัญหาใน ${summary.title}`
+                        : `❌ หยุดที่ ${summary.title}`;
+                } else {
+                    job.lastOutput = `✅ ผ่าน scenario: ${summary.title}`;
+                }
+            }
+            if (job.status === "running") {
+                job.status = job.cancelRequested ? "stopped" : (job.failedSteps > 0 ? "failed" : "passed");
+                if (job.cancelRequested) job.stoppedByAdmin = true;
+            }
+            job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
+            job.audit.record('runner', 'run.complete', { status:job.status, completedScenarios:job.completedScenarios, completedSteps:job.completedSteps, passedSteps:job.passedSteps, failedSteps:job.failedSteps, slowSteps:job.slowSteps });
+            job.finishedAt = new Date().toISOString();
+        } catch (err) {
+            job.audit.addFinding('runner', 'BUG_REPLAY_RUNNER_ERROR', err?.message || String(err), { scenarioId:job.currentScenarioId, stepIndex:job.currentStepIndex }, 'critical', 'bug-replay');
+            const diagnostic = recordDiagnostic({
+                source:"server", kind:"bug_replay_runner_error", page:"admin",
+                action:"bug-replay:runner", operation:`bug_replay:${runId}`, operationId:runId,
+                message: err?.message || String(err), stack:err?.stack || "",
+                context:{ code:"BUG_REPLAY_RUNNER_ERROR", failureStage:"bug_replay.runner", runId, mode:job.mode },
+            });
+            job.failure = { eventId:diagnostic.id, scenarioIndex:job.currentScenarioIndex, scenarioId:job.currentScenarioId, scenarioTitle:job.currentScenarioTitle, action:job.currentAction, testPath:job.currentTestPath, stepIndex:job.currentStepIndex, exitCode:null, signal:null, timedOut:false, durationMs:0, stdout:"", stderr:err?.stack || err?.message || String(err) };
+            job.failedSteps += 1;
+            job.status = "failed";
+            job.finishedAt = new Date().toISOString();
+        } finally {
+            job.activeChild = null;
+            if (bugReplayActiveRunId === runId) bugReplayActiveRunId = "";
+            cleanupBugReplayJobs();
+        }
+    })();
+
+    return { ok:true, job:publicBugReplayJob(job), scenarios };
+}
+
+function stopBugReplayJob(runId = "") {
+    const id = String(runId || bugReplayActiveRunId || "");
+    const job = bugReplayJobs.get(id);
+    if (!job || job.status !== "running") return { ok:false, code:"BUG_REPLAY_NOT_RUNNING", job:publicBugReplayJob(job) };
+    job.cancelRequested = true;
+    if (job.activeChild) {
+        try { job.activeChild.kill("SIGTERM"); } catch (_) {}
+    }
+    return { ok:true, job:publicBugReplayJob(job) };
+}
+
 function diagnosticRequestAllowed(req) {
     const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
     const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
@@ -1195,24 +1518,60 @@ function testerTokenFromCookie(headers) {
 // ============================================================
 // ADMIN AUTHENTICATION
 // ============================================================
+function sanitizeAdminTabId(value) {
+    const id = String(value || "").trim();
+    return /^[A-Za-z0-9_-]{16,128}$/.test(id) ? id : "";
+}
 function createAdminSessionToken(meta = {}) {
     if (!ADMIN_SESSION_SECRET || !ADMIN_AUTH_CONFIGURED) return "";
+    const tabId = sanitizeAdminTabId(meta.tabId);
     return createSignedState({
         v: 1,
         admin: true,
+        sessionType: tabId ? "tab" : "cookie",
+        tabId,
         provider: String(meta.provider || "password"),
         googleSub: String(meta.googleSub || "").slice(0, 256),
         email: String(meta.email || "").trim().toLowerCase().slice(0, 320),
-        exp: Date.now() + ADMIN_SESSION_TTL_MS,
+        exp: Date.now() + (tabId ? ADMIN_TAB_SESSION_TTL_MS : ADMIN_SESSION_TTL_MS),
         n: crypto.randomBytes(18).toString("hex"),
     }, ADMIN_SESSION_SECRET);
 }
-function isAdminSessionValid(reqOrHeaders) {
-    if (!ADMIN_AUTH_CONFIGURED) return false;
-    const headers = reqOrHeaders?.headers || reqOrHeaders || {};
-    const token = readCookie(headers.cookie, ADMIN_SESSION_COOKIE);
+function getAdminBearerToken(reqOrHeaders) {
+    const source = reqOrHeaders || {};
+    const headers = source?.headers || source || {};
+    const authorization = String(headers.authorization || "").trim();
+    if (/^Bearer\s+/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, "").trim();
+    return String(source?.auth?.adminToken || "").trim();
+}
+function getAdminPresentedTabId(reqOrHeaders) {
+    const source = reqOrHeaders || {};
+    const headers = source?.headers || source || {};
+    return sanitizeAdminTabId(headers["x-ww-admin-tab-id"] || headers["X-WW-Admin-Tab-Id"] || source?.auth?.adminTabId || "");
+}
+function getAdminPrincipal(reqOrHeaders) {
+    if (!ADMIN_AUTH_CONFIGURED) return null;
+    const source = reqOrHeaders || {};
+    const headers = source?.headers || source || {};
+    const bearer = getAdminBearerToken(source);
+    const cookie = readCookie(headers.cookie, ADMIN_SESSION_COOKIE);
+    const token = bearer || cookie;
     const payload = verifySignedState(token, ADMIN_SESSION_SECRET);
-    return !!(payload && payload.admin === true);
+    if (!payload || payload.admin !== true) return null;
+    if (payload.sessionType === "tab") {
+        const revokedUntil = Number(adminTabSessionRevoked.get(String(payload.n || "")) || 0);
+        if (revokedUntil > Date.now()) return null;
+        if (revokedUntil) adminTabSessionRevoked.delete(String(payload.n || ""));
+        const presentedTabId = getAdminPresentedTabId(source);
+        if (!payload.tabId || !presentedTabId || payload.tabId !== presentedTabId) return null;
+        return { ...payload, tabScoped: true };
+    }
+    if (bearer) return null;
+    if (ADMIN_TAB_AUTH_ENFORCED) return null;
+    return { ...payload, tabScoped: false };
+}
+function isAdminSessionValid(reqOrHeaders) {
+    return !!getAdminPrincipal(reqOrHeaders);
 }
 function adminAuthRequired() { return ADMIN_AUTH_CONFIGURED; }
 // ใน Elastic Beanstalk ต้องมีวิธียืนยัน Admin เสมอ; ถ้าการตั้งค่านี้หายตอน deploy
@@ -1254,7 +1613,7 @@ app.use((req, res, next) => {
 });
 
 app.use("/api/admin", (req, res, next) => {
-    if (req.path === "/login" || req.path === "/session" || req.path === "/logout") return next();
+    if (req.path === "/login" || req.path === "/session" || req.path === "/logout" || req.path === "/session/exchange") return next();
     if (!adminAuthRequired()) return res.status(503).json({ error: "admin_auth_not_configured", code: "ADMIN_AUTH_NOT_CONFIGURED" });
     if (isAdminSessionValid(req)) return next();
     return res.status(401).json({ error: "admin_auth_required", code: "ADMIN_AUTH_REQUIRED" });
@@ -1298,9 +1657,9 @@ app.use(async (req, res, next) => {
     return res.status(503).type("text/plain").send("server_closed");
 });
 
-// หน้า admin.html เชื่อม socket ด้วย io({ auth: { admin: true } }); ค่า auth.admin เป็นเพียง intent
-// และไม่ใช่ credential: server ตรวจ HttpOnly admin session ทุกครั้งก่อนอนุญาต event admin_*
-// จึงไม่มีทางลัดจากการเปิด URL หรือปลอม auth.admin=true
+// หน้า admin.html เชื่อม socket ด้วย admin intent + tab-scoped bearer
+// ค่า auth.admin เป็นเพียง intent: server ตรวจ signed Admin credential + tabId ทุกครั้ง
+// ก่อนอนุญาต event admin_* จึงไม่มีทางลัดจากการปลอม auth.admin=true
 function isAdminSocket(socket) {
     const auth = socket && socket.handshake && socket.handshake.auth;
     if (!(auth && auth.admin === true)) return false;
@@ -1624,12 +1983,24 @@ const ADMIN_GOOGLE_EMAILS = String(process.env.ADMIN_GOOGLE_EMAILS || process.en
     .map((v) => v.trim().toLowerCase())
     .filter(Boolean);
 const ADMIN_AUTH_CONFIGURED = !!ADMIN_PANEL_PASSWORD || ADMIN_GOOGLE_EMAILS.length > 0;
+const ADMIN_TAB_AUTH_ENFORCED = ADMIN_GOOGLE_EMAILS.length > 0;
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.createHash("sha256")
     .update(`werewolf-admin-session:${ADMIN_PANEL_PASSWORD}:${ADMIN_GOOGLE_EMAILS.join(",")}:${AUTH_STATE_SECRET}`)
     .digest("hex");
 const ADMIN_SESSION_COOKIE = "ww_admin";
 const ADMIN_GOOGLE_STATE_COOKIE = "ww_admin_google_state";
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const ADMIN_TAB_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const ADMIN_TAB_HANDOFF_TTL_MS = 5 * 60 * 1000;
+const ADMIN_TAB_HANDOFF_PARTITION_KEY = "__ADMIN_TAB_HANDOFF__";
+const adminTabHandoffMemory = new Map();
+const adminTabSessionRevoked = new Map();
+function adminGoogleStateCookieName(tabId) {
+    const safe = sanitizeAdminTabId(tabId);
+    if (!safe) return ADMIN_GOOGLE_STATE_COOKIE;
+    const suffix = crypto.createHash("sha256").update(safe).digest("hex").slice(0, 24);
+    return `${ADMIN_GOOGLE_STATE_COOKIE}_${suffix}`;
+}
 const accountProfileCache = new Map();
 const accountActivityDbAt = new Map();
 const accountRenameAt = new Map();
@@ -3795,7 +4166,12 @@ async function prepareGoogleLoginStart(req, res, { mode = "login", accountId = "
     // Link operations authenticate the existing Game Account before any Google redirect is created.
     if (safeMode === "link") {
         if (!safeAccountId || !safeAccountToken) throw Object.assign(new Error("account authentication required"), { code: "ACCOUNT_AUTH_REQUIRED" });
-        const verified = await verifyAccountLogin(safeAccountId, safeAccountToken);
+        const verified = await withTimeout(
+            verifyAccountLogin(safeAccountId, safeAccountToken),
+            10000,
+            "ACCOUNT_AUTH_TIMEOUT",
+            "account verification timed out"
+        );
         if (!verified.profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
         if (verified.ok === false) throw Object.assign(new Error("account authentication failed"), { code: verified.code || "ACCOUNT_AUTH_FAILED" });
         if (verified.profile.accountType === "google" && verified.profile.provider === "google") throw Object.assign(new Error("Google already linked"), { code: "GOOGLE_ALREADY_LINKED" });
@@ -3820,17 +4196,20 @@ async function prepareGoogleLoginStart(req, res, { mode = "login", accountId = "
 async function prepareAdminGoogleLoginStart(req, res) {
     if (!ADMIN_GOOGLE_EMAILS.length) throw Object.assign(new Error("Google admin login is not configured"), { code: "ADMIN_GOOGLE_ADMIN_NOT_CONFIGURED" });
     if (!googleIsConfigured()) throw Object.assign(new Error("Google is not configured"), { code: "GOOGLE_NOT_CONFIGURED" });
+    const tabId = sanitizeAdminTabId(req.query?.tabId);
+    if (!tabId) throw Object.assign(new Error("Admin tab id is required"), { code: "ADMIN_TAB_ID_REQUIRED" });
     const pkce = createPkcePair();
     const statePayload = {
         v: 1,
         exp: Date.now() + ACCOUNT_GOOGLE_STATE_TTL_MS,
         n: crypto.randomBytes(18).toString("hex"),
         mode: "admin",
+        tabId,
         returnTo: "/admin.html",
     };
     const state = createSignedState(statePayload);
-    setHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, createSignedState({
-        v: 1, exp: statePayload.exp, stateNonce: statePayload.n, mode: "admin", codeVerifier: pkce.verifier,
+    setHttpOnlyCookie(res, adminGoogleStateCookieName(tabId), createSignedState({
+        v: 1, exp: statePayload.exp, stateNonce: statePayload.n, mode: "admin", tabId, codeVerifier: pkce.verifier,
     }), ACCOUNT_GOOGLE_STATE_TTL_MS, authCookieSecure(req));
     return { state, url: googleAuthorizeUrl(state, pkce.challenge, statePayload.n) };
 }
@@ -3882,7 +4261,7 @@ app.post("/api/auth/google/start", express.json({ limit: "6kb" }), async (req, r
         const statusByCode = {
             GOOGLE_NOT_CONFIGURED: 503, ACCOUNT_AUTH_REQUIRED: 401, ACCOUNT_NOT_FOUND: 404,
             ACCOUNT_AUTH_FAILED: 403, GOOGLE_ALREADY_LINKED: 409, ACCOUNT_SUSPENDED: 403, ACCOUNT_DELETED: 403,
-            ACCOUNT_EXPIRED: 403,
+            ACCOUNT_EXPIRED: 403, ACCOUNT_AUTH_TIMEOUT: 503,
         };
         return res.status(statusByCode[code] || 500).json({ ok: false, code });
     }
@@ -3922,20 +4301,23 @@ app.get("/auth/google/callback", async (req, res) => {
     const statePayload = verifySignedState(state);
     if (error) {
         if (statePayload?.mode === "admin") {
-            clearHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, authCookieSecure(req));
+            const tabId = sanitizeAdminTabId(statePayload.tabId);
+            if (tabId) clearHttpOnlyCookie(res, adminGoogleStateCookieName(tabId), authCookieSecure(req));
             return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_CANCELLED")}`);
         }
         clearHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, authCookieSecure(req));
         return res.redirect(`/auth/google/complete?error=${encodeURIComponent("GOOGLE_AUTH_CANCELLED")}`);
     }
     if (statePayload?.mode === "admin") {
-        const adminContext = verifySignedState(readCookie(req.headers?.cookie, ADMIN_GOOGLE_STATE_COOKIE));
-        if (!code || !adminContext || adminContext.mode !== "admin" || statePayload.n !== adminContext.stateNonce || !adminContext.codeVerifier) {
-            clearHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, authCookieSecure(req));
+        const tabId = sanitizeAdminTabId(statePayload.tabId);
+        const adminContext = verifySignedState(readCookie(req.headers?.cookie, adminGoogleStateCookieName(tabId)));
+        const verifiedTabId = sanitizeAdminTabId(statePayload.tabId || adminContext?.tabId);
+        if (!code || !adminContext || adminContext.mode !== "admin" || statePayload.n !== adminContext.stateNonce || !adminContext.codeVerifier || !verifiedTabId || adminContext.tabId !== verifiedTabId) {
+            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
             return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_STATE_INVALID")}`);
         }
         if (!ADMIN_GOOGLE_EMAILS.length) {
-            clearHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, authCookieSecure(req));
+            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
             return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_NOT_CONFIGURED")}`);
         }
         try {
@@ -3945,15 +4327,19 @@ app.get("/auth/google/callback", async (req, res) => {
             const verified = await verifyGoogleIdToken(tokens?.id_token || "", adminContext.stateNonce);
             const email = normalizeAdminEmail(verified.claims?.email);
             if (!isAllowedAdminGoogleClaims(verified.claims)) {
-                clearHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, authCookieSecure(req));
+                clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
                 return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_NOT_ALLOWED")}`);
             }
-            setHttpOnlyCookie(res, ADMIN_SESSION_COOKIE, createAdminSessionToken({ provider: "google", googleSub: verified.providerSubject, email }), ADMIN_SESSION_TTL_MS, adminSessionCookieSecure(req));
-            clearHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, authCookieSecure(req));
-            return res.redirect("/admin.html");
+            const ticket = createSignedState({
+                v: 1, type: "admin_tab_handoff", admin: true, tabId,
+                provider: "google", googleSub: verified.providerSubject, email,
+                exp: Date.now() + ADMIN_TAB_HANDOFF_TTL_MS, n: crypto.randomBytes(24).toString("hex"),
+            }, ADMIN_SESSION_SECRET);
+            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
+            return res.redirect(`/admin.html#admin_ticket=${encodeURIComponent(ticket)}`);
         } catch (e) {
             console.error("[admin-google-auth] callback failed:", e?.name, e?.code || "", e?.message || "");
-            clearHttpOnlyCookie(res, ADMIN_GOOGLE_STATE_COOKIE, authCookieSecure(req));
+            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
             return res.redirect(`/admin.html?admin_error=${encodeURIComponent(String(e?.code || "ADMIN_GOOGLE_LOGIN_FAILED"))}`);
         }
     }
@@ -4065,8 +4451,7 @@ app.get("/api/player-stats", async (req, res) => {
 
 // ============================================================
 // ADMIN — รายชื่อผู้เล่นทั้งหมดที่เคยลงทะเบียน + ประวัติรายคน (ดู PLAYER REGISTRY ด้านบน)
-// ไม่มีการเช็คสิทธิ์เพิ่มเติมจากจุดนี้ (เหมือนกับ endpoint/หน้า admin.html จุดอื่นทั้งหมดในระบบนี้ —
-// ข้อจำกัดที่รู้อยู่แล้วของระบบที่ไม่มี account/login จริงจัง ดูคอมเมนต์บนสุดของไฟล์นี้)
+// ทุก /api/admin/* ผ่าน middleware ยืนยัน Admin session ก่อนถึง handler
 // ============================================================
 
 // ADMIN PLAYER DIRECTORY — บัญชีจริง + ผู้เล่น legacy เก่า (ไม่มี accountId)
@@ -4154,12 +4539,14 @@ app.get("/api/admin/player-history", async (req, res) => {
 
 // APP_VERSION_LABEL: ป้ายเวอร์ชันที่จะโชว์ให้เห็นในเกม (มุมซ้ายบนทุกหน้า)
 // แหล่งเดียวกับ Running version ของ AWS Elastic Beanstalk ผ่าน utils/getAppVersion.js
-// ไม่ให้ /api/config ผูกกับการรอ AWS control-plane: startup จะอุ่น cache และ socket จะรอค่า
-// ได้ตรง ๆ เมื่อ client เชื่อมต่อ ส่วน /api/config ใช้ค่าที่มีใน cache เพื่อไม่ให้ endpoint เกมค้าง
-// หาก AWS ชั่วคราวมีปัญหา
+// /api/config และ socket ใช้ Running Version จาก utility เดียวกัน
+// utility จะ refresh เป็นระยะ และ /api/config มี short timeout + last-known-good fallback
+// เพื่อให้ได้เลข deployment ใหม่โดยไม่ปล่อยให้ AWS control-plane ทำให้ endpoint เกมค้าง
 
-// อุ่น cache ตั้งแต่ server start และแสดงใน log ให้เห็น deployment ที่กำลังรันจริง
-getAppVersion().then((version) => {
+// อ่าน Running Version ตั้งแต่ server start และ refresh ต่อเนื่อง เพราะ Elastic Beanstalk
+// อาจอัปเดต VersionLabel หลัง process เริ่มแล้ว ถ้า cache ครั้งเดียวจะค้างอยู่ที่ deployment ก่อนหน้า
+startAppVersionRefresh();
+getAppVersion({ force: true }).then((version) => {
     console.log("Running version:", version);
 }).catch((err) => {
     console.error("Failed to initialize app version:", err);
@@ -4619,6 +5006,52 @@ function rememberDiagnosticShare(token, bundle) {
     while (diagnosticShares.size > DIAGNOSTIC_SHARE_MAX_MEMORY) diagnosticShares.delete(diagnosticShares.keys().next().value);
 }
 
+// Admin-only Bug Replay control plane. All test cases are server-side allow-listed scenarios.
+app.get("/api/admin/bug-replay/scenarios", (req, res) => {
+    cleanupBugReplayJobs();
+    const requestedMode = String(req.query?.mode || "all");
+    const mode = requestedMode === "phase2" ? "phase2" : "all";
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok:true, mode, scenarios:listBugReplayScenarios(mode) });
+});
+
+app.post("/api/admin/bug-replay/start", async (req, res) => {
+    try {
+        const requestedMode = String(req.body?.mode || "all");
+        const mode = requestedMode === "deep" ? "deep" : (requestedMode === "phase2" ? "phase2" : "all");
+        const result = await startBugReplayJob(mode);
+        res.setHeader("Cache-Control", "no-store");
+        if (!result.ok) return res.status(409).json(result);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ ok:false, error:"bug_replay_start_failed", code:"BUG_REPLAY_START_FAILED", message:publicDiagnosticText(e?.message || String(e)) });
+    }
+});
+
+app.get("/api/admin/bug-replay/status", (req, res) => {
+    cleanupBugReplayJobs();
+    const runId = String(req.query.runId || bugReplayActiveRunId || "");
+    const job = runId ? bugReplayJobs.get(runId) : null;
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok:true, activeRunId:bugReplayActiveRunId || "", job:publicBugReplayJob(job) });
+});
+
+app.get("/api/admin/bug-replay/audit", (req, res) => {
+    cleanupBugReplayJobs();
+    const runId = String(req.query.runId || bugReplayActiveRunId || "");
+    const job = runId ? bugReplayJobs.get(runId) : null;
+    res.setHeader("Cache-Control", "no-store");
+    if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
+    res.json({ ok:true, runId, audit:job.audit ? job.audit.snapshot({ timelineLimit:220, findingLimit:100 }) : null });
+});
+
+app.post("/api/admin/bug-replay/stop", (req, res) => {
+    const result = stopBugReplayJob(String(req.body?.runId || ""));
+    res.setHeader("Cache-Control", "no-store");
+    if (!result.ok) return res.status(409).json(result);
+    res.json(result);
+});
+
 // Admin-only diagnostics feed. Admin page does not depend on game JS/socket state to read this.
 app.get("/api/admin/diagnostics", (req, res) => {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
@@ -4951,9 +5384,13 @@ app.get("/api/config", async (req, res) => {
     });
 
     try {
-        // ใช้ค่า Running version จาก Elastic Beanstalk ที่ cache ไว้แล้ว
-        // สำคัญ: ไม่ await AWS ใน /api/config เพื่อไม่ให้ config endpoint ผูกกับ control-plane latency
-        const appVersion = getCachedAppVersion();
+        // ใช้ Running Version เดียวกับ serverInfo แต่มี short timeout เพื่อไม่ให้ /api/config
+        // ค้างเพราะ AWS control-plane; ถ้า AWS ช้าให้ตอบด้วย last-known-good ทันที
+        const versionPromise = getAppVersion();
+        const versionTimeout = new Promise((resolve) => {
+            setTimeout(() => resolve(getCachedAppVersion()), 1_200);
+        });
+        const appVersion = await Promise.race([versionPromise, versionTimeout]);
         // resetEpoch: "รุ่นของการล้างข้อมูล" — เปลี่ยนทุกครั้งที่แอดมินกดล้างข้อมูลเกม (ดู /api/admin/reset)
         ensureResetEpochLoaded();
         // serverOpen / reloadEpoch / reloadKind / imageEpoch: ดูหัวข้อ "เปิด/ปิดเซิร์ฟเวอร์ + บังคับรีโหลด" ด้านบนสุดของไฟล์
@@ -8081,6 +8518,26 @@ ensureResetEpochLoaded();
 
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Guard a request that crosses an external/persistence boundary so an HTTP route cannot
+// remain open until the CloudFront/Elastic Beanstalk gateway timeout. The original promise
+// is deliberately observed after a timeout to prevent a late rejection from becoming an
+// unhandled rejection while the browser has already moved on.
+async function withTimeout(promise, timeoutMs, code, message) {
+    const observed = Promise.resolve(promise);
+    let timer = null;
+    try {
+        return await Promise.race([
+            observed,
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(Object.assign(new Error(message), { code })), Math.max(1000, Number(timeoutMs) || 10000));
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+        observed.catch(() => {});
+    }
+}
+
 // ลบทุกแถวในตาราง (ยกเว้นแถวระบบ) — Scan เฉพาะคีย์ แล้ว BatchWrite ลบทีละ 25 แถว (ขีดจำกัดของ DynamoDB)
 async function wipeStatsTable() {
     const doc = await getDynamoDocClient();
@@ -8178,7 +8635,7 @@ function countTesterRooms() {
 // ไม่ยิง room_closed ตั้งใจ: หน้าเกมจะขึ้นข้อความ "ห้องถูกปิด เนื่องจากผู้สร้างห้องออกจากเกม" ซึ่งไม่ตรงความจริง
 // และหน้าโฮสต์จะดีดกลับ index เองทีละจอ — ให้ทุกเครื่องไปทางเดียวกันคือถูกพากลับหน้าแรกจาก event/epoch ของแอดมินแทน
 // คืนจำนวน "ห้องที่ถูกปิดจริง" (ไม่นับห้องผู้ทดสอบที่รอด — ดู countTesterRooms)
-async function closeAllRoomsSilently() {
+async function closeAllRoomsSilently({ fast = false } = {}) {
     const ids = Object.keys(rooms).filter((id) => !isTesterRoom(rooms[id]));
     ids.forEach((id) => {
         // ให้ socket ที่ยังต่ออยู่ออกจากห้อง socket.io ของห้องนี้ด้วย — กัน socket เก่าค้างในห้องแล้วไปรับ broadcast
@@ -8188,7 +8645,22 @@ async function closeAllRoomsSilently() {
             io.socketsLeave(hostRoomName(id));
         } catch (_) { /* ไม่เป็นไร */ }
     });
-    // ลบ snapshot ก่อนลบ RAM เพื่อไม่ให้ Node crash/restart ระหว่างช่วงเปลี่ยนสถานะแล้ว resurrect ห้องที่ admin เพิ่งสั่งปิด
+
+    // FAST PATH (force-reload): notification ต้องไม่รอ DynamoDB หรือจำนวนห้อง.
+    // startNewSessionEpoch() เปลี่ยน roomResetAt ก่อนหน้านี้แล้ว จึงกัน snapshot รุ่นเก่าฟื้นกลับได้
+    // แม้การลบ DynamoDB จะกำลังทำงานอยู่เบื้องหลัง.
+    if (fast) {
+        wipeAllRoomsInMemory({ keepTesterRooms: true });
+        if (ROOM_PERSISTENCE_ENABLED && ids.length) {
+            Promise.all(ids.map((id) => deletePersistedRoom(id).catch((e) => {
+                console.error(`[room-persist] ลบ snapshot ห้อง ${id} แบบเบื้องหลังไม่สำเร็จ:`, e.name, e.message);
+            }))).catch(() => {});
+        }
+        return ids.length;
+    }
+
+    // เส้นทางปกติยังรอ cleanup ให้เสร็จจริง เพื่อคง semantics เดิมของ server shutdown
+    // และ call site อื่นที่ต้องการรอการลบ snapshot ก่อนดำเนินการต่อ.
     if (ROOM_PERSISTENCE_ENABLED) {
         await Promise.all(ids.map((id) => deletePersistedRoom(id).catch((e) => {
             console.error(`[room-persist] ลบ snapshot ห้อง ${id} ตอนปิดเซิร์ฟเวอร์ไม่สำเร็จ:`, e.name, e.message);
@@ -8250,6 +8722,51 @@ function clearAdminLoginFailures(req) {
     adminLoginRate.delete(adminLoginClientKey(req));
 }
 
+async function consumeAdminTabHandoff(ticket, tabId) {
+    const payload = verifySignedState(String(ticket || ""), ADMIN_SESSION_SECRET);
+    const safeTabId = sanitizeAdminTabId(tabId);
+    if (!payload || payload.type !== "admin_tab_handoff" || payload.admin !== true || payload.provider !== "google" || !payload.googleSub || !payload.email || !safeTabId || payload.tabId !== safeTabId) {
+        return { ok:false, code:"ADMIN_TAB_TICKET_INVALID" };
+    }
+    const nonce = String(payload.n || "");
+    const now = Date.now();
+    for (const [key, exp] of adminTabHandoffMemory) {
+        if (Number(exp || 0) <= now) adminTabHandoffMemory.delete(key);
+    }
+    if (adminTabHandoffMemory.has(nonce)) return { ok:false, code:"ADMIN_TAB_TICKET_USED" };
+    try {
+        const doc = await getDynamoDocClient();
+        await doc.send(new PutCommand({
+            TableName: STATS_TABLE_NAME,
+            Item: { playerName: ADMIN_TAB_HANDOFF_PARTITION_KEY, statKey: `TICKET#${nonce}`, expiresAtEpoch: Math.floor(Number(payload.exp || 0) / 1000), createdAt: new Date().toISOString(), type:"admin_tab_handoff" },
+            ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)",
+        }));
+    } catch (e) {
+        // Local/dev environments may have no DynamoDB. Keep a bounded per-process replay guard there.
+        const code = String(e?.name || e?.code || "");
+        if (!/ConditionalCheckFailed/i.test(code)) {
+            adminTabHandoffMemory.set(nonce, Number(payload.exp || now + ADMIN_TAB_HANDOFF_TTL_MS));
+        } else {
+            return { ok:false, code:"ADMIN_TAB_TICKET_USED" };
+        }
+    }
+    adminTabHandoffMemory.set(nonce, Number(payload.exp || now + ADMIN_TAB_HANDOFF_TTL_MS));
+    const token = createAdminSessionToken({ provider:"google", googleSub:payload.googleSub, email:payload.email, tabId:safeTabId });
+    return { ok:!!token, code:token ? "" : "ADMIN_SESSION_CREATE_FAILED", token, expiresAt:Date.now() + ADMIN_TAB_SESSION_TTL_MS, email:payload.email, provider:"google", tabId:safeTabId };
+}
+
+app.post("/api/admin/session/exchange", express.json({ limit: "8kb" }), async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, private");
+    try {
+        const result = await consumeAdminTabHandoff(req.body?.ticket, req.body?.tabId);
+        if (!result.ok) return res.status(401).json({ ok:false, error:"admin_tab_ticket_invalid", code:result.code });
+        return res.json(result);
+    } catch (e) {
+        recordDiagnostic({ source:"server", kind:"admin_tab_session_exchange_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "" });
+        return res.status(503).json({ ok:false, error:"admin_session_exchange_failed", code:"ADMIN_TAB_SESSION_EXCHANGE_FAILED" });
+    }
+});
+
 app.get("/api/admin/session", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     // ระหว่าง instance ใหม่กำลัง warm-up หรือกำลัง drain อย่าแปลงสถานะเป็น
@@ -8264,10 +8781,15 @@ app.get("/api/admin/session", async (req, res) => {
             code: appDraining ? "ADMIN_SERVER_DRAINING" : "ADMIN_SERVER_WARMING",
         });
     }
+    const principal = adminAuthRequired() ? getAdminPrincipal(req) : null;
     res.json({
         ok: true,
         required: adminAuthRequired(),
-        authenticated: adminAuthRequired() && isAdminSessionValid(req),
+        authenticated: !!principal,
+        tabScoped: !!principal?.tabScoped,
+        provider: principal?.provider || "",
+        email: principal?.email || "",
+        expiresAt: Number(principal?.exp || 0),
         passwordEnabled: !!ADMIN_PANEL_PASSWORD,
         googleEnabled: ADMIN_GOOGLE_EMAILS.length > 0,
         deploymentReady: adminAuthReadyForDeployment(),
@@ -8291,11 +8813,22 @@ app.post("/api/admin/login", express.json({ limit: "2kb" }), (req, res) => {
         return res.status(403).json({ ok: false, error: given ? "wrong_password" : "password_required", code: given ? "ADMIN_WRONG_PASSWORD" : "ADMIN_PASSWORD_REQUIRED" });
     }
     clearAdminLoginFailures(req);
-    setHttpOnlyCookie(res, ADMIN_SESSION_COOKIE, createAdminSessionToken(), ADMIN_SESSION_TTL_MS, adminSessionCookieSecure(req));
-    res.json({ ok: true, required: true, authenticated: true });
+    const tabId = sanitizeAdminTabId(req.body?.tabId);
+    if (!tabId) return res.status(400).json({ ok:false, error:"admin_tab_id_required", code:"ADMIN_TAB_ID_REQUIRED" });
+    const token = createAdminSessionToken({ provider:"password", tabId });
+    if (!token) return res.status(503).json({ ok:false, error:"admin_session_create_failed", code:"ADMIN_SESSION_CREATE_FAILED" });
+    res.json({ ok:true, required:true, authenticated:true, tabScoped:true, provider:"password", token, tabId, expiresAt:Date.now()+ADMIN_TAB_SESSION_TTL_MS });
 });
 
 app.post("/api/admin/logout", (req, res) => {
+    const principal = getAdminPrincipal(req);
+    if (principal?.tabScoped && principal.n) {
+        adminTabSessionRevoked.set(String(principal.n), Number(principal.exp || Date.now() + ADMIN_TAB_SESSION_TTL_MS));
+        if (adminTabSessionRevoked.size > 5000) {
+            const now = Date.now();
+            for (const [key, exp] of adminTabSessionRevoked) if (Number(exp || 0) <= now) adminTabSessionRevoked.delete(key);
+        }
+    }
     clearHttpOnlyCookie(res, ADMIN_SESSION_COOKIE, adminSessionCookieSecure(req));
     res.json({ ok: true });
 });
@@ -8969,32 +9502,36 @@ app.post("/api/admin/force-reload", express.json({ limit: "2kb" }), async (req, 
     const epoch = startNewSessionEpoch(kind);
     reloadEpochTouchedByAdmin = true;
 
-    let persisted = true;
     if (kind === "images" || kind === "both") {
         imageEpoch = epoch;
         imageEpochTouchedByAdmin = true;
     }
-    try {
-        await saveServerState();
-    } catch (e) {
+
+    // อย่ารอ DynamoDB ก่อนแจ้งผู้เล่น — notification ต้องเร็วและคงที่แม้ DB หรือจำนวนห้องจะช้า
+    // state write ทำต่อแบบ asynchronous; instance นี้เห็น epoch ใหม่จาก RAM ทันที และ instance อื่น
+    // จะใช้ค่าที่ persist แล้วในการ sync ตามกลไก state recovery.
+    let persisted = true;
+    const stateSavePromise = saveServerState().catch((e) => {
         persisted = false;
         console.error("[server-control] บันทึก force-reload state ลง DynamoDB ไม่สำเร็จ:", e.name, e.message);
-    }
+        return false;
+    });
 
-    // บังคับรีโหลด "ทุกแบบ" (ไฟล์/รูป/ทั้งสอง) = จบเซสชันเดิมเหมือนปิด/เปิดเซิร์ฟเวอร์: ปิดทุกห้องแบบเงียบ (ไม่นับสถิติ/ออกเกม)
-    // แล้วให้ทุกเครื่องกลับหน้าแรก (ไม่กลับเข้าห้องเดิม) — ปิดห้อง "ก่อน" ยิง event เสมอ เพื่อไม่ให้ socket ที่หลุดตอนเครื่องรีโหลด
-    // ไปเริ่มนับเวลาออฟไลน์ของห้องที่เพิ่งจะถูกลบ (ดูเหตุผลที่ closeAllRoomsSilently)
-    // เลือกผู้รับ "ก่อน" ปิดห้อง (ตัดสินจากการเป็นสมาชิกห้องปกติ/ห้องผู้ทดสอบ) — ห้องผู้ทดสอบไม่ถูกปิด และ socket ในห้องนั้นไม่ได้ force_reload
-    // (จึงไม่ถูกพากลับ index/ไม่ล้าง token ที่จำไว้) ผู้ทดสอบเองรับไฟล์/รูปใหม่ตอนเขาออกจากห้องแล้วเปิดหน้าใหม่ตามปกติ
+    // เลือกผู้รับและล้างห้องจาก RAM ทันที; snapshot/index จะถูกลบเบื้องหลังโดยไม่ขวาง event
     const targets = playerSockets().filter((s) => !isProtectedSocket(s));
-    const closedRooms = await closeAllRoomsSilently();
+    const closedRooms = await closeAllRoomsSilently({ fast: true });
     const keptTesterRooms = countTesterRooms();
 
     const payloadImageEpoch = currentImageVersion();
+    const notificationStartedAt = Date.now();
     targets.forEach((s) => { try { s.emit("force_reload", { epoch, kind, imageEpoch: payloadImageEpoch }); } catch (_) { /* ไม่เป็นไร */ } });
+    const dispatchMs = Date.now() - notificationStartedAt;
 
-    console.log(`[server-control] สั่งรีโหลด (${kind}) epoch=${epoch} แจ้ง ${targets.length} เครื่อง, ปิดห้อง ${closedRooms} ห้อง, เก็บห้องผู้ทดสอบไว้ ${keptTesterRooms} ห้อง`);
-    res.json({ ok: true, kind, epoch, notified: targets.length, closedRooms, keptTesterRooms, persisted, serverOpen: !serverClosed });
+    // รอเฉพาะ state persistence เพื่อให้ผลที่แอดมินเห็นสะท้อนสถานะจริง แต่ไม่เคยบล็อกการส่งให้ผู้เล่น
+    await stateSavePromise;
+
+    console.log(`[server-control] สั่งรีโหลด (${kind}) epoch=${epoch} แจ้ง ${targets.length} เครื่อง, ปิดห้อง ${closedRooms} ห้อง, เก็บห้องผู้ทดสอบไว้ ${keptTesterRooms} ห้อง, notification=fast, dispatch=${dispatchMs}ms`);
+    res.json({ ok: true, kind, epoch, notified: targets.length, closedRooms, keptTesterRooms, persisted, dispatchMs, serverOpen: !serverClosed });
 });
 
 // ============================================================

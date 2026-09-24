@@ -1,0 +1,76 @@
+8049:// runBotsFor("wolfKill"/"nightSkill", ...) เหมือนที่ทำไว้ใน socket.on("start_night") handler
+8050:// เพราะ closeVoteRound() เป็นฟังก์ชันระดับบนสุดของไฟล์ (ประกาศก่อน io.on("connection", ...))
+8055:// io.on("connection", ...) ส่งเข้ามาได้เพราะอยู่ scope เดียวกับ performWolfKill ฯลฯ) แล้วยิง
+9541:io.on("connection", (socket) => {
+9663:    // ที่อ้างในนี้เป็น function declaration ที่ hoisted อยู่ใน scope เดียวกัน (io.on("connection", ...))
+9726:    socket.on("create_room", async ({ name, token, accountId, accountToken, isTester, testerSessionId, settings } = {}, cb) => {
+9780:            // ถึงจะ join_room สำเร็จ — ดูการเช็คใน socket.on("join_room")
+9856:    socket.on("list_open_rooms", (cb) => {
+9863:    socket.on("list_open_rooms_players", (cb) => {
+9871:    socket.on("host_login", async ({ roomId, token, password, accountId, accountToken } = {}, cb) => {
+9965:    socket.on("update_room_settings", ({ roomId, hostPassword, joinCode, maxPlayers, revealDeadRole } = {}, cb) => {
+10004:    socket.on("player_resume_status", async ({ roomId, token } = {}, cb) => {
+10043:    socket.on("abandon_game", async ({ roomId, token, reason } = {}, cb) => {
+10160:    socket.on("join_room", async ({ roomId, name, token, code, accountId, accountToken, isTester, testerSessionId } = {}, cb) => {
+10409:    socket.on("request_sync", ({ roomId, token } = {}) => {
+10466:    socket.on("update_config", ({ roomId, config }) => {
+10476:    socket.on("start_game", (roomId) => {
+10718:        // socket.on("start_night") ที่มี) ทำให้บอทไม่ทำ action เลยตั้งแต่ "คืนแรก" ของทุกเกม
+10729:    socket.on("toggle_state", ({ roomId, playerId, key, value }) => {
+10753:    socket.on("host_aim_kill", ({ roomId, targetId, team }) => {
+10785:    socket.on("host_clear_kill_target", ({ roomId, targetId }) => {
+10807:    socket.on("toggle_vote_mode", ({ roomId }) => {
+10863:    socket.on("toggle_vote_timer", ({ roomId }) => {
+10916:    socket.on("cast_vote", ({ roomId, targetId }) => {
+10931:    socket.on("force_vote_all", ({ roomId, targetId }) => {
+10985:    socket.on("cast_wolf_kill", ({ roomId, targetId }) => {
+10995:    socket.on("cast_murderer_kill", ({ roomId, targetId }) => {
+11021:    socket.on("cast_instigator_kill", ({ roomId, targetId }) => {
+11076:    socket.on("cast_bandit_kill", ({ roomId, targetId }) => {
+11085:    socket.on("resolve_night", (roomId) => {
+12155:    socket.on("start_night", (roomId) => {
+12260:    socket.on("select_target", ({ roomId, targetId }) => {
+12297:    socket.on("cast_witch_poison", ({ roomId, targetId }) => {
+12396:    socket.on("scout_target", ({ roomId, targetId }) => {
+12493:    socket.on("detective_scout", ({ roomId, targetAId, targetBId }) => {
+12543:    socket.on("cupid_pair", ({ roomId, targetAId, targetBId }) => {
+12597:    socket.on("instigator_pair", ({ roomId, targetAId, targetBId }) => {
+12607:    socket.on("give_up_oracle_sense", ({ roomId }) => {
+12633:    socket.on("reveal_mayor", ({ roomId }) => {
+12696:    socket.on("select_shield", ({ roomId, targetId }) => {
+12747:    socket.on("cult_action", ({ roomId, mode, targetId, sacrificeId }) => {
+12784:    socket.on("bandit_action", ({ roomId, targetId }) => {
+12828:    socket.on("select_curse_target", ({ roomId, targetId }) => {
+12841:    socket.on("fire_sheriff_gun", ({ roomId, targetId }) => {
+13011:    socket.on("sheriff_peek_target", ({ roomId, targetId }) => {
+13101:    socket.on("cast_priest_holy_water", ({ roomId, targetId }) => {
+13256:    socket.on("illusion_kill_disguised", ({ roomId }) => {
+13284:    socket.on("send_chat", ({ roomId, text, type }) => {
+13403:    socket.on("host_chat", ({ roomId, text, type }) => {
+13433:    socket.on("toggle_win_condition", ({ roomId, condition }) => {
+13448:    socket.on("set_all_win_conditions", ({ roomId, enabled }) => {
+13459:    socket.on("confirm_continue", ({ roomId }) => {
+13474:    socket.on("account_bootstrap", async ({ accountId, accountToken, name, page } = {}, cb) => {
+13497:    socket.on("rename_my_account", async ({ accountId, accountToken, newName } = {}, cb) => {
+13512:    socket.on("account_touch", async ({ accountId, accountToken, reason } = {}, cb) => {
+13554:    socket.on("presence_hello", async ({ token, name, page, visible, roomId, isHost, accountId, accountToken } = {}, cb) => {
+13575:    socket.on("presence_ping", ({ visible, roomId, isHost } = {}) => {
+13586:    socket.on("admin_list_rooms", (cb) => {
+13593:    socket.on("admin_close_room", async ({roomId}={}, cb) => {
+13603:    socket.on("admin_list_accounts", async (cb) => {
+13646:    socket.on("admin_rename_account", async ({ accountId, roomId, playerId, newName } = {}, cb) => {
+13665:    socket.on("admin_set_account_status", async ({ accountId, status } = {}, cb) => {
+13679:    socket.on("admin_reset_account_stats", async ({ accountId } = {}, cb) => {
+13690:    socket.on("admin_kick_account", ({ accountId } = {}, cb) => {
+13698:    socket.on("admin_rename_legacy_player", async ({ name, newName } = {}, cb) => {
+13709:    socket.on("admin_migrate_legacy_player", async ({ name, accountId } = {}, cb) => {
+13720:    socket.on("admin_delete_legacy_player", async ({ name } = {}, cb) => {
+13739:    socket.on("host_add_bot", (roomId, cb) => {
+13786:    socket.on("toggle_bot_ai", ({ roomId, botId, enabled } = {}) => {
+13810:    socket.on("toggle_bot_llm_mode", ({ roomId, botId, enabled } = {}) => {
+13831:    socket.on("release_bot", ({ roomId, token } = {}, cb) => {
+13887:    socket.on("kick_player", async ({ roomId, playerId }) => {
+13968:    socket.on("leave_room", async ({ roomId, token } = {}, cb) => {
+14024:    socket.on("restart_room", (roomId) => {
+14099:    socket.on("close_room", async (roomId) => {
+14109:    socket.on("disconnect", async () => {
