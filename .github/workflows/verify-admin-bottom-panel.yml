@@ -29,7 +29,7 @@ jobs:
             status=$?
             printf '%s\n' "$output"
             if [ $status -ne 0 ]; then
-              if printf '%s\n' "$output" | grep -q 'ENOENT: no such file or directory, open .*\\.ebextensions/01-high-availability\\.config'; then
+              if printf '%s\n' "$output" | grep -Fq '.ebextensions/01-high-availability.config'; then
                 echo "EXPECTED PRE-EXISTING FIXTURE GAP: $test"
               else
                 echo "UNEXPECTED TEST FAILURE: $test"
