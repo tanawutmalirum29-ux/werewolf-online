@@ -1,0 +1,30 @@
+const fs = require('fs');
+const path = require('path');
+function assert(c,m){if(!c) throw new Error(m)}
+const root=path.join(__dirname,'..');
+const server=fs.readFileSync(path.join(root,'server.js'),'utf8');
+const player=fs.readFileSync(path.join(root,'public','js','player.main.js'),'utf8');
+const host=fs.readFileSync(path.join(root,'public','js','host.main.js'),'utf8');
+const vm=require('vm');
+assert(server.includes('recentSocketDisconnects'),'server must remember recent real socket disconnects');
+assert(server.includes('rememberSocketDisconnect(\'player\''),'player disconnect must be recorded');
+assert(server.includes('rememberSocketDisconnect(\'host\''),'host disconnect must be recorded');
+assert(server.includes('BROWSER_EXIT_DUPLICATE_IGNORED'),'late duplicate browser-exit signals must be ignored');
+assert(server.includes("recentSocketDisconnect('player', id, tok"),'player endpoint must suppress late duplicate signals');
+assert(server.includes("recentSocketDisconnect('host', id, tok"),'host endpoint must suppress late duplicate signals');
+assert(/if \(!socket \|\| !socket\.connected\) return;/.test(player),'player pagehide must not beacon after socket disconnect');
+assert(/if \(!socket \|\| !socket\.connected\) return;/.test(host),'host pagehide must not beacon after socket disconnect');
+assert(server.includes('function diagnosticIsBenignLifecycleEvent'),'diagnostics must distinguish lifecycle events from failures');
+assert(/if \(diagnosticIsBenignLifecycleEvent\(before\) \|\| diagnosticIsBenignLifecycleEvent\(after\)\) return null;/.test(server),'benign lifecycle events must not create causal graph edges');
+console.log('browser-exit duplicate lifecycle regression: PASS');
+
+const start=server.indexOf('function diagnosticAckCode(');
+const end=server.indexOf('\nfunction currentDiagnosticContext()',start);
+const block=server.slice(start,end)+'\nthis.__api={diagnosticIsFailureEvent,diagnosticCausalPair};';
+const sandbox={safeDiagnosticValue(v){return v;}, publicDiagnosticText(v){return String(v??'');}, DIAGNOSTIC_CAUSAL_STRONG_WINDOW_MS:15*60*1000, DIAGNOSTIC_CAUSAL_WINDOW_MS:3*60*1000};
+vm.runInNewContext(block,sandbox);
+const api=sandbox.__api;
+assert(api.diagnosticIsFailureEvent({kind:'browser_exit_signal',causalHint:{causeCode:'BROWSER_EXIT_SIGNAL'}})===false,'BROWSER_EXIT_SIGNAL must be informational, not a failure');
+assert(api.diagnosticIsFailureEvent({kind:'browser_exit_armed',causalHint:{causeCode:'BROWSER_EXIT_ARMED'}})===false,'BROWSER_EXIT_ARMED must be informational, not a failure');
+assert(api.diagnosticIsFailureEvent({kind:'browser_exit_apply_error',context:{code:'BROWSER_EXIT_APPLY_ERROR'}})===true,'real browser-exit apply errors must remain failures');
+assert(api.diagnosticCausalPair({id:'sig',time:'2026-09-24T09:23:32.373Z',kind:'browser_exit_signal',causalHint:{downstreamEventIds:['arm']}},{id:'arm',time:'2026-09-24T09:23:32.377Z',kind:'browser_exit_armed',causalHint:{upstreamEventIds:['sig']}})===null,'benign browser-exit lifecycle events must not propagate causal failure links');

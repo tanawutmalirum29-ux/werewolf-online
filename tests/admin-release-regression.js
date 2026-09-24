@@ -1,0 +1,15 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const root = path.resolve(__dirname, '..');
+const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const admin = fs.readFileSync(path.join(root, 'public/admin.html'), 'utf8');
+assert(server.includes('function computeAdminHash()'), 'admin release hash helper');
+assert(server.includes('adminHash: computeAdminHash()'), 'config admin hash');
+assert(server.includes('name="ww-admin-release"'), 'server admin meta stamping');
+assert(admin.includes('name="ww-admin-release"'), 'admin release meta');
+assert(admin.includes('function checkAdminRelease(cfg)'), 'admin mismatch detector');
+assert(admin.includes('showAdminUpdateNotice()'), 'admin update notice');
+assert(admin.includes('async function pollAdminRelease()'), 'admin release polling');
+assert(admin.includes('startAdminReleasePolling()'), 'admin release poll startup');
+console.log('admin-release regression: PASS');
