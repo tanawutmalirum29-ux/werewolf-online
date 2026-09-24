@@ -16,7 +16,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -31,12 +30,12 @@ jobs:
           const fs = require('fs');
           const { spawnSync } = require('child_process');
           const html = fs.readFileSync('public/admin.html', 'utf8');
-          const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\\/script>/gi)];
+          const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/gi)];
           let checked = 0;
           for (let i = 0; i < scripts.length; i++) {
             const attrs = scripts[i][1] || '';
             const body = scripts[i][2] || '';
-            if (/\\bsrc\\s*=/i.test(attrs) || !body.trim()) continue;
+            if (/\bsrc\s*=/i.test(attrs) || !body.trim()) continue;
             const file = '.github-inline-check-' + i + '.js';
             fs.writeFileSync(file, body);
             const r = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
@@ -68,15 +67,17 @@ jobs:
                       continue
                   zout.writestr(info, zin.read(info.filename))
           tmp.replace(src)
-          print(src, src.stat().st_size)
           PY
           python3 - <<'PY'
           from zipfile import ZipFile
           p='dist/werewolf-online-admin-bottom-panel-20260924.zip'
           with ZipFile(p) as z:
-              bad=[n for n in z.namelist() if n == '.gitignore' or n.endswith('/.gitignore') or n.startswith('.github/')]
+              names=z.namelist()
+              bad=[n for n in names if n == '.gitignore' or n.endswith('/.gitignore') or n.startswith('.github/')]
               assert not bad, bad
-              assert 'public/admin.html' in z.namelist()
+              assert 'public/admin.html' in names
+              assert 'public/host.html' in names
+              assert 'server.js' in names
           print('ZIP integrity / clean export check: PASS')
           PY
 
