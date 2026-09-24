@@ -27,6 +27,12 @@
     --glow-soft:rgba(94,234,212,.55);
     --horizon:42%;
     --shoreline:70%;
+    /* Player grid standard: cards never grow beyond this reference width.
+       When the chosen column count cannot fit, the grid tracks shrink and the
+       card canvas/font scale down uniformly from the same 220px reference. */
+    --host-player-card-standard:160px;
+    --host-player-card-canvas:220px;
+    --host-player-grid-min:50px;
 }
 
 *{
@@ -764,7 +770,7 @@ select{
 
 .players-grid{
     display:grid;
-    grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns:repeat(auto-fit, minmax(min(100%, var(--host-player-grid-min)), 1fr));
     gap:10px;
     min-width:0;
     /* align-items:start กันไม่ให้การ์ด (ซึ่งบังคับสี่เหลี่ยมจัตุรัสด้วย aspect-ratio ที่ .player) ถูก
@@ -773,32 +779,9 @@ select{
     align-items:start;
 }
 
-/* บังคับจำนวนคอลัมน์ของกริดผู้เล่น (ฝั่งโฮสต์)
-   อ้างอิงจาก CSS viewport จริงของอุปกรณ์:
-   - OPPO A5x (จอ 720x1604 กายภาพ, DPR≈2) → CSS viewport กว้าง ~360px
-   - iPad (A16 / รุ่น 11) → CSS viewport 820px แนวตั้ง, 1180px แนวนอน
-   ดังนั้นมือถือใช้ <=480px (กันไว้ให้ครอบคลุมมือถือทั่วไปด้วย)
-   ส่วนไอแพด (ทั้งแนวตั้ง 820px และแนวนอน 1180px) ต้องอยู่ในช่วงเดียวกันที่บังคับ 5 คอลัมน์ */
-@media (max-width: 480px){
-    .players-grid{
-        grid-template-columns:repeat(2, 1fr);
-    }
-}
-@media (min-width: 481px) and (max-width: 1279px){
-    .players-grid{
-        grid-template-columns:repeat(5, 1fr);
-    }
-}
-/* ไอแพดแนวนอนโดยเฉพาะ (เช่น 1180px) หลังคอลัมน์ซ้ายยุบไปแล้วเท่านั้น (.layout.role-hidden —
-   ติดตอนการ์ด "ตั้งค่าบทบาท" หายไปหลังกดเริ่มเกม ดูอธิบายที่ .layout ด้านบน) — ใช้ 8 คอลัมน์แทน 5
-   เพราะคอลัมน์ขวาได้ความกว้างเต็ม ๆ มาใช้แล้ว การ์ดไม่แคบเกินไป
-   ก่อนเริ่มเกม (คอลัมน์ซ้าย 380px ยังอยู่) คงไว้ที่ 5 คอลัมน์ตามกฎด้านบน เพราะพื้นที่คอลัมน์ขวาถูกแย่งไปแล้ว
-   แนวตั้ง (820px) ก็คง 5 คอลัมน์เสมอ เพราะไม่มี orientation:landscape มาตรง */
-@media (min-width: 481px) and (max-width: 1279px) and (orientation: landscape){
-    .layout.role-hidden .players-grid{
-        grid-template-columns:repeat(8, 1fr);
-    }
-}
+/* กริดผู้เล่นฝั่งโฮสต์ใช้ auto-fit จากพื้นที่จริง ไม่ผูกจำนวนคอลัมน์กับ breakpoint
+   เมื่อมีพื้นที่ด้านขวาพอจะเพิ่มคอลัมน์ทันที และแถวที่ไม่เต็มจะเริ่มจากซ้ายเสมอ.
+   ปุ่ม preset/ช่องตัวเลขยังสามารถบังคับจำนวนคอลัมน์แบบ manual ได้. */
 
 /* ===== player toolbar: ปรับคอลัมน์กริด / filter ===== */
 .player-toolbar{
@@ -1140,11 +1123,11 @@ select{
     animation:rise .35s ease both;
     min-width:0;
     width:100%;
-    max-width:160px;
+    max-width:var(--host-player-card-standard);
     aspect-ratio:1 / 1;
     height:auto;
     min-height:0;
-    margin-inline:auto;
+    margin:0;
     padding:0;
     overflow:hidden;
     position:relative;
@@ -1159,8 +1142,8 @@ select{
     position:absolute;
     left:50%;
     top:50%;
-    width:220px;
-    height:220px;
+    width:var(--host-player-card-canvas);
+    height:var(--host-player-card-canvas);
     box-sizing:border-box;
     padding:0.8em 0.9em;
     font-size:14px;
@@ -3652,11 +3635,20 @@ body{ min-height:100svh; }
     overscroll-behavior:contain;
 }
 .host-player-card #list,
-.host-player-card #listSimple{ flex:1 1 auto; min-height:0; }
-.players-grid{ grid-auto-rows:min-content; }
+.host-player-card #listSimple{
+    flex:0 0 auto;
+    min-height:0;
+    overflow:visible;
+}
+.players-grid{
+    grid-auto-rows:min-content;
+    overflow:visible;
+    justify-content:stretch;
+    justify-items:start;
+}
 .player{
     min-width:0;
-    max-width:100%;
+    max-width:var(--host-player-card-standard);
     width:100%;
     aspect-ratio:1/1;
 }
@@ -4077,6 +4069,41 @@ body.is-resizing .player{
 }
 
 /* ============================================================================
+   HOST PLAYER GRID — FIXED STANDARD / FLUID SHRINK
+   ---------------------------------------------------------------------------
+   The grid has one visual reference size. Cards may become smaller when the
+   available width is tight, but they never grow past the reference size.
+   The inner 220px canvas and its typography are scaled by the same factor,
+   preserving the exact aspect ratio of every player card.
+
+   The player panel also follows its content instead of creating a second
+   scroll box inside the panel. The page/workspace is responsible for scrolling.
+   ============================================================================ */
+.host-player-card{
+    height:auto;
+    max-height:none;
+    align-self:start;
+    overflow:visible;
+}
+.host-player-card #list,
+.host-player-card #listSimple{
+    height:auto;
+    max-height:none !important;
+    overflow:visible !important;
+    align-self:stretch;
+}
+.host-player-card #list .player{
+    max-width:var(--host-player-card-standard);
+}
+body:not(.setup-mode) .layout:not(.role-hidden) #rightCol .host-player-card,
+body.host-game-mode .layout:not(.role-hidden) #rightCol .host-player-card{
+    height:auto;
+    min-height:0;
+    max-height:none;
+    align-self:start;
+}
+
+/* ============================================================================
    PLAYER BOARD FOCUS MODE — host
    ---------------------------------------------------------------------------
    เปิดด้วยปุ่ม "⛶ เต็มจอ" บนการ์ดผู้เล่น
@@ -4125,24 +4152,31 @@ html.host-player-focus,
 body.host-player-focus{
     width:100%;
     min-height:100%;
-    height:auto;
-    overflow-x:hidden;
-    overflow-y:auto;
+    height:100%;
+    overflow:hidden;
 }
 
 body.host-player-focus .app{
-    position:relative;
-    inset:auto;
-    width:100%;
+    /* Full player mode is a true viewport layer. The app itself becomes the only
+       scroll container when the room has more rows than the viewport; the player
+       grid never creates a second nested scrollbar. */
+    position:fixed;
+    inset:0;
+    width:100vw;
     max-width:none;
     min-height:100svh;
-    height:auto;
+    min-height:100dvh;
+    height:100svh;
+    height:100dvh;
     max-height:none;
-    overflow:visible;
+    overflow-x:hidden;
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
     padding:
         max(8px, env(safe-area-inset-top,0px))
         max(8px, env(safe-area-inset-right,0px))
-        max(78px, env(safe-area-inset-bottom,0px))
+        max(156px, env(safe-area-inset-bottom,0px))
         max(8px, env(safe-area-inset-left,0px));
     z-index:500;
 }
@@ -4177,7 +4211,7 @@ body.host-player-focus #playerCard{
     width:100%;
     height:auto;
     min-width:0;
-    min-height:calc(100svh - max(8px, env(safe-area-inset-top,0px)) - max(78px, env(safe-area-inset-bottom,0px)));
+    min-height:calc(100dvh - max(8px, env(safe-area-inset-top,0px)) - max(156px, env(safe-area-inset-bottom,0px)));
     margin:0;
     padding:12px;
     border-radius:18px;
@@ -4218,15 +4252,23 @@ body.host-player-focus #listSimple{
     min-height:0;
     width:100%;
     height:auto;
-    overflow:visible;
-    overscroll-behavior:auto;
+    max-height:none !important;
+    overflow:visible !important;
+    overscroll-behavior:visible;
     -webkit-overflow-scrolling:auto;
-    padding-right:2px;
-    padding-bottom:6px;
+    padding-right:0;
+    padding-bottom:8px;
 }
 body.host-player-focus #list{
     align-content:start;
+    justify-items:start;
     grid-auto-rows:min-content;
+    grid-auto-flow:row;
+}
+body.host-player-focus #list .player{
+    max-width:var(--host-player-card-standard);
+    width:100%;
+    margin:0;
 }
 body.host-player-focus #listSimple{ align-content:start; }
 body.host-player-focus #playerSearchEmpty{ flex:0 0 auto; }
@@ -4336,3 +4378,315 @@ body.host-player-focus #connBanner{
 body.host-player-focus #wwVersionBadge{
     display:none !important;
 }
+
+/* ============================================================================
+   HOST PLAYER PANEL — DAY THEME CONSISTENCY
+   ---------------------------------------------------------------------------
+   The workspace refinements below are intentionally placed after the base day-theme
+   section so the player-management surface cannot fall back to the dark command-center
+   palette while the game is still in daytime.
+   ============================================================================ */
+body.is-day .host-player-card{
+    background:
+        linear-gradient(145deg,rgba(255,255,255,.90),rgba(244,251,253,.84));
+    border-color:rgba(255,255,255,.95);
+    color:#08323f;
+    box-shadow:0 14px 34px rgba(8,74,96,.16), inset 0 1px 0 rgba(255,255,255,.72);
+}
+body.is-day .host-player-card .host-card-kicker,
+body.is-day .host-player-card .sub,
+body.is-day .host-player-card .grid-cols-label{
+    color:#2a5968;
+}
+body.is-day .host-player-card .host-player-title-wrap h2{
+    color:#08323f;
+    text-shadow:0 1px 0 rgba(255,255,255,.85);
+}
+body.is-day .host-player-card .player-focus-btn{
+    background:rgba(255,255,255,.84);
+    color:#08323f;
+    border-color:rgba(8,74,96,.22);
+    box-shadow:0 3px 12px rgba(8,74,96,.12);
+}
+body.is-day .host-player-card .player-focus-btn:hover{
+    background:#fff;
+    border-color:rgba(12,107,133,.45);
+}
+body.is-day .host-player-card .gridColsBtn,
+body.is-day .host-player-card .grid-cols-input,
+body.is-day .host-player-card .filterChip,
+body.is-day .host-player-card .viewModeBtn{
+    background:rgba(255,255,255,.90);
+    color:#245666;
+    border-color:rgba(8,74,96,.18);
+    box-shadow:0 2px 7px rgba(8,74,96,.08);
+}
+body.is-day .host-player-card .gridColsBtn:hover,
+body.is-day .host-player-card .filterChip:hover,
+body.is-day .host-player-card .viewModeBtn:hover{
+    color:#08323f;
+    background:#fff;
+    border-color:#0c6b85;
+}
+body.is-day .host-player-card .gridColsBtn.active,
+body.is-day .host-player-card .filterChip.active,
+body.is-day .host-player-card .viewModeBtn.active{
+    background:rgba(14,116,144,.12);
+    color:#0a4f64;
+    border-color:#0c6b85;
+    box-shadow:0 3px 9px rgba(8,74,96,.10);
+}
+body.is-day.host-player-focus .host-player-card{
+    background:
+        linear-gradient(145deg,rgba(255,255,255,.94),rgba(242,250,252,.90));
+    box-shadow:0 18px 42px rgba(8,74,96,.18), inset 0 1px 0 rgba(255,255,255,.82);
+}
+body.is-day.host-player-focus .floating-bar{
+    background:rgba(255,255,255,.88);
+    border-top-color:rgba(255,255,255,.95);
+    box-shadow:0 -10px 28px rgba(8,74,96,.16);
+}
+body.is-day.host-player-focus .floating-bar .btn{
+    color:#08323f;
+}
+
+@media (max-width:480px){
+    body.host-player-focus .app{
+        padding-inline:5px;
+    }
+}
+
+/* ============================================================================
+   HOST DAY SURFACE CONSISTENCY — FINAL OVERRIDE
+   ---------------------------------------------------------------------------
+   Every visible Host surface that can appear while the room is in daytime must
+   use the beach/day palette.  Several legacy controls live outside .app or use
+   fixed dark literals, so they are overridden here at the end of the stylesheet
+   to make the daytime state authoritative without changing the night palette.
+   ============================================================================ */
+body.is-day .app .host-role-card,
+body.is-day .app .host-chat-card,
+body.is-day .app #setupCard,
+body.is-day .app .host-player-card{
+    background:linear-gradient(145deg,rgba(255,255,255,.90),rgba(241,250,253,.84));
+    border-color:rgba(255,255,255,.96);
+    color:#08323f;
+    box-shadow:0 10px 30px rgba(8,74,96,.14), inset 0 1px 0 rgba(255,255,255,.70);
+}
+
+/* Role management: quick-add chips, role rows and +/- controls */
+body.is-day .app .quick-add-chip{
+    background:rgba(255,255,255,.88) !important;
+    border-color:rgba(8,74,96,.18);
+    color:#08323f;
+    box-shadow:0 2px 8px rgba(8,74,96,.08);
+}
+body.is-day .app .quick-add-chip:hover{
+    background:#fff !important;
+    border-color:rgba(12,107,133,.42);
+}
+body.is-day .app .quick-add-chip span{ color:#2a5968; }
+body.is-day .app .quick-add-chip .qa-count{
+    background:#0c6b85;
+    color:#fff;
+    box-shadow:0 0 0 2px #fff;
+}
+body.is-day .app .roleConfigList{ color:#08323f; }
+body.is-day .app .roleBox{
+    background:rgba(255,255,255,.90) !important;
+    border-color:rgba(8,74,96,.18);
+    color:#08323f;
+    box-shadow:0 2px 8px rgba(8,74,96,.07);
+}
+body.is-day .app .roleBox .name{ color:#08323f; }
+body.is-day .app .roleBox .role-icon{
+    background:#e9f7fb !important;
+    border-color:rgba(8,74,96,.16);
+}
+body.is-day .app .roleBox .count{ color:#0c6b85; }
+body.is-day .app .roleBtn{
+    background:#f8fdff !important;
+    border-color:rgba(8,74,96,.18);
+    color:#08323f;
+}
+body.is-day .app .roleBtn:hover{
+    background:#e8f8fc !important;
+    color:#08323f;
+    border-color:#0c6b85;
+}
+body.is-day .app .config-summary{ color:#2a5968; }
+body.is-day .app .config-summary b{ color:#08323f; }
+body.is-day .app .empty-note{
+    color:#2a5968;
+    border-color:rgba(8,74,96,.20);
+    background:rgba(255,255,255,.48);
+}
+
+/* Chat: make the whole chat rail and its individual message surfaces visibly daytime */
+body.is-day .app .host-chat-card .chat-tabs{
+    background:rgba(255,255,255,.34);
+    border:1px solid rgba(8,74,96,.10);
+    border-radius:14px;
+    padding:4px;
+}
+body.is-day .app .host-chat-card .chat-tab{
+    background:rgba(255,255,255,.62);
+    border-color:rgba(8,74,96,.16);
+    color:#2a5968;
+}
+body.is-day .app .host-chat-card .chat-tab:hover{
+    background:#fff;
+    color:#08323f;
+}
+body.is-day .app .host-chat-card .chat-tab.active-global{
+    background:rgba(59,130,246,.13);
+    border-color:rgba(59,130,246,.38);
+    color:#1d4ed8;
+}
+body.is-day .app .host-chat-card .chat-tab.active-wolf{
+    background:rgba(185,28,28,.09);
+    border-color:rgba(185,28,28,.34);
+    color:#b91c1c;
+}
+body.is-day .app .host-chat-card .chat-tab .tab-badge{
+    background:rgba(8,74,96,.10);
+    color:#08323f;
+}
+body.is-day .app .host-chat-card .chat-log{
+    background:rgba(255,255,255,.42);
+    border:1px solid rgba(8,74,96,.12);
+    border-radius:14px;
+    padding:8px;
+    box-shadow:inset 0 1px 5px rgba(8,74,96,.05);
+}
+body.is-day .app .host-chat-card .chat-log:empty::after{
+    color:#2a5968;
+    border-color:rgba(8,74,96,.20);
+    background:rgba(255,255,255,.34);
+}
+body.is-day .app .host-chat-card .msg{
+    background:rgba(255,255,255,.76) !important;
+    border-color:rgba(8,74,96,.15);
+    color:#08323f;
+    box-shadow:0 2px 7px rgba(8,74,96,.06);
+}
+body.is-day .app .host-chat-card .msg.wolf{
+    background:rgba(254,226,226,.88) !important;
+    border-color:rgba(185,28,28,.22);
+}
+body.is-day .app .host-chat-card .msg.global{
+    background:rgba(219,234,254,.90) !important;
+    border-color:rgba(37,99,235,.18);
+}
+body.is-day .app .host-chat-card .msg.private{
+    background:rgba(220,252,231,.88) !important;
+    border-color:rgba(21,128,61,.18);
+}
+body.is-day .app .host-chat-card .msg.host{
+    background:rgba(224,242,254,.88) !important;
+    border-color:rgba(14,116,144,.20);
+}
+body.is-day .app .host-chat-card .msg .mname{ color:#08323f !important; }
+body.is-day .app .host-chat-card .msg .mtype{ color:#2a5968; }
+body.is-day .app .host-chat-card .msg.death,
+body.is-day .app .host-chat-card .msg.death .mname{ color:#b91c1c !important; }
+
+/* Other inline controls that historically used dark fixed backgrounds */
+body.is-day .app select,
+body.is-day .app .hostMsgInput,
+body.is-day .app .grid-cols-input,
+body.is-day .app .roomSearchInput,
+body.is-day .app .gridColsBtn,
+body.is-day .app .filterChip,
+body.is-day .app .viewModeBtn,
+body.is-day .app .vote-row,
+body.is-day .app .tally-row,
+body.is-day .app .simple-row,
+body.is-day .app .player,
+body.is-day .app .modePopupRow{
+    background-color:rgba(255,255,255,.88);
+    color:#08323f;
+    border-color:rgba(8,74,96,.18);
+}
+body.is-day .app .vote-row .vote-name,
+body.is-day .app .modePopupName,
+body.is-day .app .modePopupChoice b{ color:#08323f; }
+
+/* Popups are siblings of .app, so they need their own daytime palette. */
+body.is-day .vote-modal{
+    background:linear-gradient(145deg,rgba(255,255,255,.98),rgba(241,250,253,.96));
+    color:#08323f;
+    border-color:rgba(8,74,96,.18);
+    box-shadow:0 20px 60px rgba(8,74,96,.24);
+}
+body.is-day .vote-modal .sub,
+body.is-day .vote-panel-title,
+body.is-day .modePopupChoice,
+body.is-day .modePopupRoleTag,
+body.is-day .gameover-progress,
+body.is-day .testerConditionRow .tcSub,
+body.is-day .botRow .botRole{ color:#2a5968; }
+body.is-day .vote-modal-close{
+    background:rgba(255,255,255,.78);
+    border-color:rgba(8,74,96,.18);
+    color:#08323f;
+}
+body.is-day .vote-modal-close:hover{ background:#fff; border-color:#0c6b85; }
+body.is-day .modePopupRow,
+body.is-day .gameOverRow,
+body.is-day .testerConditionRow,
+body.is-day .botRow{
+    background:rgba(255,255,255,.78);
+    border-color:rgba(8,74,96,.16);
+    color:#08323f;
+}
+body.is-day .modePopupRow.shielded{ background:rgba(224,242,254,.86); }
+body.is-day .modePopupName{ color:#08323f; }
+body.is-day .modePopupForceBtn{
+    color:#9f1239;
+    background:rgba(251,113,133,.13);
+    border-color:rgba(190,24,93,.25);
+}
+body.is-day .roomSearchInput,
+body.is-day .ww-modal-input{
+    background:#fff !important;
+    color:#08323f !important;
+    border-color:rgba(8,74,96,.20);
+}
+body.is-day .roomSearchInput::placeholder,
+body.is-day .ww-modal-input::placeholder{ color:#63808b; }
+body.is-day .roomPickCard{
+    background:rgba(255,255,255,.84);
+    color:#08323f;
+    border-color:rgba(8,74,96,.16);
+}
+body.is-day .roomPickCard.roomPickNew{ background:rgba(14,116,144,.10); }
+body.is-day .roomPickCode{ color:#0a4256; }
+body.is-day .gameOverRow{ background:rgba(255,255,255,.72); }
+body.is-day .gameOverRow.win{ background:rgba(220,252,231,.82); }
+body.is-day .gameOverRow.lose{ background:rgba(254,226,226,.82); }
+body.is-day .tester-section-icon{
+    background:rgba(14,116,144,.11);
+    border-color:rgba(14,116,144,.25);
+}
+body.is-day .tester-section-title span:last-child{ color:#08323f; }
+body.is-day .testerConditionRow:hover,
+body.is-day .botRow:hover{ background:rgba(239,250,253,.96); }
+
+/* Generic ww-modal / toast are also outside .app. */
+body.is-day .ww-modal-box{
+    background:linear-gradient(145deg,#ffffff,#effafe);
+    color:#08323f;
+    border-color:rgba(8,74,96,.18);
+    box-shadow:0 12px 40px rgba(8,74,96,.24);
+}
+body.is-day .ww-modal-msg{ color:#08323f; }
+body.is-day .ww-modal-cancel{ background:#e6eef2; color:#244c5a; }
+body.is-day .ww-modal-input{ background:#fff !important; color:#08323f !important; }
+body.is-day .ww-toast{
+    background:rgba(255,255,255,.96);
+    color:#08323f;
+    border-color:rgba(8,74,96,.18);
+    box-shadow:0 12px 35px rgba(8,74,96,.20);
+}
+body.is-day .ww-toast-info{ border-color:rgba(14,116,144,.30); }

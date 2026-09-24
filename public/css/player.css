@@ -1101,7 +1101,7 @@ body.is-day .day-night-badge{
     */
     /* ขนาดการ์ดจริง = --player-card-size ที่ JS คำนวณจาก "พื้นที่กริดที่มีอยู่จริง" ให้พอดีทั้งแนวตั้งและแนวนอน
        ถ้า JS ยังไม่ทำงาน/กริดยังถูกซ่อน จะใช้ fallback ด้านบนไปก่อน แล้ว ResizeObserver จะคำนวณใหม่ทันทีที่มีพื้นที่จริง */
-    --player-card-fit:var(--player-card-size, clamp(34px, 7vw, var(--player-card-ceiling, 88px)));
+    --player-card-fit:var(--player-card-size, clamp(var(--player-grid-min), 7vw, var(--player-card-ceiling, 88px)));
     /* JS กำหนดทั้ง "จำนวนคอลัมน์" และ "ขนาดการ์ด" เป็นค่าคู่เดียวกันแล้ว เพื่อกัน
        auto-fit คำนวณจำนวนคอลัมน์ใหม่ไม่ตรงกับขนาดที่ JS เพิ่งคำนวณ (ต้นเหตุของแถวล่างล้น) */
     grid-template-columns:var(--player-grid-template, repeat(auto-fit, minmax(var(--player-card-fit), var(--player-card-fit))));
@@ -1112,6 +1112,7 @@ body.is-day .day-night-badge{
     */
     grid-auto-rows:var(--player-card-fit);
     justify-content:start;
+    justify-items:start;
     gap:clamp(4px, .6vw, 7px);
     /* เว้นขอบ 3px รอบด้าน (เดิมเว้นแค่ขวา 2px): การ์ดเต็มความกว้างแถวพอดีแล้ว ขอบวงแหวน/แสงเรืองของการ์ดที่ถูกเลือก
        ไม่ควรโดน overflow ของ #players ตัดที่ขอบซ้าย/ขวา/บน — fitPlayerGrid หักระยะนี้ออกจากพื้นที่ที่วัดให้แล้ว */
@@ -4713,6 +4714,7 @@ body.lobby-beach .playerRoomPickerBox{
     --fluid-game-gap:10px;
     --fluid-game-edge:10px;
     --fluid-game-bottom-clearance:var(--game-bottom-clearance,64px);
+    --player-grid-min:50px;
 }
 
 html,
