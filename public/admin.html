@@ -903,6 +903,25 @@ body[data-page="admin"]{
 .player-type-badge.temporary{color:#ffd18a;border-color:rgba(255,193,92,.3);background:rgba(255,193,92,.08);}
 @media(max-width:820px){.player-account-groups{grid-template-columns:1fr;}}
 
+/* ============================================================
+   ADMIN BOTTOM CONTROL DOCK / FLOATING PANELS
+   ============================================================ */
+.dashboard-focus{display:flex;align-items:flex-start;gap:12px;margin:0 0 16px;padding:13px 14px;border:1px solid rgba(124,92,255,.18);border-radius:16px;background:linear-gradient(180deg,rgba(124,92,255,.07),rgba(18,23,35,.58));}
+.dashboard-focus-icon{flex:0 0 auto;width:36px;height:36px;display:grid;place-items:center;border-radius:11px;background:rgba(124,92,255,.12);font-size:18px}.dashboard-focus-copy{min-width:0}.dashboard-focus-copy strong{display:block;font-size:13.5px}.dashboard-focus-copy p{margin:3px 0 0;color:var(--ink-dim);font-size:11.5px;line-height:1.55}
+.admin-panel-sheet{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-end;justify-content:center;padding:0 12px calc(82px + env(safe-area-inset-bottom))}.admin-panel-sheet.hidden{display:none}.admin-panel-backdrop{position:absolute;inset:0;background:rgba(4,7,12,.46);backdrop-filter:blur(3px)}
+.admin-panel-card{position:relative;z-index:1;width:min(940px,100%);max-height:min(80vh,760px);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(255,255,255,.10);border-radius:24px 24px 18px 18px;background:linear-gradient(180deg,rgba(19,24,40,.985),rgba(11,16,27,.985));box-shadow:0 -18px 70px rgba(0,0,0,.42),0 18px 55px rgba(0,0,0,.24);backdrop-filter:blur(18px);animation:adminSheetIn .18s ease-out}
+@keyframes adminSheetIn{from{transform:translateY(22px);opacity:0}to{transform:translateY(0);opacity:1}}
+.admin-panel-handle{position:absolute;top:7px;left:50%;transform:translateX(-50%);width:56px;height:20px;border:0;background:transparent;padding:7px 0;cursor:pointer}.admin-panel-handle span{display:block;width:42px;height:4px;margin:0 auto;border-radius:999px;background:rgba(255,255,255,.24)}
+.admin-panel-close{position:absolute;top:12px;right:12px;width:36px;height:36px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.035);color:var(--ink-dim);font:22px/1 inherit;cursor:pointer;z-index:3}.admin-panel-close:hover{border-color:var(--moon);color:var(--ink)}
+.admin-panel-header{flex:0 0 auto;padding:24px 54px 14px 18px;border-bottom:1px solid rgba(255,255,255,.07);background:linear-gradient(180deg,rgba(124,92,255,.08),transparent)}.admin-panel-kicker{color:#a99aff;font:800 9px/1 "JetBrains Mono",monospace;letter-spacing:.14em;margin-bottom:6px}.admin-panel-header h2{margin:0;font-size:20px;line-height:1.2}.admin-panel-header p{margin:5px 0 0;color:var(--ink-dim);font-size:11.5px;line-height:1.5}
+.admin-panel-content{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px 16px calc(16px + env(safe-area-inset-bottom))}.admin-panel-content>.tab-panel{display:none}.admin-panel-content>.tab-panel.active{display:block}.admin-panel-content .toolbar{position:sticky;top:-14px;z-index:5;padding:10px 0;margin:0 0 10px;background:linear-gradient(180deg,rgba(11,16,27,.98),rgba(11,16,27,.94),transparent)}
+.admin-bottom-dock{position:fixed;left:50%;bottom:max(8px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:45;width:min(940px,calc(100vw - 18px));display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;padding:7px;border:1px solid rgba(255,255,255,.10);border-radius:20px;background:rgba(7,10,17,.86);box-shadow:0 14px 40px rgba(0,0,0,.38),inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter:blur(18px)}
+.admin-dock-btn{min-width:0;min-height:50px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;border-radius:14px;background:transparent;color:#8f9ab4;font-family:inherit;cursor:pointer;transition:background .16s,color .16s,transform .16s;-webkit-tap-highlight-color:transparent}.admin-dock-btn:hover{color:#e4e8f5;background:rgba(255,255,255,.045)}.admin-dock-btn.active{color:#fff;background:rgba(124,92,255,.18);box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}.admin-dock-btn:active{transform:scale(.97)}.admin-dock-icon{font-size:18px;line-height:1}.admin-dock-label{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.admin-dev-meta{display:grid;grid-template-columns:1fr 1fr;gap:8px}.admin-dev-meta>div{min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:11px;background:#0d1220}.admin-dev-meta span{display:block;color:var(--ink-dim);font-size:9.5px;margin-bottom:4px}.admin-dev-meta b{display:block;font:700 11px/1.3 "JetBrains Mono",monospace;color:var(--ink);word-break:break-all}.admin-dev-meta .viewport-chip{margin:0;width:fit-content;max-width:100%;padding:7px 9px;font-size:10px}
+body.admin-sheet-open{overflow:hidden}
+@media(max-width:620px){body{padding-bottom:88px}.admin-panel-sheet{padding:0 0 calc(72px + env(safe-area-inset-bottom))}.admin-panel-card{max-height:min(88dvh,760px);border-radius:22px 22px 0 0}.admin-panel-header{padding:24px 52px 13px 14px}.admin-panel-content{padding:12px 12px calc(14px + env(safe-area-inset-bottom))}.admin-bottom-dock{width:calc(100vw - 10px);bottom:5px;padding:5px;border-radius:18px}.admin-dock-btn{min-height:48px;border-radius:13px}.admin-dock-icon{font-size:17px}.admin-dock-label{font-size:9.5px}.admin-dev-meta{grid-template-columns:1fr}}
+@media(min-width:1280px){.admin-panel-card{max-height:78vh}}
+
 </style>
 </head>
 <body data-page="admin">
@@ -915,22 +934,11 @@ body[data-page="admin"]{
                 <h1 id="adminHeroTitle">🛠️ ศูนย์จัดการผู้เล่น</h1>
                 <div class="hero-meta" aria-label="ข้อมูลหน้าแอดมิน">
                     <div class="version-chip" id="runningVersionChip" title="Running version">กำลังโหลด...</div>
-                    <div class="viewport-chip" id="adminViewportChip" role="status" aria-live="polite" title="ขนาดพื้นที่หน้าเว็บที่กำลังใช้งาน (Viewport CSS pixels)">📐 กำลังวัด...</div>
-                    <button class="btn btn-ghost copy-command-btn" id="copyAdminCommandBtn" type="button" title="คัดลอกคำสั่งเต็มสำหรับนำไปใช้สั่งแก้ไฟล์">📋 คัดลอกคำสั่ง</button>
                 </div>
             </div>
             <p class="sub" id="pageSub">จัดการห้อง ผู้เล่น และเครื่องมือทดสอบจากที่เดียว — บัญชีจริงกับโหมดทดลองแยกกันชัดเจน</p>
         </div>
     </section>
-
-    <div class="tabs admin-tabs">
-        <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">📊 ภาพรวม</button>
-        <button class="tab-btn" data-tab="all" onclick="switchTab('all')">👥 บัญชีผู้เล่น</button>
-        <button class="tab-btn" data-tab="live" onclick="switchTab('live')">🟢 ออนไลน์</button>
-        <button class="tab-btn" data-tab="rooms" onclick="switchTab('rooms')">🏠 ห้อง</button>
-        <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')">⚙️ จัดการระบบ</button>
-        <button class="tab-btn" data-tab="diagnostics" onclick="switchTab('diagnostics')">🩺 ปัญหา / บั๊ก</button>
-    </div>
 
     <div class="tab-panel active" id="tab-overview">
         <div class="stat-grid">
@@ -942,19 +950,32 @@ body[data-page="admin"]{
             <div class="stat-box"><div class="num" id="sumRooms">-</div><div class="label">ห้องทั้งหมด</div></div>
             <div class="stat-box"><div class="num" id="sumTesters">-</div><div class="label">ห้องทดลอง</div></div>
         </div>
-        <div class="tool-card">
-            <h3 class="tool-title">🧭 ศูนย์ควบคุม</h3>
-            <p class="tool-desc">หน้านี้แยก <b>บัญชีจริง</b>, <b>session ทดลอง</b> และ <b>บอท</b> ออกจากกัน บัญชีจริงใช้ accountId เป็นตัวตนหลัก จึงเปลี่ยนชื่อได้แม้เจ้าของบัญชีออฟไลน์</p>
-            <div class="tool-actions">
-                <button class="btn" onclick="switchTab('all')">👥 เปิดบัญชีทั้งหมด</button>
-                <button class="btn btn-ghost" onclick="switchTab('rooms')">🏠 ดูห้องทั้งหมด</button>
-                <button class="btn btn-ghost" onclick="refreshDashboard()">🔄 รีเฟรชข้อมูล</button>
+        <section class="dashboard-focus" aria-label="คำแนะนำการใช้งาน">
+            <div class="dashboard-focus-icon" aria-hidden="true">🧭</div>
+            <div class="dashboard-focus-copy">
+                <strong>ศูนย์ปฏิบัติการ</strong>
+                <p>สถานะสำคัญจะแสดงอยู่หน้านี้ ส่วนการจัดการผู้เล่น ห้อง ระบบ และการตรวจปัญหาให้เปิดจากแถบเมนูด้านล่าง เพื่อให้หน้าหลักโล่งและอ่านง่าย</p>
             </div>
-        </div>
+        </section>
         <div id="overviewRecent"></div>
     </div>
 
-    <div class="tab-panel" id="tab-live">
+</div>
+
+<section class="admin-panel-sheet hidden" id="adminPanelSheet" aria-hidden="true">
+    <div class="admin-panel-backdrop" data-admin-sheet-close></div>
+    <div class="admin-panel-card" role="dialog" aria-modal="false" aria-labelledby="adminPanelTitle">
+        <button class="admin-panel-close" type="button" aria-label="ปิดหน้าต่างจัดการ" onclick="closeAdminPanel()">×</button>
+        <button class="admin-panel-handle" type="button" aria-label="ปิดหน้าต่างจัดการ" onclick="closeAdminPanel()"><span></span></button>
+        <header class="admin-panel-header">
+            <div>
+                <div class="admin-panel-kicker" id="adminPanelKicker">ADMIN PANEL</div>
+                <h2 id="adminPanelTitle">จัดการ</h2>
+                <p id="adminPanelSub">เลือกส่วนการจัดการจากแถบด้านล่าง</p>
+            </div>
+        </header>
+        <div class="admin-panel-content">
+    <div class="tab-panel" id="tab-live" data-admin-panel="live">
         <div class="toolbar">
             <button class="btn" id="refreshBtn" onclick="loadAccounts()">🔄 รีเฟรช</button>
             <span class="status" id="connStatus">กำลังเชื่อมต่อ...</span>
@@ -962,7 +983,7 @@ body[data-page="admin"]{
         <div id="content"></div>
     </div>
 
-    <div class="tab-panel" id="tab-all">
+    <div class="tab-panel" id="tab-all" data-admin-panel="all">
         <div class="directory-banner">👤 <b>ผู้เล่นทั้งหมด</b> แสดงบัญชีจริงที่บันทึกไว้ รวมผู้เล่นข้อมูลเก่าจากระบบเดิมด้วย · 🧪 ผู้ทดสอบและ 🤖 บอทจะไม่ถูกบันทึกเป็นบัญชีจริงและจะไม่โผล่ในรายการนี้</div>
         <div class="directory-head">
             <div class="directory-note" id="directoryCount">กำลังโหลด...</div>
@@ -975,12 +996,12 @@ body[data-page="admin"]{
         <div id="allPlayersContent"><div class="empty">กำลังโหลด...</div></div>
     </div>
 
-    <div class="tab-panel" id="tab-rooms">
+    <div class="tab-panel" id="tab-rooms" data-admin-panel="rooms">
         <div class="toolbar"><button class="btn" onclick="loadRooms()">🔄 รีเฟรช</button><span class="status" id="roomStatus">-</span></div>
         <div id="roomsContent"><div class="empty">กำลังโหลด...</div></div>
     </div>
 
-    <div class="tab-panel" id="tab-tools">
+    <div class="tab-panel" id="tab-tools" data-admin-panel="tools">
         <div class="tool-card">
             <h3 class="tool-title">🚦 เปิด / ปิดเซิร์ฟเวอร์ <span class="srv-pill" id="srvPill">กำลังเช็ค...</span></h3>
             <p class="tool-desc">
@@ -1051,6 +1072,18 @@ body[data-page="admin"]{
             <div class="tool-result" id="testerResult"></div>
         </div>
 
+        <div class="tool-card">
+            <h3 class="tool-title">🧰 ข้อมูลแอดมิน / นักพัฒนา</h3>
+            <p class="tool-desc">ข้อมูลสำหรับตรวจรุ่นหน้า Admin และเครื่องมือช่วยส่งคำสั่งแก้ไข ไม่จำเป็นต้องใช้ในการดูแลเกมประจำวัน</p>
+            <div class="admin-dev-meta">
+                <div><span>Admin release</span><b id="adminReleaseInline">กำลังโหลด...</b></div>
+                <div><span>Viewport</span><div class="viewport-chip" id="adminViewportChip" role="status" aria-live="polite" title="ขนาดพื้นที่หน้าเว็บที่กำลังใช้งาน">📐 กำลังวัด...</div></div>
+            </div>
+            <div class="tool-actions" style="margin-top:10px;">
+                <button class="btn btn-ghost copy-command-btn" id="copyAdminCommandBtn" type="button">📋 คัดลอกคำสั่งแก้ไฟล์</button>
+            </div>
+        </div>
+
         <div class="tool-card danger">
             <h3 class="tool-title">🧹 ล้างข้อมูลเกมทิ้งทั้งหมด</h3>
             <p class="tool-desc">
@@ -1065,7 +1098,7 @@ body[data-page="admin"]{
         </div>
     </div>
 
-    <div class="tab-panel" id="tab-diagnostics">
+    <div class="tab-panel" id="tab-diagnostics" data-admin-panel="diagnostics">
         <div class="tool-card">
             <div class="diag-toolbar">
                 <div>
@@ -1097,7 +1130,18 @@ body[data-page="admin"]{
         </div>
     </div>
 
-</div>
+        </div>
+    </div>
+</section>
+
+<nav class="admin-bottom-dock" id="adminBottomDock" aria-label="เมนูศูนย์จัดการ">
+    <button type="button" class="admin-dock-btn active" data-admin-nav="overview" aria-label="ภาพรวม" aria-current="page"><span class="admin-dock-icon">📊</span><span class="admin-dock-label">ภาพรวม</span></button>
+    <button type="button" class="admin-dock-btn" data-admin-nav="all" aria-label="ผู้เล่น"><span class="admin-dock-icon">👥</span><span class="admin-dock-label">ผู้เล่น</span></button>
+    <button type="button" class="admin-dock-btn" data-admin-nav="live" aria-label="ออนไลน์"><span class="admin-dock-icon">🟢</span><span class="admin-dock-label">ออนไลน์</span></button>
+    <button type="button" class="admin-dock-btn" data-admin-nav="rooms" aria-label="ห้อง"><span class="admin-dock-icon">🏠</span><span class="admin-dock-label">ห้อง</span></button>
+    <button type="button" class="admin-dock-btn" data-admin-nav="tools" aria-label="ระบบ"><span class="admin-dock-icon">⚙️</span><span class="admin-dock-label">ระบบ</span></button>
+    <button type="button" class="admin-dock-btn" data-admin-nav="diagnostics" aria-label="ปัญหา"><span class="admin-dock-icon">🩺</span><span class="admin-dock-label">ปัญหา</span></button>
+</nav>
 
 <div class="overlay hidden" id="actionOverlay">
     <button class="overlay-close-float" type="button" aria-label="ปิด" onclick="closeActionModal()">×</button>
@@ -1332,6 +1376,8 @@ function updateRunningVersion(version, source = "api") {
     const value = String(version ?? "").trim() || "unknown";
     if (!runningVersionChip) return;
     runningVersionChip.textContent = value;
+    const inlineRelease = document.getElementById("adminReleaseInline");
+    if (inlineRelease) inlineRelease.textContent = value;
     runningVersionChip.classList.remove("pending", "error");
     runningVersionChip.title = source === "socket" ? "Running version (socket sync)" : "Running version (Elastic Beanstalk)";
     if (!value || value === "unknown") runningVersionChip.classList.add("error");
@@ -2657,7 +2703,85 @@ async function clearDiagnostics(){
     } catch (_) { wwAlert('ล้างบันทึกไม่สำเร็จ'); }
 }
 
-function switchTab(tab){currentTab=tab;updateQuickDock();document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));['overview','live','all','rooms','tools','diagnostics'].forEach(t=>document.getElementById('tab-'+t)?.classList.toggle('active',tab===t));stopPolling();stopDiagnosticsPolling();if(tab==='tools'){document.getElementById('pageSub').textContent='เครื่องมือจัดการระบบ — ใช้อย่างระมัดระวัง การกระทำบางอย่างย้อนกลับไม่ได้';refreshServerStatus();prefetchTesterPass();return}if(tab==='diagnostics'){document.getElementById('pageSub').textContent='ศูนย์ตรวจ Error ของ index / host / player / server และรายการ IAM ที่ถูกปฏิเสธ';loadDiagnostics();startDiagnosticsPolling();return}document.getElementById('pageSub').textContent=tab==='overview'?'ภาพรวมบัญชีจริง ห้อง และสถานะระบบ':tab==='all'?'บัญชีจริงทั้งหมด — คลิกการ์ดเพื่อดูข้อมูล เปลี่ยนชื่อ พัก ลบ เตะ และประวัติ':tab==='live'?'session ที่เชื่อมต่ออยู่ตอนนี้ — ไม่รวม Tester และบอท':'ห้องทั้งหมด — แยกห้องปกติและห้องทดลอง';if(tab==='overview'){refreshDashboard();loadAccounts()}if(tab==='all'){loadAllPlayers()}if(tab==='live'){loadAccounts();startPolling()}if(tab==='rooms'){loadRooms();startPolling()}}
+const ADMIN_PANEL_META = {
+    all: { title:"บัญชีผู้เล่น", sub:"ค้นหาและจัดการบัญชีจริง แยก Google / ชั่วคราว / ข้อมูลเก่า พร้อมดูรายละเอียดและประวัติ", kicker:"PLAYER ACCOUNTS" },
+    live: { title:"ผู้เล่นออนไลน์", sub:"ดู session ที่เชื่อมต่ออยู่ตอนนี้ แยกตามห้องและหน้าเว็บ", kicker:"LIVE SESSIONS" },
+    rooms: { title:"ห้องเกม", sub:"ดูห้องทั้งหมด แยกห้องปกติและห้องผู้ทดสอบ พร้อมสั่งปิดห้อง", kicker:"GAME ROOMS" },
+    tools: { title:"จัดการระบบ", sub:"คำสั่งระดับระบบและเครื่องมือ Tester — ใช้อย่างระมัดระวัง", kicker:"SYSTEM CONTROL" },
+    diagnostics: { title:"ศูนย์ตรวจปัญหา", sub:"ดู Error ล่าสุด สิทธิ์ IAM และข้อมูลวิเคราะห์ปัญหาของเกม", kicker:"DIAGNOSTICS" }
+};
+const adminPanelSheet = document.getElementById("adminPanelSheet");
+const adminPanelTitle = document.getElementById("adminPanelTitle");
+const adminPanelSub = document.getElementById("adminPanelSub");
+const adminPanelKicker = document.getElementById("adminPanelKicker");
+const adminDockButtons = Array.from(document.querySelectorAll("[data-admin-nav]"));
+
+function setAdminDockActive(tab) {
+    adminDockButtons.forEach((btn) => {
+        const active = btn.dataset.adminNav === tab;
+        btn.classList.toggle("active", active);
+        if (active) btn.setAttribute("aria-current", tab === "overview" ? "page" : "true");
+        else btn.removeAttribute("aria-current");
+    });
+}
+function closeAdminPanel() {
+    stopPolling();
+    stopDiagnosticsPolling();
+    currentTab = "overview";
+    if (adminPanelSheet) {
+        adminPanelSheet.classList.add("hidden");
+        adminPanelSheet.setAttribute("aria-hidden", "true");
+    }
+    document.body.classList.remove("admin-sheet-open");
+    document.querySelectorAll(".admin-panel-content .tab-panel").forEach((panel) => panel.classList.remove("active"));
+    setAdminDockActive("overview");
+    document.getElementById("pageSub").textContent = "ดูสถานะบัญชี ห้อง และระบบจากหน้าเดียว — เครื่องมือจัดการจะเปิดเป็นพาแนลลอยจากแถบด้านล่าง";
+    refreshDashboard();
+    loadAccounts();
+}
+function switchTab(tab) {
+    const next = String(tab || "").trim();
+    if (next === "overview") {
+        closeAdminPanel();
+        return;
+    }
+    const meta = ADMIN_PANEL_META[next];
+    const panel = document.getElementById("tab-" + next);
+    if (!meta || !panel) return;
+    stopPolling();
+    stopDiagnosticsPolling();
+    currentTab = next;
+    document.querySelectorAll(".admin-panel-content .tab-panel").forEach((item) => {
+        item.classList.toggle("active", item === panel);
+    });
+    if (adminPanelKicker) adminPanelKicker.textContent = meta.kicker;
+    if (adminPanelTitle) adminPanelTitle.textContent = meta.title;
+    if (adminPanelSub) adminPanelSub.textContent = meta.sub;
+    document.getElementById("pageSub").textContent = meta.sub;
+    if (adminPanelSheet) {
+        adminPanelSheet.classList.remove("hidden");
+        adminPanelSheet.setAttribute("aria-hidden", "false");
+    }
+    document.body.classList.add("admin-sheet-open");
+    setAdminDockActive(next);
+    if (next === "tools") { refreshServerStatus(); prefetchTesterPass(); return; }
+    if (next === "diagnostics") { loadDiagnostics(); startDiagnosticsPolling(); return; }
+    if (next === "all") { loadAllPlayers(); return; }
+    if (next === "live") { loadAccounts(); startPolling(); return; }
+    if (next === "rooms") { loadRooms(); startPolling(); }
+}
+document.querySelectorAll("[data-admin-nav]").forEach((btn) => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.adminNav));
+});
+document.querySelector("[data-admin-sheet-close]")?.addEventListener("click", closeAdminPanel);
+document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !adminPanelSheet || adminPanelSheet.classList.contains("hidden")) return;
+    const overlays = ["actionOverlay","accountOverlay","resetOverlay","renameOverlay","historyOverlay","adminLoginOverlay"]
+        .map((id) => document.getElementById(id))
+        .filter((el) => el && !el.classList.contains("hidden"));
+    if (!overlays.length) closeAdminPanel();
+});
+
 
 // ============================================================
 // เข้าโหมดผู้ทดสอบ (ย้ายมาจากปุ่มในหน้าแรก index.html)
