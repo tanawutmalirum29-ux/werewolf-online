@@ -22,6 +22,7 @@ const socket = io({ auth: playerSocketAuth });
 
 socket.on("serverInfo", function (info) {
     if (window.wwSetServerVersion) window.wwSetServerVersion(info && info.version);
+    if (window.wwCheckClientVersion) window.wwCheckClientVersion(info && info.clientHash);
 });
 // แอดมินกดล้างข้อมูลเกมทั้งหมด (ดู shared.reset-guard.js) — ล้างตัวตนในเครื่องนี้แล้วกลับหน้าแรกทันที
 socket.on("force_reset", function (d) {
@@ -162,6 +163,39 @@ const TESTER_MODE = urlParams.get("tester") === "1";
 const BOT_CONTROLLED_TAB = TESTER_MODE && !!urlParams.get("jr") && !!urlParams.get("t");
 const TESTER_RETURN_URL = "admin.html";
 const ww_store = TESTER_MODE ? sessionStorage : localStorage;
+
+// ===== จำเฟสธีมห้องล่าสุดข้ามการรีโหลด =====
+// หน้า player ใช้ชายหาดตอนเช้าเป็นค่าเริ่มต้น แต่ถ้าห้องเดิมกำลังอยู่กลางคืนและ browser
+// โหลด JS ใหม่ทั้งชุด ให้คืนธีมล่าสุดทันที ก่อน room_update รอบใหม่จะมาถึง
+const PLAYER_ROOM_THEME_KEY_PREFIX = "ww_player_room_theme_";
+function playerRoomThemeKey(id) {
+    return PLAYER_ROOM_THEME_KEY_PREFIX + String(id || "").trim().toUpperCase();
+}
+function readSavedPlayerRoomTheme(id) {
+    if (!id) return "";
+    try {
+        const value = ww_store.getItem(playerRoomThemeKey(id));
+        return value === "night" || value === "day" ? value : "";
+    } catch (_) {
+        return "";
+    }
+}
+function writeSavedPlayerRoomTheme(id, theme) {
+    if (!id) return;
+    try {
+        if (theme === "night" || theme === "day") ww_store.setItem(playerRoomThemeKey(id), theme);
+        else ww_store.removeItem(playerRoomThemeKey(id));
+    } catch (_) {}
+}
+function applySavedPlayerRoomTheme(id) {
+    const theme = readSavedPlayerRoomTheme(id);
+    const night = theme === "night";
+    // lobby-beach ต้องเป็นชายหาดกลางวันเสมอ; ห้องที่จำว่าอยู่กลางคืนจริงค่อยคืนกลางคืน
+    document.body.classList.toggle("is-night", night);
+    document.body.classList.toggle("is-day", !night);
+}
+const initialPlayerRoomId = ww_store.getItem("ww_joinedRoom") || "";
+applySavedPlayerRoomTheme(initialPlayerRoomId);
 
 // ===== PREVIOUS ROOM DECISION =====
 // เมื่อเปิดหน้าใหม่หลังเคยเข้าห้อง ห้าม auto-rejoin ห้องเดิมทันที
@@ -794,6 +828,49 @@ function watchdogJoin(roomCode, attempt, code) {
     }, attempt * 5000);
 }
 
+// ธีมเวลาในห้อง: ห้องที่ยังไม่เริ่มเกมและวันแรกก่อนเข้าคืนต้องเป็นกลางวันเสมอ
+// ใช้ source of truth จาก room_update; ไม่แตะลำดับเกม/สกิล/กติกาใด ๆ
+function syncPlayerTimeTheme(roomData) {
+    const body = document.body;
+    const room = roomData || lastRoomData || null;
+
+    if (!joined || !room) {
+        // ล็อบบี้/ช่วงที่กำลังรอ state จาก server ต้องเป็นชายหาดกลางวันเสมอ
+        // ห้ามถอดทั้งสองคลาส เพราะ CSS ค่าเริ่มต้นเป็นธีมกลางคืนและจะทำให้หน้าจอมืดทันที
+        // ระหว่างรีโหลดหรือก่อน room_update รอบแรกมาถึง.
+        body.classList.remove("is-night");
+        body.classList.add("is-day");
+        return;
+    }
+
+    // ธีมกลางคืนต้องได้รับการยืนยันจาก server เท่านั้น (started + !gameOver + isNight=true)
+    // ทุกสถานะอื่น—including รอเริ่ม/วัน/เกมจบ—เป็นกลางวัน เพื่อให้สถานะไม่ตกไปใช้ dark default.
+    const activeNight = !!room.started && !room.gameOver && !!room.isNight;
+    body.classList.toggle("is-night", activeNight);
+    body.classList.toggle("is-day", !activeNight);
+
+    const id = String(room.roomId || currentRoomId || "").trim().toUpperCase();
+    if (id) {
+        if (room.gameOver) writeSavedPlayerRoomTheme(id, "");
+        else writeSavedPlayerRoomTheme(id, activeNight ? "night" : "day");
+    }
+}
+
+// ตอน join สำเร็จแต่ room_update ยังไม่ถึง: ใช้เฟสล่าสุดของห้องนี้เป็น hint ชั่วคราว
+// เพื่อไม่ให้การกด "กลับเข้าห้องเดิม" ตอนกลางคืนเด้งกลับเป็นกลางวัน 1 จังหวะ
+function applySavedPlayerRoomThemeAfterJoin(roomId) {
+    const id = String(roomId || "").trim().toUpperCase();
+    if (!id) return;
+    const theme = readSavedPlayerRoomTheme(id);
+    if (theme === "night") {
+        document.body.classList.remove("is-day");
+        document.body.classList.add("is-night");
+    } else {
+        document.body.classList.remove("is-night");
+        document.body.classList.add("is-day");
+    }
+}
+
 // ทำให้ UI เข้าสู่สถานะ "เข้าห้องสำเร็จแล้ว" จริง ๆ — แยกออกมาจาก ack callback ของ doJoin
 // เพราะต้องเรียกได้จากอีกทาง (room_update fallback ด้านล่าง) ในกรณีที่ ack หายไประหว่างทาง
 // แต่ server รับเข้าห้องไปแล้วจริง ป้องกันบั๊ก UI ค้างที่หน้ากรอกห้องทั้งที่เข้าห้องสำเร็จแล้ว
@@ -832,6 +909,8 @@ function finalizeJoin(roomCode) {
     document.getElementById("joinCard").classList.add("hidden");
     document.body.classList.remove("lobby-beach");
     document.body.classList.remove("room-picker-open");
+    if (lastRoomData) syncPlayerTimeTheme(lastRoomData);
+    else applySavedPlayerRoomThemeAfterJoin(roomCode);
     document.getElementById("playersCard").classList.remove("hidden");
     document.getElementById("chatCard").classList.remove("hidden");
     document.getElementById("rolesPanelCard").classList.remove("hidden");
@@ -1303,6 +1382,11 @@ function getRoleIcon(role) {
 let allRolesData = {};   // จาก roles_data event
 let openRoleDescKeys = new Set(); // เก็บว่าใบไหนกำลังเปิดคำอธิบายอยู่ (คงสถานะไว้ตอน re-render)
 let lastRoomData = null; // เก็บ roomData ล่าสุดเพื่อ re-render กริดหลังรับบท
+
+// เฟส 1 Runtime Audit: ให้ตัวตรวจกลางอ่าน state จริงของหน้า Player โดยไม่เปิดข้อมูลลับเพิ่มเอง
+if (window.WWRuntimeAudit?.setStateProvider) {
+    window.WWRuntimeAudit.setStateProvider(() => lastRoomData || null);
+}
 
 // พรีโหลดรูปไอคอนอาชีพทั้งหมดล่วงหน้า (โหลดแอบไว้ใน cache ของเบราว์เซอร์)
 // เพื่อกันรูปกระตุก/เด้งช้าเวลาที่ต้องโผล่ขึ้นมาจริงๆ (เปิดดูบท, เปิดคำอธิบายอาชีพ ฯลฯ)
@@ -2428,27 +2512,17 @@ function filterPlayerList() {
 
 // ===== responsive player grid: JS คำนวณ "คอลัมน์จริง + ขนาดการ์ดจริง" เป็นชุดเดียวกัน =====
 /*
-   จุดสำคัญของระบบนี้คือจำนวนคอลัมน์ต้องเป็นค่าที่ JS กับ CSS ใช้ตรงกันจริง ๆ
-
-   บั๊กในรุ่นก่อนเกิดจากการคำนวณขนาดการ์ดโดยลองหลายจำนวนคอลัมน์ แล้วเลือก "ขนาดที่ใหญ่ที่สุด"
-   แต่หลังจากนั้น CSS กลับใช้ auto-fit เพื่อเลือกจำนวนคอลัมน์ใหม่จากขนาดการ์ดอีกที เช่น JS คำนวณ
-   จาก 6 คอลัมน์ได้ 112.25px แต่ auto-fit อาจตีความว่า 112.25px ใส่ได้เพียง 5 คอลัมน์
-   → จากที่ตั้งใจ 6 × 5 แถว กลายเป็น 5 × 6 แถว → ความสูงที่ต้องใช้มากขึ้น → แถวล่างล้น #players
-   และ overflow:hidden ทำให้เห็นเป็น "การ์ดหาย/โดนตัด" ที่ขอบล่าง
-
-   รุ่นนี้จึงเปลี่ยนหลักเป็น:
-   1) วัดพื้นที่จริงของ #players
-   2) ลองจำนวนคอลัมน์ที่เป็นไปได้
-   3) หา layout ที่ใส่ผู้เล่นทั้งหมดได้จริงโดยไม่ล้นทั้งแนวตั้งและแนวนอน
-   4) เลือกขนาดการ์ดที่ใหญ่ที่สุด โดยใช้ "อย่างน้อยประมาณ 5 คอลัมน์" เป็นเพียงความชอบเมื่อขนาด
-      ใกล้เคียงกัน ไม่ใช่ข้อบังคับตายตัว
-   5) ส่งทั้ง columns และ size เข้า CSS โดยตรง จึงไม่มี auto-fit มาตัดสินใหม่อีกรอบ
+   กติกากริดรอบนี้ใช้พื้นที่จริงทั้งแนวกว้างและแนวสูงร่วมกัน:
+   - ลองจำนวนคอลัมน์ที่เป็นไปได้ แล้วเลือก layout ที่ทำให้การ์ดใหญ่ที่สุดโดยต้องพอดีทั้งสองแกน
+   - ไม่มี breakpoint 2/5/8 และไม่มีการรอจำนวนผู้เล่น 30/40 คน
+   - แถวสุดท้ายเริ่มที่คอลัมน์แรกเสมอ ไม่มีการ offset ด้วย grid-column/transform
+   - JS กับ CSS ใช้ template เดียวกันหลังคำนวณ จึงไม่เกิด auto-fit คำนวณสวนทางกับ JS
 
    ผลที่ต้องได้:
-   - จำนวนผู้เล่นน้อย: การ์ดโตได้ถึงเพดานมาตรฐาน แต่ไม่ทำให้กริดสูงจนเกินเหตุ
-   - จำนวนผู้เล่นมาก: การ์ดค่อย ๆ เล็กลงและจำนวนคอลัมน์เพิ่มตามพื้นที่จริง
-   - iPad / Split View / หมุนจอ / resize: คำนวณใหม่ต่อเนื่อง โดยไม่มี breakpoint ของจำนวนคอลัมน์
-   - ทุกการ์ดอยู่ภายในกรอบ #players จริง ไม่มีแถวล่างถูกตัดเพราะ JS กับ CSS เห็นจำนวนคอลัมน์ไม่ตรงกัน
+   - เพิ่ม/ลดผู้เล่น: กริดคำนวณใหม่ทันทีตามพื้นที่จริงและจำนวนคน
+   - ผู้เล่นน้อยบนจอกว้าง: การ์ดต้องโตขึ้น ไม่ใช่แตกเป็นคอลัมน์จำนวนมากจนเหลือจุดเล็ก
+   - iPhone/iPad/Split View/หมุนจอ: ไม่มี threshold จากขนาด viewport ที่ไปล็อกจำนวนคอลัมน์
+   - ผู้เล่นทุกใบอยู่ในกรอบจริง; ถ้าพื้นที่สูงน้อยจริงจึงค่อยลดขนาดการ์ด
 */
 
 // ===== ความหนาแน่นของการ์ดตามจำนวนคน — ใช้เป็น "เพดานจริง" ของขนาดการ์ดแล้ว =====
@@ -2463,73 +2537,81 @@ function applyPlayerGridDensity(count) {
 
 // ===== คำนวณ layout ผู้เล่นจากพื้นที่จริง =====
 // pure function: ไม่แตะ DOM เพื่อให้อ่าน/ตรวจ logic ได้ง่าย
-function computePlayerGridLayout(W, H, count, gap, minPx, maxPx, preferredCols = 5, rowGap = gap) {
+function computePlayerGridLayout(W, H, count, gap, minPx, maxPx, rowGap = gap) {
     if (!(W > 0) || !(H > 0) || !(count > 0)) return null;
 
     gap = Number.isFinite(gap) && gap >= 0 ? gap : 6;
     rowGap = Number.isFinite(rowGap) && rowGap >= 0 ? rowGap : gap;
-    minPx = Number.isFinite(minPx) && minPx > 0 ? minPx : 6;
+    minPx = Number.isFinite(minPx) && minPx > 0 ? minPx : 50;
     maxPx = Number.isFinite(maxPx) && maxPx >= minPx ? maxPx : 160;
 
-    // จำนวนคอลัมน์สูงสุดที่ยังวางการ์ดขั้นต่ำตามแนวนอนได้จริง
-    const colsAtMin = Math.max(1, Math.floor((W + gap) / (minPx + gap)));
-    const maxCols = Math.min(count, colsAtMin);
-    const preferred = Math.max(1, Math.min(count, Number(preferredCols) || 5));
+    /*
+       เลือก "จำนวนคอลัมน์ที่เหมาะที่สุด" โดยลองทุกจำนวนคอลัมน์ที่เป็นไปได้
+       แล้วเอา layout ที่ทำให้การ์ดมีขนาดใหญ่ที่สุดและยังพอดีทั้งกว้าง+สูง
+       แทนสูตรเดิมที่เติมคอลัมน์จนถึงขีดขั้นต่ำ 50px ก่อนเสมอ.
 
-    let candidates = [];
-    for (let columns = 1; columns <= maxCols; columns++) {
+       ผลสำคัญ:
+       - ผู้เล่นน้อยบนพื้นที่กว้างจะได้การ์ดใหญ่และอ่านง่าย แทนที่จะกลายเป็นจุดเล็กๆ
+       - ผู้เล่นมากจะค่อยๆ เพิ่มคอลัมน์เมื่อมันทำให้การ์ดใหญ่ขึ้นจริง
+       - ความสูงยังมีส่วนตัดสิน ทำให้กริดสมดุลกับพื้นที่จริง ไม่ยึดแต่ viewport width
+       - ถ้าพื้นที่แคบ/เตี้ยจนไม่มี layout ใดถึง minPx จะเลือกตัวที่ใหญ่ที่สุดเท่าที่พอได้
+         ไม่หายไปและไม่สร้างขนาดติดลบ/ศูนย์
+    */
+    let best = null;
+    const idealColumns = Math.sqrt((count * Math.max(W, 1)) / Math.max(H, 1));
+
+    for (let columns = 1; columns <= count; columns += 1) {
         const rows = Math.ceil(count / columns);
-        const byWidth = (W - (columns - 1) * gap) / columns;
-        const byHeight = (H - (rows - 1) * rowGap) / rows;
+        const widthAvailable = W - (columns - 1) * gap;
+        const heightAvailable = H - (rows - 1) * rowGap;
+        const byWidth = widthAvailable / columns;
+        const byHeight = heightAvailable / rows;
+        if (!(byWidth > 0) || !(byHeight > 0)) continue;
+
         const size = Math.min(byWidth, byHeight, maxPx);
+        if (!(size > 0)) continue;
 
-        if (!(size >= minPx)) continue;
-        candidates.push({ columns, rows, size });
-    }
+        const rounded = Math.floor(size * 4) / 4;
+        const fits = size >= minPx;
+        const distanceFromIdeal = Math.abs(columns - idealColumns);
 
-    let fits = true;
-    if (!candidates.length) {
-        // พื้นที่เล็กผิดปกติจนการ์ดขั้นต่ำ 6px ยังเล็กเกินไปที่จะใส่ครบ:
-        // อย่ากลับไปคืน minPx แบบรุ่นเก่า เพราะนั่นอาจทำให้แถวล่างล้นอีก ให้คำนวณด้วยขนาดจริง
-        // ที่เล็กกว่า minPx แทน เพื่อรับประกันว่า layout ยัง "fit" ทางคณิตศาสตร์ได้
-        fits = false;
-        for (let columns = 1; columns <= count; columns++) {
-            const rows = Math.ceil(count / columns);
-            const byWidth = (W - (columns - 1) * gap) / columns;
-            const byHeight = (H - (rows - 1) * rowGap) / rows;
-            const size = Math.min(byWidth, byHeight, maxPx);
-            if (!(size > 0)) continue;
-            candidates.push({ columns, rows, size });
+        const candidate = {
+            columns,
+            rows,
+            size: rounded,
+            fits,
+            distanceFromIdeal,
+        };
+
+        if (!best
+            || candidate.size > best.size + 0.01
+            || (Math.abs(candidate.size - best.size) <= 0.01 && candidate.fits && !best.fits)
+            || (Math.abs(candidate.size - best.size) <= 0.01
+                && candidate.fits === best.fits
+                && candidate.distanceFromIdeal < best.distanceFromIdeal)) {
+            best = candidate;
         }
     }
 
-    if (!candidates.length) {
-        // แม้แต่ช่องว่างระหว่างการ์ดก็ใหญ่กว่าพื้นที่ทั้งหมด: ลดจำนวนคอลัมน์เหลือ 1
-        // และใช้ขนาดที่พอดีกับแนวนอน/แนวตั้งเท่าที่ทำได้ — เกิดได้เฉพาะ viewport ที่เล็กผิดปกติมาก
-        const size = Math.max(0.01, Math.min(W, H / count, maxPx));
-        return { columns: 1, rows: count, size, fits: false };
+    if (!best) {
+        // พื้นที่ฉุกเฉินที่เล็กกว่าระยะ gap เสียอีก (เช่น split view ที่ถูกบีบสุดขีด):
+        // อย่าคืน null เพราะ caller จะเก็บ inline layout เก่าไว้ ซึ่งเป็นหนึ่งในทางที่ทำให้
+        // การ์ดค้างเป็นจุดจิ๋วหลัง viewport เปลี่ยน. คืน layout บวกเสมอ แล้ว verification
+        // ด้านนอกจะติดสถานะ guarded/emergency ตามจริง.
+        const emergencySize = Math.max(0.25, Math.min(W, H, maxPx));
+        return {
+            columns: 1,
+            rows: count,
+            size: emergencySize,
+            fits: false,
+        };
     }
 
-    const maxSize = Math.max(...candidates.map((c) => c.size));
-    // ถ้าขนาดต่างกันน้อยกว่า 2.5% ให้เลือกจำนวนคอลัมน์ที่ใกล้ preferred (5 โดยปกติ)
-    // เพื่อให้กริดคงรูปร่างอ่านง่ายและไม่กระโดดจาก 5 → 4 ทั้งที่ขนาดการ์ดต่างกันแทบไม่เห็น
-    const nearBest = candidates.filter((c) => c.size >= maxSize * 0.975 - 0.001);
-    nearBest.sort((a, b) => {
-        const da = Math.abs(a.columns - preferred);
-        const db = Math.abs(b.columns - preferred);
-        if (da !== db) return da - db;
-        if (b.size !== a.size) return b.size - a.size;
-        return a.columns - b.columns;
-    });
-
-    const best = nearBest[0];
     return {
         columns: best.columns,
         rows: best.rows,
-        // ในโหมดปกติปัดลงทีละ 0.25px กันเศษจุดลอยตัว แต่ emergency layout ต้องรักษาขนาดจริงไว้มากที่สุด
-        // เพื่อไม่ให้การปัดลงจากค่าที่เล็กกว่า 6px ทำให้เกิด overflow ที่ viewport เล็กมาก
-        size: fits ? Math.floor(best.size * 4) / 4 : best.size,
-        fits,
+        size: Math.max(0.25, best.size),
+        fits: best.fits,
     };
 }
 
@@ -2599,15 +2681,29 @@ function applyPlayerGridLayout(el, layout) {
 }
 
 function fitPlayerGrid() {
-    const MIN_PX = 6;
+    const MIN_PX = 50;
     const MAX_PX = 160;
-    const PREFERRED_COLS = 5;
     const el = document.getElementById("players");
     if (!el) return;
     const count = el.querySelectorAll(".player[data-pid]:not(.search-hidden)").length;
-    if (count === 0) return;
+    if (count === 0) {
+        el.style.removeProperty("--player-card-size");
+        el.style.removeProperty("--player-grid-template");
+        delete el.dataset.gridColumns;
+        delete el.dataset.gridRows;
+        delete el.dataset.gridCardSize;
+        el.dataset.gridFitStatus = "empty";
+        el.dataset.gridOverflowPx = "0";
+        return;
+    }
     const metrics = getPlayerGridMetrics(el);
     if (!metrics || !(metrics.width > 0) || !(metrics.height > 0)) return;
+
+    const measurementKey = [
+        Math.round(metrics.width * 2) / 2,
+        Math.round(metrics.height * 2) / 2,
+        count,
+    ].join("|");
 
     let layout = computePlayerGridLayout(
         metrics.width,
@@ -2616,13 +2712,41 @@ function fitPlayerGrid() {
         metrics.columnGap,
         MIN_PX,
         MAX_PX,
-        PREFERRED_COLS,
         metrics.rowGap,
     );
     if (!layout) return;
 
+    // ถ้า browser กำลังอยู่ในเฟรมที่ #players สูงผิดปกติจนบังคับ card ต่ำกว่า minPx
+    // อย่าเพิ่งฝังค่านั้นลง inline style ทันที. ยืนยัน measurement เดิมติดต่อกัน 3 รอบก่อน
+    // จึงยอมให้การ์ดเล็กกว่า minPx ได้. ระหว่างรอปล่อย fallback CSS กลับมาก่อน เพื่อไม่ให้
+    // ผู้เล่นกลายเป็นวงกลมจิ๋ว/ชื่อหายจากการวัด transient frame.
+    if (layout.size < MIN_PX) {
+        if (playerGridMeasurementKey === measurementKey) {
+            playerGridSmallFitStreak += 1;
+        } else {
+            playerGridMeasurementKey = measurementKey;
+            playerGridSmallFitStreak = 1;
+        }
+
+        // ถ้า viewport/page ยังใหญ่แต่ #players ถูกวัดเตี้ยผิดปกติมาก (transient flex/VisualViewport frame)
+        // ห้าม commit ขนาดจิ๋ว เพราะจะทำให้การ์ดเหลือเพียงวงกลมและชื่อหาย โดยเฉพาะ iPad/Safari.
+        const viewportHeight = Number(window.visualViewport?.height || window.innerHeight || 0);
+        const suspiciousCollapsedHeight = metrics.height < 120
+            && viewportHeight >= Math.max(240, metrics.height * 2.5)
+            && document.body.classList.contains("game-visible");
+        if (suspiciousCollapsedHeight || playerGridSmallFitStreak < 3) {
+            el.style.removeProperty("--player-card-size");
+            el.style.removeProperty("--player-grid-template");
+            el.dataset.gridFitStatus = suspiciousCollapsedHeight ? "settling-collapsed" : "settling";
+            el.dataset.gridOverflowPx = "0";
+            return;
+        }
+    } else {
+        playerGridMeasurementKey = measurementKey;
+        playerGridSmallFitStreak = 0;
+    }
+
     applyPlayerGridLayout(el, layout);
-    centerLastRow(el, layout.columns);
 
     let verification = verifyPlayerGridFit(el);
     let attempts = 0;
@@ -2633,27 +2757,11 @@ function fitPlayerGrid() {
         const safeSize = Math.max(0.5, currentSize * factor);
         layout = { ...layout, size: safeSize };
         applyPlayerGridLayout(el, layout);
-        centerLastRow(el, layout.columns);
         verification = verifyPlayerGridFit(el);
     }
 
     el.dataset.gridFitStatus = verification.ok ? "fit" : "guarded";
     el.dataset.gridOverflowPx = String(Number.isFinite(verification.overflow) ? verification.overflow.toFixed(2) : "9999");
-}
-
-// จัดแถวสุดท้ายด้วย grid track จริง ไม่ใช้ relative-left/transform เพื่อไม่ให้ visual box หลุดกรอบ #players
-function centerLastRow(el, columns) {
-    const cards = Array.from(el.querySelectorAll(".player[data-pid]:not(.search-hidden)"));
-    cards.forEach((c) => {
-        c.style.gridColumnStart = "";
-        c.style.left = "";
-    });
-    if (cards.length === 0 || !(columns > 1) || cards.length <= columns) return;
-    const remainder = cards.length % columns;
-    if (remainder === 0) return;
-    const missing = columns - remainder;
-    const startColumn = Math.max(1, Math.min(columns - remainder + 1, 1 + Math.floor(missing / 2)));
-    cards[cards.length - remainder].style.gridColumnStart = String(startColumn);
 }
 
 // จัดใหม่ทุกครั้งที่ "พื้นที่กริด" เปลี่ยน: ลากขอบหน้าต่าง/Split View/หมุนจอ, แชท/แผงบทกว้างขึ้น-แคบลง
@@ -2665,9 +2773,14 @@ function centerLastRow(el, columns) {
 // (พอเพิ่มบอทจะมี render/resize รอบใหม่ จึงดูเหมือนหายเอง)
 let playerGridFitRaf = 0;
 let playerGridSettleRafs = 0;
+let playerGridMeasurementKey = "";
+let playerGridSmallFitStreak = 0;
 
 function scheduleFitPlayerGrid(settle = false) {
-    if (settle) playerGridSettleRafs = Math.max(playerGridSettleRafs, 2);
+    // เปิดกริด/กลับจาก background/เปลี่ยน orientation ต้องให้ flex + viewport settle หลายเฟรม
+    // เพราะ Safari/iPad บางจังหวะจะเปลี่ยนขนาด parent หลัง RAF แรกไปแล้ว. หกเฟรม (~100ms)
+    // ยังสั้นพอไม่ให้ผู้ใช้รู้สึกว่าหน่วง แต่กันการบันทึกขนาดชั่วคราวที่เล็กผิดปกติไว้ถาวร.
+    if (settle) playerGridSettleRafs = Math.max(playerGridSettleRafs, 6);
     if (playerGridFitRaf) return;
     playerGridFitRaf = requestAnimationFrame(() => {
         playerGridFitRaf = 0;
@@ -2713,6 +2826,26 @@ function scheduleFitPlayerGrid(settle = false) {
     scheduleFitPlayerGrid(true);
 })();
 
+// ===== PLAYER GRID LIFECYCLE RECOVERY =====
+// กริดของฝั่ง Player ต้องจัดใหม่เมื่อหน้าเว็บกลับมาจาก background/BFCache,
+// ตอนหมุนจอ และเมื่อ Visual Viewport เปลี่ยนขนาดจริง (เช่น iPad split view/คีย์บอร์ด)
+// เพราะบาง WebKit ไม่ยิง resize ของ layout viewport ในทุกกรณี และบางครั้ง layout ของ
+// parent จะ settle หลัง pageshow/visibilitychange ไปแล้วหนึ่งหรือสองเฟรม
+(function watchPlayerGridLifecycle() {
+    const refit = () => scheduleFitPlayerGrid(true);
+
+    window.addEventListener("pageshow", refit, { passive: true });
+    window.addEventListener("orientationchange", refit, { passive: true });
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") refit();
+    }, { passive: true });
+
+    if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
+        window.visualViewport.addEventListener("resize", () => scheduleFitPlayerGrid(true), { passive: true });
+    }
+})();
+
 // ===== px (อ้างอิงการ์ดดีฟอลต์ 88px) -> cqw (% ของความกว้างการ์ดจริงตอนนี้) =====
 // ใช้แปลงค่า offset/ขนาดที่คำนวณเป็นตัวเลขใน JS (เช่น ตำแหน่ง badge มุมล่างขวาที่เลื่อนหนีกันเอง)
 // ให้เป็นหน่วย container-query แทน px ตายตัว — การ์ดเล็กลงเมื่อไร (ดู applyPlayerGridDensity ด้านบน)
@@ -2723,13 +2856,40 @@ function toCardCqw(px) {
     return `${(px * PLAYER_CARD_CQW_RATIO).toFixed(2)}cqw`;
 }
 
+// Fallback ที่ปลอดภัยสำหรับการ์ดผู้เล่น: ถ้าการประกอบ HTML ของ badge/role ภายในใบใดใบหนึ่ง
+// โยน exception (เช่นข้อมูลบท/ไอคอนเสียชั่วคราว) การ์ดนั้นต้องยังมีชื่อและสถานะให้ผู้เล่นเห็น
+// ห้ามปล่อย div.player ว่างจนดูเหมือนเป็นจุดกลม/placeholder และอย่าล้มการ render ของคนอื่นทั้งกริด
+function renderPlayerCardFallback(div, player, meId) {
+    if (!div || !player) return;
+    div.className = `player${!player.alive ? " dead" : ""}`;
+    div.dataset.pid = String(player.id || "");
+    div.dataset.alive = player.alive ? "1" : "0";
+    const nameEl = document.createElement("div");
+    nameEl.className = "pname";
+    if (player.id === meId) {
+        nameEl.style.color = "#facc15";
+        nameEl.style.fontWeight = "700";
+    }
+    nameEl.textContent = String(player.name || "ผู้เล่น");
+    const dot = document.createElement("span");
+    dot.className = `status-dot ${player.alive ? "dot-alive" : "dot-dead"}`;
+    dot.title = player.alive ? "มีชีวิต" : "ตายแล้ว";
+    nameEl.appendChild(dot);
+    div.replaceChildren(nameEl);
+}
+
 // แยก render กริดผู้เล่นเป็น function เพื่อสามารถเรียกใหม่ได้หลังรับบท
 function renderPlayerGrid(roomData) {
     const players = document.getElementById("players");
+    if (!players) return "normal";
+
     const me = socket.id;
-    const selected = roomData.selectedTargets?.[me];
+    const selected = roomData?.selectedTargets?.[me];
     const amIWolf = allWolfRoles.includes(myRole);
-    const others = roomData.players.filter(p => !p.isHost);
+    const sourcePlayers = Array.isArray(roomData?.players)
+        ? roomData.players.filter((p) => p && p.id)
+        : [];
+    const others = sourcePlayers.filter((p) => !p.isHost);
     applyPlayerGridDensity(others.length);
 
     if (others.length === 0) {
@@ -2750,7 +2910,7 @@ function renderPlayerGrid(roomData) {
     // > โหมดหมาป่าเลือกฆ่า (เฉพาะคนที่เป็นทีมหมาป่า) > โหมดปกติ (เลือกเป้าหมายความสามารถกลางคืน)
     const voteMode = !!roomData.voteMode;
     const amIMurderer = myRole === "ฆาตกรต่อเนื่อง";
-    const myPlayerObjEarly = roomData.players.find(p => p.id === me);
+    const myPlayerObjEarly = sourcePlayers.find(p => p.id === me);
     const amIInstigator = myRole === "ผู้ยุยง";
     // ผู้ยุยง: ปลดล็อกสิทธิ์ฆ่าเองได้ 1 คนต่อคืน ก็ต่อเมื่อจับคู่ "ผู้ศรัทธา" ไว้แล้ว (instigatorPaired)
     // และผู้ศรัทธาทั้งสองคนตายครบแล้วเท่านั้น (เช็คจาก instigatorPairTargetIds ที่ server ส่งมาให้)
@@ -2761,7 +2921,7 @@ function renderPlayerGrid(roomData) {
         Array.isArray(myPlayerObjEarly.instigatorPairTargetIds) &&
         myPlayerObjEarly.instigatorPairTargetIds.length === 2 &&
         myPlayerObjEarly.instigatorPairTargetIds.every((id) => {
-            const believer = roomData.players.find((x) => x.id === id);
+            const believer = sourcePlayers.find((x) => x.id === id);
             return believer && !believer.alive;
         })
     );
@@ -2782,7 +2942,7 @@ function renderPlayerGrid(roomData) {
     const amIIllusionist = myRole === "นักเล่นกล"; // ปลอมบทผู้เล่น 1 คนต่อคืน (แตะการ์ดตรงๆ เหมือนหมอ/บอดี้การ์ด/อันธพาล — ผ่าน select_target ธรรมดา สะสมผลไว้ กดปุ่ม 🔥 ฆ่ารวดเดียวตอนกลางวัน)
     const amIWizardWolf = myRole === "หมาป่านักเวท";
     const curseModeOn = !!(curseModeActive && amIWizardWolf && !roomData.isNight);
-    const myPlayerObjForCult = roomData.players.find(p => p.id === me);
+    const myPlayerObjForCult = sourcePlayers.find(p => p.id === me);
     const amICultLeader = !!(myPlayerObjForCult && myPlayerObjForCult.role === "ผู้นำลัทธิ" && myPlayerObjForCult.alive);
     const cultRecruitModeOn = !!(cultRecruitModeActive && amICultLeader && roomData.isNight);
     const cultSacrificeModeOn = !!(cultSacrificeModeActive && amICultLeader && roomData.isNight);
@@ -2797,11 +2957,11 @@ function renderPlayerGrid(roomData) {
     const amIBanditAccomplice = !!(myPlayerObjForCult && myPlayerObjForCult.role === "ผู้สมรู้ร่วมคิด" && myPlayerObjForCult.alive);
     const myBanditLeaderId = amIBanditAccomplice ? myPlayerObjForCult.banditLeaderId : null;
     // หัวโจรมีผู้สมรู้ร่วมคิดอยู่แล้วหรือยัง (ตัดสินว่าแตะการ์ดแล้วจะเป็น "เปลี่ยนบทบาท" หรือ "เลือกฆ่าร่วม")
-    const iBanditHasAccomplice = (amIBanditLeader || amIBanditAccomplice) && roomData.players.some(
+    const iBanditHasAccomplice = (amIBanditLeader || amIBanditAccomplice) && sourcePlayers.some(
         (pl) => pl.alive && !pl.isHost && pl.role === "ผู้สมรู้ร่วมคิด" && pl.banditLeaderId === (amIBanditLeader ? me : myBanditLeaderId)
     );
     // หมาป่าผู้พิทักษ์กดวางโล่ได้ทั้งวัน ไม่ว่าโฮสต์จะเปิดโหมดโหวตแล้วหรือยัง (แค่ห้ามใช้ตอนกลางคืน)
-    const myPlayerObj = roomData.players.find(p => p.id === me);
+    const myPlayerObj = sourcePlayers.find(p => p.id === me);
     // นักเล่นกล: รายชื่อ id ผู้เล่นที่ปลอมบทไว้แล้วจริง (ยืนยันจากเซิร์ฟเวอร์ สะสมข้ามคืนได้ ไม่ใช่แค่ที่เลือกไว้
     // ตอนนี้ยังไม่ resolve) ใช้โชว์ไอคอน 🔥 ค้างไว้ถาวรที่ตัวคนนั้น ไม่ผูกกับ isNight/mode/รอบปัจจุบันเลย
     // (ต่างจาก selected ที่เป็นแค่เป้าที่ "กำลังจะเลือก" คืนนี้ ยังไม่ถูกบันทึกจนกว่าจะถึงเช้า)
@@ -2860,13 +3020,13 @@ function renderPlayerGrid(roomData) {
     // นายกที่เปิดเผยตัวแล้ว (mayorRevealed) โหวตนับเป็น 2 เสียง — ต้องคำนวณให้ตรงกับฝั่ง server
     // (ดู getVoteWeight/closeVoteRound ใน server.js) ไม่งั้นตัวเลขที่โชว์ในกริดจะไม่ตรงกับผลจริง
     Object.entries(votes).forEach(([voterId, tid]) => {
-        const voter = roomData.players.find(p => p.id === voterId);
+        const voter = sourcePlayers.find(p => p.id === voterId);
         const weight = voter && voter.mayorRevealed ? 2 : 1;
         voteTally[tid] = (voteTally[tid] || 0) + weight;
     });
     const voteTargetName = {};
     Object.entries(votes).forEach(([vid, tid]) => {
-        const t = roomData.players.find(p => p.id === tid);
+        const t = sourcePlayers.find(p => p.id === tid);
         if (t) voteTargetName[vid] = t.name;
     });
     const aliveVotersCount = others.filter(p => p.alive).length;
@@ -2902,7 +3062,7 @@ function renderPlayerGrid(roomData) {
     // — leader ใช้ 👉 ชี้นิ้ว, ผู้สมรู้ร่วมคิดใช้ 🗡️ วางดาบ (ดูตอนแสดง badge ด้านล่าง)
     const banditGroupLeaderIdForKill = amIBanditLeader ? me : (amIBanditAccomplice ? myBanditLeaderId : null);
     const banditGroupAccompliceIdForKill = banditGroupLeaderIdForKill
-        ? (roomData.players.find((pl) => pl.alive && !pl.isHost && pl.role === "ผู้สมรู้ร่วมคิด" && pl.banditLeaderId === banditGroupLeaderIdForKill)?.id || null)
+        ? (sourcePlayers.find((pl) => pl.alive && !pl.isHost && pl.role === "ผู้สมรู้ร่วมคิด" && pl.banditLeaderId === banditGroupLeaderIdForKill)?.id || null)
         : null;
     const banditLeaderKillTarget = banditGroupLeaderIdForKill ? ((roomData.banditKillVotes || {})[banditGroupLeaderIdForKill] || null) : null;
     const banditAccompliceKillTarget = banditGroupAccompliceIdForKill ? ((roomData.banditKillVotes || {})[banditGroupAccompliceIdForKill] || null) : null;
@@ -2921,7 +3081,7 @@ function renderPlayerGrid(roomData) {
             : killVotes[me];
     const killTargetName = {};
     Object.entries(killVotes).forEach(([vid, tid]) => {
-        const t = roomData.players.find(p => p.id === tid);
+        const t = sourcePlayers.find(p => p.id === tid);
         if (t) killTargetName[vid] = t.name;
     });
 
@@ -3542,8 +3702,9 @@ function renderPlayerGrid(roomData) {
         if (isBanditAccompliceKillPick) {
             modeExtraHtml += `<span class="player-bandit-sword-badge" title="ผู้สมรู้ร่วมคิดเลือกฆ่าร่วมกับคนนี้ไว้">🗡️</span>`;
         }
-
-        const newInnerHTML = `
+        let newInnerHTML = "";
+        try {
+            newInnerHTML = `
             <div class="pname" style="${p.id === me ? "color:#facc15;font-weight:700;" : (isWolfMate ? "color:var(--wolf);font-weight:700;" : "")}">
                 ${isMyHuntTarget ? `<span style="font-size:${toCardCqw(14)};line-height:1;" title="เป้าหมายของคุณ">🎯</span> ` : ""}${escapeHtml(p.name)}<span class="status-dot ${dotClass}" title="${dotTitle}"></span>
             </div>
@@ -3616,6 +3777,19 @@ function renderPlayerGrid(roomData) {
             })()}
             ${modeExtraHtml}
         `;
+        } catch (renderError) {
+            console.error("[player-grid] failed to render player card", p?.id, renderError);
+            try {
+                if (window.WWDiagnostic?.breadcrumb) {
+                    window.WWDiagnostic.breadcrumb("player-grid.render-fallback", {
+                        playerId: String(p?.id || ""),
+                        message: String(renderError?.message || renderError || "render failed"),
+                    });
+                }
+            } catch (_) {}
+            renderPlayerCardFallback(div, p, me);
+            newInnerHTML = div.innerHTML;
+        }
         // อัปเดตเนื้อหาเฉพาะตอนที่เปลี่ยนจริงๆ เพื่อไม่ให้รูปไอคอนต้องสร้าง/โหลดใหม่ทุกครั้ง
         if (div.innerHTML !== newInnerHTML) {
             div.innerHTML = newInnerHTML;
@@ -3635,6 +3809,12 @@ function renderPlayerGrid(roomData) {
     });
 
     filterPlayerList();
+
+    // บาง room_update เปลี่ยนเฉพาะข้อมูลบนการ์ดเดิมโดยจำนวนผู้เล่นเท่าเดิม
+    // ทำให้ MutationObserver ไม่จำเป็นต้องได้ childList mutation. ขอ refit เองหลัง render ทุกครั้ง
+    // เพื่อให้ขนาด/จำนวนคอลัมน์ไม่ค้างจาก geometry รอบก่อน โดย schedule จะ coalesce กับ RAF ที่มีอยู่แล้ว
+    // จึงไม่สร้างงานซ้ำเป็นชุดใหญ่.
+    scheduleFitPlayerGrid(false);
 
     return mode;
 }
@@ -4151,15 +4331,14 @@ socket.on("room_update", (roomData) => {
     // อัปเดตสถานะกลางคืน
     isNight = !!roomData.isNight;
 
-    // ฉากกลางวัน/กลางคืน + ป้ายบอกสถานะ จะโชว์ก็ต่อเมื่อเกมเริ่มแล้ว, ยังไม่จบ,
-    // และผ่านการกด "เริ่มช่วงกลางคืน" มาแล้วอย่างน้อยครั้งนึง (กันไม่ให้ตอนรอเริ่มเกม/เพิ่งกดเริ่มเกม
-    // ขึ้นเป็น "วันที่ 1" ทั้งที่ยังไม่เคยผ่านคืนที่ 1 มาก่อน)
+    // ธีมพื้นหลังต้องตรงกับสถานะจริงของห้อง:
+    // - ยังไม่เริ่มเกม = กลางวัน/เช้า
+    // - เริ่มเกมแล้วแต่ยังไม่เข้าคืน = กลางวัน/เช้า
+    // - server ระบุ isNight=true = กลางคืน
+    // ป้ายวันที่/คืนที่ยังคงซ่อนจนกว่าจะมี cycle จริงเหมือนเดิม
     const dayNightCycleStarted = (roomData.nightCount || 0) > 0 || (roomData.dayCount || 0) > 0;
     const showDayNight = !!roomData.started && !roomData.gameOver && dayNightCycleStarted;
-
-    // อัปเดตฉากพื้นหลังกลางวัน/กลางคืน + ป้ายบอกสถานะ (ลอยมุมขวาบน)
-    document.body.classList.toggle("is-night", showDayNight && isNight);
-    document.body.classList.toggle("is-day", showDayNight && !isNight);
+    syncPlayerTimeTheme(roomData);
     const dnBadge = document.getElementById("dayNightBadge");
     const dnIcon = document.getElementById("dnIcon");
     const dnText = document.getElementById("dnText");
@@ -4484,8 +4663,10 @@ function resetToJoinScreen(message) {
 
     if (message) wwAlert(message);
 
+    const leavingRoomId = currentRoomId;
     joined = false;
     currentRoomId = null;
+    lastRoomData = null;
     pendingJoinRoomId = null;
     myRole = "";
     myHuntTargetId = null;
@@ -4511,6 +4692,9 @@ function resetToJoinScreen(message) {
     document.querySelector('.app').classList.remove("game-visible");
     document.querySelector('.app').classList.remove("game-started");
     document.body.classList.add("lobby-beach");
+    document.body.classList.remove("is-night");
+    document.body.classList.add("is-day");
+    if (leavingRoomId) writeSavedPlayerRoomTheme(leavingRoomId, "");
     document.body.classList.remove("room-picker-open");
     closePlayerChat();
     document.getElementById("joinCard").classList.remove("hidden");
@@ -4558,7 +4742,7 @@ function resetToJoinScreen(message) {
     stopVoteCountdown();
     document.body.classList.remove("vote-open");
     document.body.classList.remove("is-night");
-    document.body.classList.remove("is-day");
+    document.body.classList.add("is-day");
     document.getElementById("dayNightBadge").classList.add("hidden");
     document.getElementById("room").value = "";
     closeRolePopup();

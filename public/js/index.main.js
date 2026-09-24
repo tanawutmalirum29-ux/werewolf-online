@@ -163,6 +163,7 @@ async function startGoogleAuthentication(mode, anchor){
             ACCOUNT_SUSPENDED:"บัญชีถูกพักอยู่",
             ACCOUNT_EXPIRED:"บัญชีชั่วคราวหมดอายุแล้ว",
             ACCOUNT_AUTH_REQUIRED:"ยืนยันบัญชีไม่สำเร็จ",
+            ACCOUNT_AUTH_TIMEOUT:"เซิร์ฟเวอร์ยืนยันบัญชีใช้เวลานานเกินไป กรุณาลองเชื่อม Google อีกครั้ง",
             ACCOUNT_NOT_FOUND:"ไม่พบบัญชีเกมนี้",
         };
         const message = e?.name === "AbortError"
@@ -273,6 +274,10 @@ function bootstrapIndexAccount(){
         })
         .catch((e) => {
             console.error("[account] bootstrap failed", e);
+            // When index is leaving the page (for example OAuth navigation), a late socket ACK
+            // rejection is expected lifecycle noise. Do not surface it as an unhandled rejection
+            // after pagehide; the next page owns the login flow.
+            if (window.__WW_DIAG_PAGEHIDE__) return null;
             if (!handleAccountBootstrapFailure(e)) showAccountInlineNotice(e?.code === "ACCOUNT_PERSISTENCE_UNAVAILABLE" ? "เชื่อมฐานข้อมูลบัญชีไม่สำเร็จชั่วคราว กรุณาลองใหม่" : "เตรียมบัญชีไม่สำเร็จ กรุณาลองใหม่อีกครั้ง", { danger:true });
             throw e;
         })

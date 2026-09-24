@@ -20,6 +20,7 @@ const socket = io({ auth: hostSocketAuth });
 
 socket.on("serverInfo", function (info) {
     if (window.wwSetServerVersion) window.wwSetServerVersion(info && info.version);
+    if (window.wwCheckClientVersion) window.wwCheckClientVersion(info && info.clientHash);
 });
 // แอดมินกดล้างข้อมูลเกมทั้งหมด (ดู shared.reset-guard.js) — ล้างตัวตนในเครื่องนี้แล้วกลับหน้าแรกทันที
 socket.on("force_reset", function (d) {
@@ -91,6 +92,11 @@ if (typeof window.wwImg !== "function") {
 let roomId = "";
 let currentRoom = null;
 
+// เฟส 1 Runtime Audit: ให้ตัวตรวจกลางอ่าน room state จริงของหน้า Host
+if (window.WWRuntimeAudit?.setStateProvider) {
+    window.WWRuntimeAudit.setStateProvider(() => currentRoom || null);
+}
+
 // ===== กันเลื่อนจอฉากหลังระหว่างเปิดป๊อปอัป (roomPicker/modePopup/tester/gameOver) =====
 // เดิมพึ่ง html.modal-open{overflow:hidden} อย่างเดียว ซึ่งกัน scroll ของฉากหลังไม่ได้จริงบน
 // มือถือ/iOS Safari (overflow:hidden ที่ html/body ไม่ครอบคลุม touch scroll ที่เกิดจาก touchmove
@@ -112,6 +118,61 @@ const testerQuery = new URLSearchParams(location.search);
 const isTesterMode = testerQuery.get("tester") === "1";
 const TESTER_RETURN_URL = "admin.html";
 const hostStorage = isTesterMode ? sessionStorage : localStorage;
+
+// ===== จำธีมห้องล่าสุดข้ามการรีโหลด =====
+// ห้องที่ยังไม่เริ่มเกมต้องเปิดมาด้วยชายหาดตอนเช้าเสมอ แต่ห้องที่กำลังเล่นตอนกลางคืน
+// ต้องไม่ย้อนกลับไปเป็นกลางวันตอนรีโหลดก่อน room_update รอบแรกจะมาถึง — เก็บเฟสล่าสุด
+// แยกตาม roomId และแยก storage ตามโหมด tester แบบเดียวกับตัวตนโฮสต์
+const HOST_ROOM_THEME_KEY_PREFIX = "ww_host_room_theme_";
+function hostRoomThemeKey(id) {
+    return HOST_ROOM_THEME_KEY_PREFIX + String(id || "").trim().toUpperCase();
+}
+function readSavedHostRoomTheme(id) {
+    if (!id) return "";
+    try {
+        const value = hostStorage.getItem(hostRoomThemeKey(id));
+        return value === "night" || value === "day" ? value : "";
+    } catch (_) {
+        return "";
+    }
+}
+function writeSavedHostRoomTheme(id, theme) {
+    if (!id) return;
+    try {
+        if (theme === "night" || theme === "day") hostStorage.setItem(hostRoomThemeKey(id), theme);
+        else hostStorage.removeItem(hostRoomThemeKey(id));
+    } catch (_) {}
+}
+function applySavedHostRoomTheme(id) {
+    const theme = readSavedHostRoomTheme(id);
+    // ค่าเริ่มต้นของจอโฮสต์ตอนเข้า/สร้างห้อง = กลางวัน; ถ้าเรารู้ว่าห้องนี้เป็นคืนล่าสุดจริง
+    // ค่อยคืนกลางคืนทันที เพื่อลด flash ผิดธีมตอน browser reload
+    const night = theme === "night";
+    document.body.classList.toggle("is-night", night);
+    document.body.classList.toggle("is-day", !night);
+}
+function syncHostTimeTheme(roomData) {
+    const room = roomData || {};
+    // ธีมกลางคืนต้องได้รับการยืนยันจาก server เท่านั้น: เกมต้องเริ่มแล้ว, ยังไม่ game over,
+    // และ isNight=true; ทุกสถานะอื่นให้เป็นกลางวัน เพื่อกัน dark default ทุก race ตอนโหลด/รีเฟรช.
+    const activeNight = !!room.started && !room.gameOver && !!room.isNight;
+    document.body.classList.toggle("is-night", activeNight);
+    document.body.classList.toggle("is-day", !activeNight);
+    return activeNight;
+}
+function persistHostRoomTheme(room) {
+    const id = String(room?.roomId || room?.id || roomId || "").trim().toUpperCase();
+    if (!id) return;
+    if (room?.gameOver) {
+        writeSavedHostRoomTheme(id, "");
+        return;
+    }
+    // ก่อนเริ่มเกมและช่วงกลางวัน = day; กลางคืนจะถูกบันทึกเฉพาะเมื่อ server ยืนยัน isNight=true
+    writeSavedHostRoomTheme(id, room?.started && room?.isNight ? "night" : "day");
+}
+const initialHostRoomId = hostStorage.getItem("ww_host_room")
+    || (isTesterMode ? new URLSearchParams(location.search).get("r") : "");
+applySavedHostRoomTheme(initialHostRoomId);
 // ตัวระบุ "แท็บ Host ผู้คุมบอท" แยกจาก ts ของ Admin launch — บอทแต่ละแท็บจะส่งกลับหาผู้คุม
 // โดยตรงได้ แม้ opener chain ของ iPad/Chrome จะหายหรือชี้ผิดแท็บ
 const TESTER_HOST_CONTROLLER_KEY = "ww_tester_host_controller_id";
@@ -819,6 +880,9 @@ function applyRoomId(id) {
         navigator.clipboard.writeText(roomId);
     };
     hostStorage.setItem("ww_host_room", id);
+    // sync ปุ่มเต็มจอทันทีหลังได้ห้อง ไม่ต้องรอ room_update รอบถัดไป
+    // ป้องกัน race ที่ room_update มาก่อน host_login callback.
+    updateHostControlChrome(currentRoom || { id, started:false, gameOver:false, config: roleConfig, players:[] });
     hostBrowserExitServerClosed = false;
     hostBrowserExitRequested = false;
     hostBrowserExitSignalSent = false;
@@ -1040,6 +1104,8 @@ function enterSetupMode() {
     document.getElementById("eyebrowText").textContent = "ตั้งค่าห้องใหม่ — ยังไม่ได้สร้างห้อง";
     document.getElementById("createRoomBtn").disabled = false;
     document.body.classList.add("setup-mode");
+    document.body.classList.remove("is-night");
+    document.body.classList.add("is-day");
     updateHostControlChrome({ started:false, gameOver:false, config: roleConfig, players:[], hasJoinCode:false, maxPlayers:0 });
     window.scrollTo(0, 0);
 }
@@ -1050,6 +1116,11 @@ function leaveSetupMode() {
     document.body.classList.remove("setup-mode");
     document.getElementById("eyebrowText").textContent = "ห้องควบคุมผู้เล่าเรื่อง";
     updateHostControlChrome(currentRoom || { started:false, gameOver:false, config: roleConfig, players:[] });
+    if (currentRoom && roomId) {
+        updateNightFlowButtons(currentRoom);
+    } else {
+        document.body.classList.remove("is-day", "is-night");
+    }
     showSetupError("");
 }
 
@@ -1127,6 +1198,11 @@ async function createNewRoom(settings) {
             saveRoomPassword(res.roomId, res.hostPassword || "");
             saveRoomJoinCode(res.roomId, res.joinCode || "");
             leaveSetupMode();
+            // ยังไม่รับ room_update รอบแรก: คงธีมเช้าไว้ก่อน เพื่อไม่ให้จอมืดแว่บระหว่าง
+            // เปลี่ยนจาก "ตั้งค่าห้อง" ไปเป็น "รอผู้เล่น" (ห้องใหม่ยังไม่เริ่มเกม)
+            document.body.classList.remove("is-night");
+            document.body.classList.add("is-day");
+            writeSavedHostRoomTheme(res.roomId, "day");
             applyRoomId(res.roomId);
             hideRoomPicker();
         }
@@ -1305,8 +1381,7 @@ function hideRoomPicker() {
 // ห้องอื่นเปิดอยู่ (เช่น เปลี่ยนอุปกรณ์ / ล้างเบราว์เซอร์) ให้เลือกจากกริดเอง
 // ถ้าไม่มีห้องเปิดอยู่เลยค่อยสร้างห้องใหม่ให้อัตโนมัติ
 if (!isTesterMode) bootstrapHostAccount();
-const savedHostRoom = hostStorage.getItem("ww_host_room")
-    || (isTesterMode ? new URLSearchParams(location.search).get("r") : null);
+const savedHostRoom = initialHostRoomId;
 
 hostAccountReady.then(() => socket.emit("list_open_rooms", (list) => {
 
@@ -2432,7 +2507,10 @@ function updateHostControlChrome(room) {
 
     const focusBtn = document.getElementById("playerFocusBtn");
     if (focusBtn) {
-        const canFocus = !!roomId && !inSetup;
+        // room_update อาจมาก่อน callback ของ host_login ทำให้ roomId ยังว่างชั่วคราว
+        // แต่ r คือข้อมูลห้องจริงแล้ว. ใช้ roomId หรือ r.id เป็น source สำรองเพื่อไม่ให้ปุ่มถูกซ่อนค้าง.
+        const effectiveRoomId = String(roomId || r.id || "").trim();
+        const canFocus = !!effectiveRoomId && !inSetup;
         focusBtn.classList.toggle("hidden", !canFocus);
         focusBtn.disabled = !canFocus;
         if (!canFocus && playerFocusMode) setPlayerFocusMode(false);
@@ -2469,14 +2547,18 @@ function updateNightFlowButtons(room) {
     const startNightBtn = document.getElementById("startNightBtn");
     const voteBtn = document.getElementById("voteBtn");
 
-    // ฉากพื้นหลัง + ป้ายบอกกลางวัน/กลางคืน — โชว์เฉพาะตอนเกมเริ่มแล้วและยังไม่จบ
+    // ฉากพื้นหลัง + ป้ายบอกกลางวัน/กลางคืน
+    // ก่อนเริ่มเกม/ห้องที่เพิ่งสร้างต้องเป็น "กลางวัน" เช่นเดียวกับหน้าล็อบบี้
+    // และทันทีที่เริ่มเกมวันแรกก็ยังเป็นกลางวัน จนกว่า server จะเปลี่ยน isNight=true จริง
+    // ป้าย "วันที่/คืนที่" ยังแสดงเฉพาะเมื่อผ่านรอบกลางคืน/กลางวันจริงแล้ว เพื่อไม่เปลี่ยนข้อมูลบน UI เดิม
     const dnBadge = document.getElementById("dayNightBadge");
     const dnIcon = document.getElementById("dnIcon");
     const dnText = document.getElementById("dnText");
     const dayNightCycleStarted = (room.nightCount || 0) > 0 || (room.dayCount || 0) > 0;
     const showDayNight = !!room.started && !room.gameOver && dayNightCycleStarted;
-    document.body.classList.toggle("is-night", showDayNight && !!room.isNight);
-    document.body.classList.toggle("is-day", showDayNight && !room.isNight);
+    // ใช้กฎธีมกลางจุดเดียว: ทุกสถานะที่ไม่ใช่คืนจริงจาก server = กลางวัน.
+    const activeNight = syncHostTimeTheme(room);
+    persistHostRoomTheme(room);
     if (dnBadge) {
         dnBadge.classList.toggle("hidden", !showDayNight);
         if (showDayNight && dnIcon && dnText) {
@@ -2870,6 +2952,7 @@ function filterPlayerList() {
 
     const emptyNote = document.getElementById("playerSearchEmpty");
     if (emptyNote) emptyNote.classList.toggle("hidden", visibleCount !== 0 || cards.length === 0);
+    scheduleCardFit();
 }
 
 // ===== สลับมุมมองลิสต์ผู้เล่น: กริดปกติ / ลิสต์อย่างง่าย (ชื่อ + ติ๊กสถานะ) =====
@@ -3263,27 +3346,10 @@ document.addEventListener("keydown", (event) => {
 syncPlayerFocusButton();
 
 // ===== ปรับจำนวนคอลัมน์กริดผู้เล่น (แทนที่ช่องพิมพ์ค้นหาชื่อเดิม) =====
-// ค่าเริ่มต้นต่างกันตามขนาดจอปัจจุบัน อ้างอิงเบรกพอยต์เดียวกับ CSS เดิม (ดู README หัวข้อ
-// "เบรกพอยต์มือถือ/ไอแพด"): มือถือ (<=480px) = 2, ไอแพด (481-1279px ไม่ว่าแนวไหน) = 5,
-// ไอแพดแนวนอนหลังคอลัมน์ซ้ายยุบ (.layout.role-hidden) = 8 — จอกว้างกว่านั้น (>=1280px) ไม่มี
-// ค่าบังคับเดิมอยู่แล้ว (ปล่อยให้ auto-fill ของ CSS ทำงานตามปกติ) เลยไม่ตั้งค่าเริ่มต้นให้
-// ผู้ใช้พิมพ์คอลัมน์เองได้อิสระ (ปุ่มลัด 2/4/5/8 + ช่องพิมพ์ตัวเลขเอง) ค่าที่ปรับจะจำแยกไว้
-// ต่อเบรกพอยต์ สลับขนาดจอ/แนวจอไปมาจะกลับไปใช้ค่าที่เคยตั้งไว้ของเบรกพอยต์นั้น (หรือค่าเริ่มต้น
-// ถ้ายังไม่เคยปรับ) ไม่ใช่ค่าเดียวติดตัวข้ามทุกขนาดจอ
-// ตามกฎ README: ทุกครั้งที่ปรับจำนวนคอลัมน์ ต้องแก้ .players-grid (#list) และ .players-simple-list
-// (#listSimple) พร้อมกันเสมอด้วยเลขเดียวกัน — applyGridCols() ด้านล่างทำทั้งสองที่พร้อมกันเลย
-//
-// แก้บั๊ก: เดิมบล็อกนี้ทั้งหมด (ตัวแปร + ฟังก์ชัน) อยู่ "ท้ายไฟล์" ต่อจาก
-// "renderRoles(); updateNightFlowButtons({started:false,...});" (initial empty-state render) —
-// แต่ updateNightFlowButtons() เรียก refreshGridColsForBreakpoint() ข้างในด้วย (ดูคอมเมนต์ที่ตัวนั้น)
-// ซึ่งอ่านค่า currentGridBreakpoint/gridColsByBreakpoint ที่ยังไม่ถูกประกาศเลยตอนนั้น (อยู่ถัดลงไปอีก
-// หลายสิบบรรทัด) → ชน temporal dead zone ของ let/const โยน "Cannot access ... before initialization"
-// ทันทีทุกครั้งที่โหลดหน้า (ทดสอบ reproduce แล้วจริง) สคริปต์ท้ายไฟล์ที่เหลือ (รวม
-// refreshGridColsForBreakpoint() ตัวแรก + การผูก resize/orientationchange) เลยไม่ทำงานเลยสักครั้ง และ
-// ตัวแปรพวกนี้ค้างอยู่ใน temporal dead zone ตลอดไป ทำให้กดปุ่ม/พิมพ์เลขคอลัมน์ครั้งไหนก็ชน error เดิมซ้ำ
-// เงียบๆ ไม่มีอะไรเกิดขึ้นบนหน้าจอเลย — ย้ายบล็อกนี้มาไว้ "ก่อน" initial empty-state render แทน
-// เพื่อให้ตัวแปร/ฟังก์ชันพร้อมใช้งานจริงก่อนถูกเรียกใช้ครั้งแรก
-const GRID_COLS_DEFAULTS = { mobile: 2, tablet: 5, "tablet-landscape-full": 8, desktop: null };
+// ค่าเริ่มต้นทุกขนาดจอเป็น "อัตโนมัติ": CSS auto-fit จะเพิ่ม/ลดคอลัมน์ทันทีตามพื้นที่จริง
+// ไม่ผูกกับจำนวนผู้เล่นหรือ breakpoint. ปุ่ม preset/ช่องตัวเลขยังใช้บังคับคอลัมน์แบบ manual ได้.
+
+const GRID_COLS_DEFAULTS = { mobile: null, tablet: null, "tablet-landscape-full": null, desktop: null };
 let gridColsByBreakpoint = { ...GRID_COLS_DEFAULTS };
 let currentGridBreakpoint = null;
 
@@ -3318,6 +3384,7 @@ function getGridBreakpoint() {
 // หลายรอบตอนมีการ์ดเยอะ (เช่น 20 คอลัมน์ x หลายแถว) — อ่าน layout ทีเดียวหลัง reset ครบทุกใบ
 const CARD_BASE_SIZE = 220;
 let cardFitFrame = 0;
+let cardFitObserver = null;
 
 /*
  * Uniform card scale v3
@@ -3371,14 +3438,34 @@ function scheduleCardFit() {
 }
 
 // ขนาดกรอบเปลี่ยนได้จากการหมุนจอ, resize, เปิด/ปิดคอลัมน์ซ้าย หรือการเปลี่ยนจำนวนคอลัมน์
+// รวมถึงการเพิ่ม/ลบการ์ดแบบ live — observe การ์ดใหม่ทุกครั้งเพื่อไม่ต้องรีเว็บให้ scale ถูกต้อง.
 if (typeof ResizeObserver !== 'undefined') {
-    const cardFitObserver = new ResizeObserver(() => scheduleCardFit());
-    window.addEventListener('load', () => {
-        document.querySelectorAll('#list .player, #listSimple .simple-row').forEach((card) => {
-            cardFitObserver.observe(card);
-        });
-        scheduleCardFit();
-    }, { once: true });
+    cardFitObserver = new ResizeObserver(() => scheduleCardFit());
+}
+
+function observeHostPlayerCards() {
+    if (!cardFitObserver) return;
+    document.querySelectorAll('#list .player, #listSimple .simple-row').forEach((card) => {
+        try { cardFitObserver.observe(card, { box: 'border-box' }); } catch (e) { cardFitObserver.observe(card); }
+    });
+}
+
+window.addEventListener('load', () => {
+    observeHostPlayerCards();
+    scheduleCardFit();
+}, { once: true });
+
+if (typeof MutationObserver !== 'undefined') {
+    const listEl = document.getElementById('list');
+    if (listEl) {
+        try {
+            const mo = new MutationObserver(() => {
+                observeHostPlayerCards();
+                scheduleCardFit();
+            });
+            mo.observe(listEl, { childList: true });
+        } catch (e) {}
+    }
 }
 
 function applyGridCols(n) {
@@ -3394,9 +3481,15 @@ function applyGridCols(n) {
         listSimple ? listSimple.querySelectorAll(".simple-row[data-id]").length : 0
     );
     const effective = (n && count > 0) ? Math.min(n, count) : n;
-    const cols = effective ? `repeat(${effective}, 1fr)` : ""; // ว่าง = กลับไปใช้ auto-fill เดิมจาก CSS
-    if (list) list.style.gridTemplateColumns = cols;
-    if (listSimple) listSimple.style.gridTemplateColumns = cols;
+    const cols = effective ? `repeat(${effective}, minmax(0, 1fr))` : "";
+    if (list) {
+        if (effective) list.style.gridTemplateColumns = cols;
+        else list.style.removeProperty("grid-template-columns");
+    }
+    if (listSimple) {
+        if (effective) listSimple.style.gridTemplateColumns = cols;
+        else listSimple.style.removeProperty("grid-template-columns");
+    }
     // ย่อเนื้อหาแต่ละการ์ดให้พอดีกรอบจัตุรัสของตัวเอง (ทั้งกว้างและสูง) — ดูคอมเมนต์เต็มที่ updateAllCardFit
     scheduleCardFit();
 }
@@ -3450,6 +3543,8 @@ window.addEventListener("resize", refreshGridColsForBreakpoint);
 window.addEventListener("orientationchange", refreshGridColsForBreakpoint);
 window.addEventListener("resize", scheduleCardFit, { passive: true });
 window.addEventListener("orientationchange", scheduleCardFit, { passive: true });
+window.addEventListener("pageshow", scheduleCardFit, { passive: true });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleCardFit(); });
 
 // initial empty-state render
 renderRoles();

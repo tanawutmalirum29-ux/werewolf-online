@@ -22,7 +22,7 @@
 //    - "ไฟล์เกม": ก่อนกลับหน้าแรกสั่ง fetch(..., {cache:"reload"}) ตัวหน้าปัจจุบัน + "หน้าแรกปลายทาง" + ทุก <script>/<link stylesheet>
 //      ของทั้งสองหน้า เพื่อ "บังคับข้ามแคชจริงๆ" (รวมเคสเครื่องที่เคยโดน Cache-Control: immutable รุ่นเก่าค้างไว้) แล้วค่อยพาไปหน้าแรก
 //    - "รูปภาพ": server ต่อท้าย URL รูปทุกใบด้วย ?v=<imageEpoch> → URL ใหม่ = โหลดรูปใหม่จริง (ดู wwImg ด้านล่าง)
-//    - กระจายเวลาแบบสุ่ม ~0.4–1.9 วิ กันทุกเครื่องกระแทก server พร้อมกัน / มีตัวกันวนลูปสำรอง (สั่งการเกิน 3 ครั้ง/นาทีจะหยุด)
+//    - force reload ฝั่ง Admin ส่งทันที ไม่หน่วง jitter; หน้า client ใหม่ใช้ hash/imageEpoch ของ server เพื่อโหลด asset รุ่นใหม่
 //
 // 2) เซิร์ฟเวอร์ปิด (ปุ่ม "ปิดเซิร์ฟเวอร์")
 //    ขึ้นจอเต็ม "เซิร์ฟเวอร์กำลังปิด" ทับทุกอย่างทันทีที่ได้ event server_closed / socket ถูกปฏิเสธ (connect_error = server_closed)
@@ -60,7 +60,7 @@
         if (e.persisted) location.reload();
     });
 
-    var POLL_MS = 20000;         // เช็ค /api/config ปกติ (คนที่ต่อ socket อยู่ได้รับ event ทันทีอยู่แล้ว อันนี้กันตกหล่น + หน้าแรกที่ไม่มี socket)
+    var POLL_MS = 5000;          // เช็ค /api/config ทุก 5 วิเป็น safety net สำหรับ multi-instance/แท็บที่พลาด socket event; ลดจาก 20 วิ
     var CLOSING_POLL_MS = 5000;  // ระหว่างแถบ "จะปิดใน..." โชว์อยู่ เช็คถี่ขึ้น (กันพลาด event ยกเลิก/ปิดจริง)
     var CLOSED_POLL_MS = 4000;   // ระหว่างขึ้นจอ "กำลังปิด" เช็คถี่ขึ้นเพื่อกลับเข้าเกมไวหลังเปิด
     var IMG_VER_KEY = "wwx_img_ver";
@@ -837,11 +837,12 @@
                 : "🔄 แอดมินสั่งโหลดเกมใหม่ — กำลังพากลับหน้าแรก...");
         }
 
-        var jitter = reason === "reopen" ? Math.random() * 2500 : 400 + Math.random() * 1500;
+        // Admin force-reload: ไปหน้าใหม่ทันที ไม่หน่วง 0.4–1.9s และไม่รอ prefetch asset หลายรายการ.
+        // หน้า HTML ถูกเสิร์ฟ no-cache และฝัง client hash ใหม่ใน URL JS/CSS; imageEpoch เปลี่ยน URL รูป
+        // อยู่แล้ว จึงได้ asset รุ่นใหม่บน navigation ปลายทางโดยตรง.
+        var jitter = reason === "reopen" ? Math.random() * 2500 : 0;
         setTimeout(function () {
-            var wantFiles = reason === "admin" && (kind === "files" || kind === "both");
-            var wantImages = reason === "admin" && (kind === "images" || kind === "both");
-            ((wantFiles || wantImages) ? refreshAssetCache(kind) : Promise.resolve()).then(function(){ goHome(true); }, function(){ goHome(true); });
+            goHome(true);
         }, jitter);
     }
 
@@ -881,6 +882,39 @@
         } catch (e) {}
         return "";
     }
+    var clientUpdateReloading = false;
+    var lastClientUpdateVersion = "";
+
+    function startClientCodeUpdate(expectedClientHash) {
+        if (clientUpdateReloading || reloading) return;
+        if (isTesterUpdateContext()) return;
+        var expected = String(expectedClientHash || "").trim();
+        var loaded = loadedClientHash();
+        if (!expected || !loaded || expected === loaded) return;
+        if (lastClientUpdateVersion === expected) return;
+        lastClientUpdateVersion = expected;
+        clientUpdateReloading = true;
+
+        // ต่างจาก startReload(): ห้ามล้าง room/token เพราะผู้เล่น/โฮสต์ที่เปิดแท็บค้าง
+        // ก่อน deploy ต้องสามารถโหลดโค้ดใหม่แล้ว reconnect ห้องเดิมด้วย credential เดิมได้
+        // (host.main.js/player.main.js มี auto-rejoin จาก storage อยู่แล้ว)
+        var job = refreshAssetCache("files");
+        job.catch(function () {}).then(function () {
+            var target;
+            try {
+                var u = new URL(location.href);
+                u.searchParams.set("_ww_force", String(Date.now()) + "-" + Math.random().toString(36).slice(2,8));
+                u.searchParams.set("_ww_client", expected);
+                target = u.pathname + u.search + u.hash;
+            } catch (e) {
+                target = location.pathname + "?_ww_force=" + Date.now();
+            }
+            location.replace(target);
+        });
+    }
+
+    window.wwCheckClientVersion = startClientCodeUpdate;
+
     function isTesterUpdateContext() { return !!(testerPageRequested || testerShielded); }
     function hideTesterUpdateNotice() {
         if (testerUpdateNotice && testerUpdateNotice.parentNode) testerUpdateNotice.parentNode.removeChild(testerUpdateNotice);
@@ -933,10 +967,17 @@
         rememberImgVer(cfg.imageEpoch);
         noteServerNow(cfg.serverNow);
 
-        // ค่าแสดงผลล้วนๆ (ไม่ใช่ระบบอัปเดต): ที่อยู่ต้นทางรูป + ป้ายเวอร์ชันมุมซ้ายบน
-        // (เดิมสองอย่างนี้ถูกเติมโดยสคริปต์ตรวจอัปเดตของหน้าเกมที่ถอดออกไปแล้ว — ย้ายมาไว้ที่นี่ ไม่มีการเทียบ version/บันทึก pending/รีโหลดใดๆ)
+        // ค่าแสดงผลล้วนๆ: ที่อยู่ต้นทางรูป + ป้ายเวอร์ชันมุมซ้ายบน
         window.WW_IMG_BASE = typeof cfg.imageBase === "string" ? cfg.imageBase : (window.WW_IMG_BASE || "");
         window.wwSetServerVersion(cfg.appVersion);
+
+        // Host/Player ที่เปิดค้างตั้งแต่ก่อน deploy อาจถือ JS/CSS รุ่นเก่าอยู่ ขณะที่
+        // server + room state เป็นรุ่นใหม่แล้ว — ตรวจ clientHash จาก /api/config ทุกครั้งที่ poll
+        // แล้วโหลดหน้าเดิมใหม่โดย "ไม่" ล้าง room/token เพื่อให้ auto-rejoin ห้องเดิมได้ต่อทันที
+        // ดักเฉพาะเกมที่มี client code hash ต่างกัน; หน้า index มี index.auto-update.js จัดการ overlay อยู่แล้ว
+        if (!isHomePage() && !testerPageRequested && !testerShielded) {
+            startClientCodeUpdate(cfg.clientHash || "");
+        }
 
         // ปิดอยู่ → จอเต็ม แล้วไม่ต้องสนใจเรื่องสั่งการ (ตอนเปิดคืนจะถูกพากลับหน้าแรกอยู่แล้ว)
         if (cfg.serverOpen === false && !testerShielded && !testerPageRequested) {

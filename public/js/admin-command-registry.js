@@ -1,0 +1,35 @@
+/* Central Admin command registry. UI invokes command IDs; implementation delegates to existing admin functions. */
+(function(){
+  "use strict";
+  const commands=[];
+  const add=(c)=>{ if(!c||!c.id||commands.some(x=>x.id===c.id)) return; commands.push({...c,keywords:Array.isArray(c.keywords)?c.keywords:[]}); };
+  const runExisting=(fn,...args)=>{ try{ if(typeof window[fn]!=="function") throw new Error("ADMIN_COMMAND_HANDLER_MISSING:"+fn); return Promise.resolve(window[fn](...args)); }catch(e){ return Promise.reject(e); } };
+  add({id:"dashboard.open",title:"เปิดภาพรวม",icon:"📊",category:"นำทาง",keywords:["overview","dashboard"],run:()=>runExisting("closeAdminPanel")});
+  add({id:"players.open",title:"เปิดผู้เล่นทั้งหมด",icon:"👥",category:"ผู้เล่น",keywords:["player","account","ผู้เล่น","บัญชี"],run:()=>runExisting("switchTab","all")});
+  add({id:"online.open",title:"เปิดผู้เล่นออนไลน์",icon:"🟢",category:"ผู้เล่น",keywords:["online","live","ออนไลน์"],run:()=>runExisting("switchTab","live")});
+  add({id:"rooms.open",title:"เปิดห้องเกม",icon:"🏠",category:"ห้อง",keywords:["room","ห้อง"],run:()=>runExisting("switchTab","rooms")});
+  add({id:"system.open",title:"เปิดคำสั่งระบบ",icon:"⚙️",category:"ระบบ",keywords:["server","system","ระบบ","เซิร์ฟเวอร์"],run:()=>runExisting("switchTab","tools")});
+  add({id:"diagnostics.open",title:"เปิดศูนย์ตรวจปัญหา",icon:"🩺",category:"ตรวจสอบ",keywords:["diagnostic","error","bug","ปัญหา"],run:()=>runExisting("switchTab","diagnostics")});
+  add({id:"dashboard.refresh",title:"รีเฟรชภาพรวม",icon:"🔄",category:"ทางลัด",keywords:["refresh","reload","รีเฟรช"],run:()=>runExisting("refreshDashboard")});
+  add({id:"server.reload.files",title:"โหลดไฟล์เกมใหม่",icon:"📄",category:"เซิร์ฟเวอร์",keywords:["force reload","files","ไฟล์"],risk:"high",run:()=>runExisting("askForceReload","files")});
+  add({id:"server.reload.images",title:"โหลดรูปภาพใหม่",icon:"🖼️",category:"เซิร์ฟเวอร์",keywords:["images","รูป"],risk:"high",run:()=>runExisting("askForceReload","images")});
+  add({id:"server.reload.both",title:"โหลดไฟล์และรูปทั้งหมดใหม่",icon:"🔁",category:"เซิร์ฟเวอร์",keywords:["reload all","both"],risk:"high",run:()=>runExisting("askForceReload","both")});
+  add({id:"server.toggle",title:"เปิด / ปิดเซิร์ฟเวอร์",icon:"🚦",category:"เซิร์ฟเวอร์",keywords:["server on","server off","เปิด","ปิด"],risk:"high",run:()=>runExisting("askToggleServer")});
+  add({id:"server.cancel-closing",title:"ยกเลิกกำหนดปิดเซิร์ฟเวอร์",icon:"↩️",category:"เซิร์ฟเวอร์",keywords:["cancel","closing"],run:()=>runExisting("askCancelClosing")});
+  add({id:"server.edit-notice",title:"แก้ข้อความ / เวลาที่คาดว่าจะเปิด",icon:"✏️",category:"เซิร์ฟเวอร์",keywords:["notice","reopen"],run:()=>runExisting("askEditNotice")});
+  add({id:"server.publish",title:"แจ้งมีรุ่นใหม่โดยไม่กระทบห้อง",icon:"📣",category:"เซิร์ฟเวอร์",keywords:["publish","update","รุ่นใหม่"],run:()=>runExisting("askPublishUpdate")});
+  add({id:"tester.update.files",title:"อัปเดตไฟล์ Tester",icon:"🧪",category:"ทดสอบ",keywords:["tester update","files"],risk:"high",run:()=>runExisting("askTesterUpdate","files")});
+  add({id:"tester.update.images",title:"อัปเดตรูป Tester",icon:"🖼️",category:"ทดสอบ",keywords:["tester update","images"],risk:"high",run:()=>runExisting("askTesterUpdate","images")});
+  add({id:"tester.update.both",title:"อัปเดต Tester ทั้งหมด",icon:"🔁",category:"ทดสอบ",keywords:["tester update","both"],risk:"high",run:()=>runExisting("askTesterUpdate","both")});
+  add({id:"tester.host",title:"เปิดแท็บ Tester โฮสต์",icon:"🎮",category:"ทดสอบ",keywords:["tester","host","ทดสอบ"],run:()=>{ if(typeof window.pickTesterRole==="function") window.pickTesterRole("host"); return runExisting("enterTesterMode"); }});
+  add({id:"tester.player",title:"เปิดแท็บ Tester ผู้เล่น",icon:"👤",category:"ทดสอบ",keywords:["tester","player","ทดสอบ"],run:()=>{ if(typeof window.pickTesterRole==="function") window.pickTesterRole("player"); return runExisting("enterTesterMode"); }});
+  add({id:"bugreplay.all",title:"รัน Bug Replay ทั้งหมด",icon:"🧪",category:"ตรวจสอบ",keywords:["bug replay","replay"],run:()=>runExisting("startBugReplay","all")});
+  add({id:"bugreplay.deep",title:"รัน Bug Replay แบบละเอียดต่อเนื่อง",icon:"🔎",category:"ตรวจสอบ",keywords:["deep","replay"],run:()=>runExisting("startBugReplay","deep")});
+  add({id:"bugreplay.phase2",title:"รัน Chaos → Stress → Long-Run → Recovery",icon:"⚡",category:"ตรวจสอบ",keywords:["chaos","stress","long-run","recovery"],run:()=>runExisting("startBugReplay","phase2")});
+  add({id:"diagnostics.refresh",title:"รีเฟรช Diagnostics",icon:"🔄",category:"ตรวจสอบ",keywords:["diagnostics","refresh"],run:()=>runExisting("loadDiagnostics")});
+  add({id:"diagnostics.clear",title:"ล้างบันทึก Diagnostics",icon:"🧹",category:"ตรวจสอบ",keywords:["clear","diagnostics"],risk:"high",run:()=>runExisting("clearDiagnostics")});
+  add({id:"system.reset",title:"ล้างข้อมูลเกมทั้งหมด",icon:"🧹",category:"ROOT / ระบบ",keywords:["reset","wipe","ล้างข้อมูล"],risk:"critical",run:()=>runExisting("openResetModal")});
+  add({id:"bugreplay.stop",title:"หยุด Bug Replay ที่กำลังรัน",icon:"⏹",category:"ตรวจสอบ",keywords:["stop","replay"],run:()=>runExisting("stopBugReplay")});
+  add({id:"session.logout",title:"ออกจากระบบแอดมินแท็บนี้",icon:"🔒",category:"บัญชี",keywords:["logout","sign out"],risk:"medium",run:()=>window.WWAdminShell?.logout?.()});
+  window.WWAdminCommandRegistry={all:()=>commands.slice(),find:(id)=>commands.find(x=>x.id===id)||null,search:(q)=>{const s=String(q||"").trim().toLowerCase();if(!s)return commands.slice();return commands.filter(c=>[c.title,c.id,c.category,...c.keywords].join(" ").toLowerCase().includes(s));},run:(id)=>{const c=commands.find(x=>x.id===id);return c?c.run():Promise.reject(new Error("ADMIN_COMMAND_NOT_FOUND:"+id));}};
+})();
