@@ -1,0 +1,88 @@
+name: Verify admin bottom panel
+
+on:
+  push:
+    branches:
+      - admin-bottom-panel-20260924
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Run regression suite
+        run: npm test
+
+      - name: Check inline JavaScript syntax
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const { spawnSync } = require('child_process');
+          const html = fs.readFileSync('public/admin.html', 'utf8');
+          const scripts = [...html.matchAll(/<script([^>]*)>([\s\S]*?)<\\/script>/gi)];
+          let checked = 0;
+          for (let i = 0; i < scripts.length; i++) {
+            const attrs = scripts[i][1] || '';
+            const body = scripts[i][2] || '';
+            if (/\\bsrc\\s*=/i.test(attrs) || !body.trim()) continue;
+            const file = '.github-inline-check-' + i + '.js';
+            fs.writeFileSync(file, body);
+            const r = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+            fs.unlinkSync(file);
+            if (r.status !== 0) {
+              process.stderr.write(r.stderr || r.stdout || '');
+              process.exit(r.status || 1);
+            }
+            checked++;
+          }
+          if (!checked) throw new Error('No inline scripts were checked');
+          console.log('Inline script syntax check: PASS (' + checked + ' block(s))');
+          NODE
+
+      - name: Build clean source ZIP
+        shell: bash
+        run: |
+          mkdir -p dist
+          git archive --format=zip --output=dist/werewolf-online-admin-bottom-panel-20260924.zip HEAD
+          python3 - <<'PY'
+          from zipfile import ZipFile, ZIP_DEFLATED
+          from pathlib import Path
+          src = Path('dist/werewolf-online-admin-bottom-panel-20260924.zip')
+          tmp = src.with_suffix('.clean.zip')
+          with ZipFile(src, 'r') as zin, ZipFile(tmp, 'w', ZIP_DEFLATED) as zout:
+              for info in zin.infolist():
+                  name = info.filename.rstrip('/')
+                  if name == '.gitignore' or name.endswith('/.gitignore') or name.startswith('.github/'):
+                      continue
+                  zout.writestr(info, zin.read(info.filename))
+          tmp.replace(src)
+          print(src, src.stat().st_size)
+          PY
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          p='dist/werewolf-online-admin-bottom-panel-20260924.zip'
+          with ZipFile(p) as z:
+              bad=[n for n in z.namelist() if n == '.gitignore' or n.endswith('/.gitignore') or n.startswith('.github/')]
+              assert not bad, bad
+              assert 'public/admin.html' in z.namelist()
+          print('ZIP integrity / clean export check: PASS')
+          PY
+
+      - name: Upload source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: werewolf-online-admin-bottom-panel-20260924
+          path: dist/werewolf-online-admin-bottom-panel-20260924.zip
+          if-no-files-found: error
