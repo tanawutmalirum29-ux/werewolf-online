@@ -10,7 +10,7 @@ function assert(cond, msg) {
 }
 
 // Current player build must retain the uploaded player.html/player.css structure and beach lobby.
-assert(html.includes('<body data-page="player" class="lobby-beach">'), 'player starts in beach lobby theme');
+assert(html.includes('<body data-page="player" class="lobby-beach is-day">'), 'player starts in beach lobby theme');
 assert(html.includes('id="joinCard"'), 'join card missing');
 assert(html.includes('id="playersCard"'), 'players card missing');
 assert(html.includes('id="chatCard"'), 'chat card missing');

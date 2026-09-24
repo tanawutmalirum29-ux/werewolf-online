@@ -1,0 +1,13 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const server = fs.readFileSync('server.js','utf8');
+const roleBlock = server.slice(server.indexOf('const roles = {'), server.indexOf('\n};', server.indexOf('const roles = {')));
+const roles = [...roleBlock.matchAll(/^\s*"([^"]+)":/gm)].map(m => m[1]);
+assert.strictEqual(roles.length, 30, `expected 30 roles, got ${roles.length}`);
+for (const role of roles) assert(roleBlock.includes(`"${role}"`), `role missing: ${role}`);
+assert(server.includes('const WOLF_ROLES = new Set'), 'wolf role registry missing');
+assert(server.includes('const GUARDIAN_ROLES = new Set'), 'guardian role registry missing');
+assert(server.includes('const SOLO_KILLER_ROLES = new Set'), 'solo killer registry missing');
+assert(server.includes('const BANDIT_ROLES = new Set'), 'bandit role registry missing');
+console.log(`role catalog depth regression: PASS (${roles.length} roles audited)`);

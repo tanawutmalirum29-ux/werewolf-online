@@ -1,0 +1,11 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+assert(s.includes('function publicRoomView'), 'public room serializer missing');
+assert(s.includes('socket.emit("your_role"'), 'self role payload path missing');
+assert(s.includes('if (WOLF_ROLES.has(player.role) && room.wolfChatHistory?.length)'), 'wolf-only chat history gate missing');
+assert(s.includes('if (cultGroupIdReconnect && room.cultChatHistory?.[cultGroupIdReconnect]?.length)'), 'cult private history gate missing');
+assert(s.includes('if (banditGroupIdReconnect && room.banditChatHistory?.[banditGroupIdReconnect]?.length)'), 'bandit private history gate missing');
+assert(s.includes('const merged = mergedGlobalAndPrivateHistory(room, room.privateChatLog?.[player.token]);'), 'private chat history must be token scoped');
+console.log('private data leak regression: PASS (role/team/private-chat payloads are scoped)');

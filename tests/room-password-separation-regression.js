@@ -1,0 +1,11 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+assert(s.includes('hostPassword: st.hostPassword,'), 'host password must be stored separately');
+assert(s.includes('joinCode: st.joinCode,'), 'player join code must be stored separately');
+assert(s.includes('hostPassword, joinCode, maxPlayers, revealDeadRole'), 'room settings must expose distinct fields');
+assert(s.includes('if (typeof hostPassword === "string")'), 'host password update path missing');
+assert(s.includes('if (typeof joinCode === "string")'), 'join code update path missing');
+assert(s.includes('socket.on("host_login"'), 'host-login event missing');
+console.log('room password separation regression: PASS (host control password != player join code)');

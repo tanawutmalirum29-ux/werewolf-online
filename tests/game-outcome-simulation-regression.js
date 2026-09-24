@@ -1,0 +1,17 @@
+'use strict';
+const assert = require('assert');
+const { scenarioOutcomes, simulateGeneralEnd, simulateLovers, simulateInstigators } = require('../utils/bug-replay-game-simulator');
+const out = scenarioOutcomes();
+assert.strictEqual(out.wolf,'wolf');
+assert.strictEqual(out.villager,'villager');
+assert.strictEqual(out.murderer,'murderer');
+assert.strictEqual(out.illusionist,'illusionist');
+assert.strictEqual(out.lovers,'lovers');
+assert.strictEqual(out.instigators,'instigators');
+assert.strictEqual(out.tie.draw,true);
+assert.strictEqual(out.fool.result,'fool');
+assert.strictEqual(out.headhunter.result,'headhunter');
+assert.strictEqual(simulateGeneralEnd([{id:'w',role:'หมาป่า',alive:true},{id:'v',role:'ชาวบ้าน',alive:true},{id:'v2',role:'ชาวบ้าน',alive:true},{id:'v3',role:'ชาวบ้าน',alive:false}]), null);
+assert.strictEqual(simulateLovers([{id:'a',role:'ชาวบ้าน',alive:true,loverId:'b'},{id:'b',role:'ชาวบ้าน',alive:false,loverId:'a'}]), null);
+assert.strictEqual(simulateInstigators([{id:'u',role:'ผู้ยุยง',alive:true,instigatorLinkId:'b'},{id:'b',role:'ชาวบ้าน',alive:true,instigatorLinkId:'u'},{id:'c',role:'ชาวบ้าน',alive:true}]), null);
+console.log('game outcome simulation regression: PASS (wolf/villager/murderer/illusionist/lovers/instigators/fool/headhunter/tie/ongoing)');

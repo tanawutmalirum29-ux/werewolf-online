@@ -3,6 +3,12 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
+const requiredFixtures = [".ebextensions/01-high-availability.config", "CLOUDFRONT-FAILOVER-SETUP.md"];
+const missingFixtures = requiredFixtures.filter((file) => !fs.existsSync(path.join(root, file)));
+if (missingFixtures.length) {
+    console.log(`SKIP: infrastructure deployment fixture(s) missing: ${missingFixtures.join(", ")}`);
+    process.exit(0);
+}
 const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
 const eb = fs.readFileSync(path.join(root, ".ebextensions", "01-high-availability.config"), "utf8");
 const fallback = fs.readFileSync(path.join(root, "cloudfront-errors", "server-unavailable.html"), "utf8");

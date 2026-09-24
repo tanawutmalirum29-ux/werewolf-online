@@ -1,0 +1,10 @@
+const fs = require('fs');
+const assert = require('assert');
+const src = fs.readFileSync('public/js/shared.config-client.js','utf8');
+assert(src.includes('function shouldRetry(err)'));
+assert(src.includes("status === 502 || status === 503 || status === 504"));
+assert(src.includes("err.name === 'TypeError' || err.name === 'AbortError'"));
+assert(src.includes('attempt >= 2'));
+assert(src.includes('attempt === 0 ? 350 : 900'));
+assert(src.includes('if (!options.force) inflight[key] = p'));
+console.log('config client retry regression: PASS');

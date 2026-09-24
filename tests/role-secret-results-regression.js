@@ -1,0 +1,11 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+const scout=s.slice(s.indexOf('function performScoutTarget'),s.indexOf('socket.on("scout_target"'));
+const detective=s.slice(s.indexOf('function performDetectiveScout'),s.indexOf('socket.on("detective_scout"'));
+assert(scout.includes('target.trueSeerRevealedTo')); assert(scout.includes('sendPrivateChat(room, selector.id'));
+assert(scout.includes('target.auraRevealedTo')); assert(scout.includes('WOLF_ROLES.has(p.role)'));
+assert(detective.includes('targetA.detectiveRevealedTo')); assert(detective.includes('targetB.detectiveRevealedTo')); assert(detective.includes('sendPrivateChat(room, selector.id'));
+assert(s.includes('if (isReconnect && room.started && player.role)'), 'reconnect should restore only own role payload');
+console.log('role secret results regression: PASS (self-only role/aura + wolf-group routing audited)');

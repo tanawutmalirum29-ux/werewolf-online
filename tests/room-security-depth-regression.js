@@ -1,0 +1,12 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+assert(s.includes('while (rooms[id]) id = genId();'), 'room-id collision protection missing');
+assert(s.includes('if (room.started) {\n                    return cb && cb({ error: "started", code: "ROOM_STARTED" });'), 'new player must be rejected after game starts');
+assert(s.includes('if (code !== room.joinCode)'), 'join-code comparison missing');
+assert(s.includes('if (room.joinCode)'), 'join-code gate missing');
+assert(s.includes('if (room.maxPlayers > 0)'), 'max-player gate missing');
+assert(s.includes('player = room.players.find((p) => p.token === token)'), 'reconnect-by-token path missing');
+assert(s.includes('if (isReconnect && room.started && player.role)'), 'reconnect must restore role after start');
+console.log('room security depth regression: PASS (create collision/code/full/reconnect/start-lock audited)');

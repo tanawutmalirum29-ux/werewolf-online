@@ -1,0 +1,18 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+const start=s.indexOf('socket.on("send_chat"');
+const end=s.indexOf('socket.on("host_chat"', start);
+const b=s.slice(start,end);
+assert(b.includes('if (type === "wolf")'));
+assert(b.includes('if (!WOLF_ROLES.has(player.role)) return;'));
+assert(b.includes('if (type === "instigator")'));
+assert(b.includes('if (!groupId) return;'));
+assert(b.includes('if (type === "cult")'));
+assert(b.includes('if (room.isNight) return;'));
+assert(b.includes('if (type === "bandit")'));
+assert(b.includes('if (player.role !== "โจร") return;'));
+assert(b.includes('if (room.isNight) return;   // กลางคืน: ห้ามส่งแชทรวม'));
+assert(b.includes('if (player.silenced) return;'));
+console.log('role chat privacy regression: PASS (global/wolf/instigator/cult/bandit/silence/phase rules audited)');

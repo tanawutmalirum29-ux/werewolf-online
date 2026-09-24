@@ -1,0 +1,13 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+const join=s.slice(s.indexOf('socket.on("join_room"'),s.indexOf('socket.on("request_sync"'));
+assert(join.includes('const isReconnect = !!player;'),'reconnect detection missing');
+assert(join.includes('let player = token ? room.players.find((p) => p.token === token) : null'),'token-based slot lookup missing');
+assert(join.includes('if (player) {'),'existing player branch missing');
+assert(join.includes('remapPlayerId(room, oldId, socket.id);'),'existing player should remap instead of duplicate');
+assert(join.includes('room.players.push(player);'),'new-player path should push once');
+assert(join.includes('if (room.started) {\n                    return cb && cb({ error: "started", code: "ROOM_STARTED" });'),'new player must be blocked once game started');
+assert(join.includes('if (room.joinCode)'),'join code must be checked only where configured');
+console.log('room nested/reconnect regression: PASS (same token reuses player slot; new player blocked after start)');

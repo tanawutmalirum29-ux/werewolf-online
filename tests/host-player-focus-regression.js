@@ -23,7 +23,6 @@ assertOk(js.includes("document.body.classList.toggle(\"host-player-focus\", play
 assertOk(js.includes('event.key === "Escape" && playerFocusMode'), "focus mode must support Escape exit");
 assertOk(js.includes('const focusRestartBtn = document.getElementById("focusRestartBtn");'), "focus restart sync missing");
 assertOk(js.includes('if (!canFocus && playerFocusMode) setPlayerFocusMode(false);'), "focus mode must auto-exit when host page is not available");
-assertOk(js.includes('event.key === "Escape" && playerFocusMode'), "Escape exit handler missing");
 
 for (const rule of [
   ".host-player-card-head",
@@ -38,14 +37,23 @@ for (const rule of [
   "body.host-player-focus .floating-context",
   "body.host-player-focus .vote-modal-overlay",
   "body.host-player-focus #wwVersionBadge",
+  "body.is-day .host-player-card",
+  "body.is-day.host-player-focus .floating-bar",
   "@media (max-width:800px)",
   "@media (max-width:480px)",
-  "env(safe-area-inset-bottom"
+  "env(safe-area-inset-bottom",
+  "100dvh",
+  "overflow-y:auto"
 ]) {
-  assertOk(css.includes(rule), `missing focus-mode CSS rule: ${rule}`);
+  assertOk(css.includes(rule), `missing focus/day-theme CSS rule: ${rule}`);
 }
 
-// Focus mode must keep only the player board + game action dock visible.
+assertOk(css.includes("html.host-player-focus,\nbody.host-player-focus{\n    width:100%;\n    min-height:100%;\n    height:100%;\n    overflow:hidden;\n}"), "focus mode must lock the document scroll container");
+assertOk(css.includes("body.host-player-focus .app{\n    /* Full player mode is a true viewport layer."), "focus app must become the viewport layer");
+assertOk(css.includes("overflow:visible !important;\n    overscroll-behavior:visible;"), "player grid must not create a nested scrollbar in focus mode");
+assertOk(css.includes("body.host-player-focus #list .player{\n    max-width:var(--host-player-card-standard);"), "focus player cards must retain the standard width cap");
+assertOk(css.includes("grid-auto-flow:row;"), "focus player grid must flow across rows instead of forcing a single row");
+
 for (const hiddenSelector of [
   "body.host-player-focus .seal-wrap",
   "body.host-player-focus #leftCol",
@@ -55,12 +63,9 @@ for (const hiddenSelector of [
   assertOk(css.includes(hiddenSelector), `focus mode must hide: ${hiddenSelector}`);
 }
 
-assertOk(css.includes(`body.host-player-focus .vote-modal-overlay{
-    z-index:700;`), "focus mode must keep modal dialogs above the fullscreen player panel");
-assertOk(css.includes(`body.host-player-focus #wwVersionBadge{
-    display:none !important;`), "focus mode must hide the normal version badge");
+assertOk(css.includes(`body.host-player-focus .vote-modal-overlay{\n    z-index:700;`), "focus mode must keep modal dialogs above the fullscreen player panel");
+assertOk(css.includes(`body.host-player-focus #wwVersionBadge{\n    display:none !important;`), "focus mode must hide the normal version badge");
 
-// The game-control dock must keep the phase actions and an explicit exit route.
 for (const actionId of ["startNightBtn", "resolveBtn", "voteBtn", "focusRestartBtn", "reopenGameOverBtn", "reopenPopupBtn"]) {
   assertOk(new RegExp(`id=["']${actionId}["']`).test(html), `focus dock missing action: ${actionId}`);
 }

@@ -10,6 +10,15 @@ const REQUIRED_COMMAND = 'เริ่มแก้ไฟล์เลย ขอ�
 assert(admin.includes('id="runningVersionChip"'), 'running version chip must remain present');
 assert(admin.includes('id="adminViewportChip"'), 'admin viewport chip is missing');
 assert(admin.includes('id="copyAdminCommandBtn"'), 'admin copy-command button is missing');
+
+// The compact copy control belongs beside the running game version in the hero; the full
+// command must remain a clipboard payload only and must not occupy the developer panel.
+const heroMeta = admin.match(/<div class="hero-meta"[^>]*>([\s\S]*?)<\/div>/);
+assert(heroMeta, 'hero metadata row is missing');
+assert(heroMeta[1].includes('id="copyAdminCommandBtn"'), 'copy command button must be placed in hero metadata');
+assert(heroMeta[1].indexOf('id="copyAdminCommandBtn"') < heroMeta[1].indexOf('id="runningVersionChip"'), 'copy command button must appear before the game version');
+assert(!/<div class="tool-actions"[^>]*>[\s\S]*?id="copyAdminCommandBtn"/.test(admin), 'copy command button must not remain in the developer panel');
+assert.strictEqual((admin.match(/id="copyAdminCommandBtn"/g) || []).length, 1, 'copy command button must exist exactly once');
 assert(admin.includes('role="status"') && admin.includes('aria-live="polite"'), 'viewport size must be exposed as a live status');
 assert(admin.includes('window.innerWidth'), 'viewport width must come from the live browser viewport');
 assert(admin.includes('window.innerHeight'), 'viewport height must come from the live browser viewport');

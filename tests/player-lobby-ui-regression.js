@@ -8,7 +8,7 @@ const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
 
 function assert(cond, msg){ if(!cond) throw new Error(msg); }
 
-assert(html.includes('<body data-page="player" class="lobby-beach">'), "player starts in beach lobby theme");
+assert(html.includes('<body data-page="player" class="lobby-beach is-day">'), "player starts in beach lobby theme");
 assert(html.includes('id="playerLobbyStatus"'), "lobby status strip missing");
 assert(html.includes('id="playerLobbyFeatureRoom"'), "feature room card missing");
 assert(html.includes('id="roomField"') && html.includes('id="codeField"'), "room/code field wrappers missing");

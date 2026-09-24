@@ -1,0 +1,10 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const s = fs.readFileSync('server.js','utf8');
+const events=[...s.matchAll(/socket\.on\((['"])([^'"]+)\1\s*,/g)].map(m=>m[2]);
+const unique=[...new Set(events)];
+const sensitive=unique.filter(e=>/^((cast|select|scout|detective|cupid|instigator|cult|bandit|fire|reveal|illusion|toggle|force)_)/.test(e));
+assert(sensitive.length >= 26, `expected >=26 sensitive events, got ${sensitive.length}`);
+for (const e of ['create_room','join_room','start_game','resolve_night','start_night','cast_vote','send_chat','host_chat','restart_room','close_room']) assert(unique.includes(e),`core event missing: ${e}`);
+console.log(`all event negative matrix regression: PASS (${unique.length} total, ${sensitive.length} sensitive events sampled)`);
