@@ -2,6 +2,16 @@ const { ElasticBeanstalkClient, DescribeEnvironmentsCommand } = require("@aws-sd
 
 let cachedVersion = null;
 let cachedAt = 0;
+let cachedEnvironment = {
+    environmentName: "",
+    versionLabel: "unknown",
+    status: "unknown",
+    health: "unknown",
+    healthStatus: "unknown",
+    abortableOperationInProgress: false,
+    deploymentState: "unknown",
+    updatedAt: 0,
+};
 let requestPromise = null;
 let lastFailureAt = 0;
 let refreshTimer = null;
@@ -23,6 +33,29 @@ function normalizeVersion(value) {
     return version || "unknown";
 }
 
+function normalizeStatus(value) {
+    const status = String(value ?? "").trim();
+    return status || "unknown";
+}
+
+function deploymentStateFromStatus(status) {
+    return status === "Ready" ? "ready" : (status === "unknown" ? "unknown" : "updating");
+}
+
+function snapshotFromEnvironment(environment, envName) {
+    const status = normalizeStatus(environment?.Status);
+    return {
+        environmentName: String(environment?.EnvironmentName || envName || "").trim(),
+        versionLabel: normalizeVersion(environment?.VersionLabel),
+        status,
+        health: normalizeStatus(environment?.Health),
+        healthStatus: normalizeStatus(environment?.HealthStatus),
+        abortableOperationInProgress: environment?.AbortableOperationInProgress === true,
+        deploymentState: deploymentStateFromStatus(status),
+        updatedAt: Date.now(),
+    };
+}
+
 function isCacheFresh(now = Date.now()) {
     return !!cachedVersion && cachedVersion !== "unknown" && cachedAt > 0
         && now - cachedAt < configuredRefreshIntervalMs();
@@ -36,6 +69,16 @@ async function refreshAppVersion({ force = false } = {}) {
         cachedVersion = "local-dev";
         cachedAt = Date.now();
         lastFailureAt = 0;
+        cachedEnvironment = {
+            environmentName: "local",
+            versionLabel: "local-dev",
+            status: "Ready",
+            health: "Green",
+            healthStatus: "Ok",
+            abortableOperationInProgress: false,
+            deploymentState: "ready",
+            updatedAt: cachedAt,
+        };
         return cachedVersion;
     }
 
@@ -53,10 +96,13 @@ async function refreshAppVersion({ force = false } = {}) {
                 EnvironmentNames: [envName],
             }));
 
-            const version = normalizeVersion(res.Environments?.[0]?.VersionLabel);
+            const environment = res.Environments?.[0];
+            const snapshot = snapshotFromEnvironment(environment, envName);
+            const version = snapshot.versionLabel;
+            cachedEnvironment = snapshot;
             if (version !== "unknown") {
                 cachedVersion = version;
-                cachedAt = Date.now();
+                cachedAt = snapshot.updatedAt;
                 lastFailureAt = 0;
             }
             return cachedVersion || version;
@@ -87,6 +133,31 @@ function getCachedAppVersion() {
     return cachedVersion || (process.env.EB_ENVIRONMENT_NAME ? "unknown" : "local-dev");
 }
 
+function getCachedAppEnvironmentState() {
+    if (!String(process.env.EB_ENVIRONMENT_NAME || "").trim()) {
+        return {
+            environmentName: "local",
+            versionLabel: "local-dev",
+            status: "Ready",
+            health: "Green",
+            healthStatus: "Ok",
+            abortableOperationInProgress: false,
+            deploymentState: "ready",
+            updatedAt: cachedEnvironment.updatedAt || Date.now(),
+        };
+    }
+    return { ...cachedEnvironment };
+}
+
+async function getAppEnvironmentState({ force = false } = {}) {
+    if (!String(process.env.EB_ENVIRONMENT_NAME || "").trim()) {
+        await refreshAppVersion();
+        return getCachedAppEnvironmentState();
+    }
+    await getAppVersion({ force });
+    return getCachedAppEnvironmentState();
+}
+
 function startAppVersionRefresh(intervalMs = configuredRefreshIntervalMs()) {
     if (refreshTimer) return refreshTimer;
 
@@ -110,3 +181,5 @@ function stopAppVersionRefresh() {
 }
 
 module.exports = { getAppVersion, getCachedAppVersion, startAppVersionRefresh, stopAppVersionRefresh };
+module.exports.getAppEnvironmentState = getAppEnvironmentState;
+module.exports.getCachedAppEnvironmentState = getCachedAppEnvironmentState;
