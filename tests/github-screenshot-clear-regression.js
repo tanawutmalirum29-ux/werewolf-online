@@ -6,7 +6,7 @@ const { getGithubBugReportConfig, clearAllGithubScreenshotFiles, listAllGithubSc
 const ROOT = path.resolve(__dirname, '..');
 const adminHtml = fs.readFileSync(path.join(ROOT,'public/admin.html'),'utf8');
 const serverJs = fs.readFileSync(path.join(ROOT,'server.js'),'utf8');
-const config = getGithubBugReportConfig({GITHUB_BUG_REPORT_TOKEN:'github_pat_screenshot_clear_test',GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',GITHUB_BUG_REPORT_REPO:'werewolf-bug-reports',GITHUB_BUG_REPORT_BRANCH:'main'});
+const config = getGithubBugReportConfig({GITHUB_BUG_REPORT_TOKEN:'github_pat_screenshot_clear_test',GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',GITHUB_BUG_REPORT_REPO:'werewolf-online',GITHUB_BUG_REPORT_BRANCH:'main'});
 function contracts(){
   assert.ok(adminHtml.includes('id="adminBrowserCaptureClearGithubScreenshotsBtn"'));
   assert.ok(adminHtml.includes('clearGithubScreenshotsFromAdmin()'));
