@@ -7,7 +7,7 @@
 <meta name="viewport"
 content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
 
-<title>Werewolf — ห้องควบคุม</title>
+<title>Werewolf-Online</title>
 <link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
@@ -17,15 +17,18 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Charm:wght@400;800&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;500;800&display=swap" rel="stylesheet">
 
-<link rel="stylesheet" href="css/host.css">
+<link rel="stylesheet" href="css/host.css?v=20260925-3">
 
 </head>
 <body data-page="host" class="is-day">
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="js/error-reporter.js?v=3"></script>
-<script src="js/runtime-audit-engine.js?v=1"></script>
-<script src="js/runtime-audit.js?v=1"></script>
+<script src="js/error-reporter.js?v=8"></script>
+<script src="js/runtime-audit-engine.js?v=20260926-4"></script>
+<script src="js/runtime-audit-action-registry.js?v=20260926-4"></script>
+<script src="js/runtime-audit.js?v=20260926-4"></script>
+<script src="js/runtime-audit-actions.js?v=20260926-4"></script>
+<script src="js/game-runtime-client.js?v=20260926-7"></script>
 <script src="js/shared.config-client.js?v=1"></script>
 <script src="js/shared.touch-guard.js"></script>
 <script src="js/shared.reset-guard.js"></script>
@@ -41,6 +44,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <div class="app">
 
     <div id="connBanner" class="conn-banner hidden">🔌 ขาดการเชื่อมต่อ กำลังพยายามเชื่อมต่อใหม่...</div>
+<div id="gameActionStatus" class="runtime-action-status hidden" role="status" aria-live="polite"></div>
 
     <!-- ===== SEAL / ROOM CODE ===== -->
     <div class="seal-wrap">
@@ -70,7 +74,6 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
             <button class="btn btn-tester hidden" id="botManagerBtn" onclick="openBotManagerPopup()">🤖 จัดการบอท</button>
         </div>
         <div class="seal-actions">
-            <button class="btn btn-ghost btn-restart-room hidden" id="restartRoomBtn" onclick="restartRoom()">🔄 เริ่มต้นใหม่</button>
             <button class="btn btn-danger btn-close-room" id="closeRoomBtn" onclick="closeRoomManually()">✕ ปิดห้อง</button>
             <button class="btn btn-ghost btn-new-room" id="newRoomBtn" onclick="createFreshRoom()">🆕 สร้างห้องใหม่</button>
             <button class="btn btn-ghost" id="roomSettingsBtn" onclick="openRoomSettings()">⚙️ ตั้งค่าห้อง</button>
@@ -144,6 +147,20 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
                 </div>
 
                 <div class="card-body" id="roleCardBody">
+
+                    <section class="host-preset-panel" id="hostPresetPanel" aria-labelledby="hostPresetTitle">
+                        <div class="host-preset-head">
+                            <div><span class="runtime-kicker">GAME PRESET</span><h3 id="hostPresetTitle">ตั้งค่ารูปแบบเกม</h3><p class="sub">กดใช้ชุดตั้งต้นได้ แล้วแก้บทบาทต่อเองได้ทันที</p></div>
+                            <span class="preset-current" id="presetCurrentLabel">กำหนดเอง</span>
+                        </div>
+                        <div class="host-preset-actions" id="hostPresetActions">
+                            <button type="button" class="preset-btn" data-preset="quick" onclick="applyHostPreset('quick')">⚡ เร็ว</button>
+                            <button type="button" class="preset-btn" data-preset="classic" onclick="applyHostPreset('classic')">🌙 คลาสสิก</button>
+                            <button type="button" class="preset-btn" data-preset="classic-plus" onclick="applyHostPreset('classic-plus')">✨ คลาสสิก+</button>
+                            <button type="button" class="preset-btn" data-preset="chaos" onclick="applyHostPreset('chaos')">🎲 Chaos</button>
+                        </div>
+                        <div class="preset-recommendation" id="presetRecommendation" aria-live="polite"></div>
+                    </section>
 
                     <div id="quickAddRoles" class="quick-add-roles"></div>
 
@@ -219,6 +236,14 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
                 <div id="list" class="players-grid"></div>
                 <div id="listSimple" class="players-simple-list hidden"></div>
                 <div id="playerSearchEmpty" class="empty-note hidden">ไม่พบผู้เล่นที่ตรงกับตัวกรอง</div>
+            </div>
+
+            <div class="card runtime-card hidden" id="gameTimelineCard">
+                <div class="runtime-card-head">
+                    <div><span class="runtime-kicker">GAME TIMELINE</span><h3>เหตุการณ์ล่าสุด</h3></div>
+                    <span class="runtime-state-pill" id="hostStateVersion">v1</span>
+                </div>
+                <div id="gameTimeline" class="runtime-timeline"></div>
             </div>
 
             <div class="card sticky host-chat-card" id="chatCard">
@@ -425,7 +450,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
     <button class="btn btn-vote hidden" id="voteBtn" onclick="toggleVoteMode()">
         🗳️ เปิดโหมดโหวต
     </button>
-    <button class="btn btn-ghost hidden" id="focusRestartBtn" onclick="restartRoom()">
+    <button class="btn btn-ghost hidden" id="restartRoomBtn" onclick="restartRoom()" aria-label="เริ่มต้นใหม่ทั้งห้อง">
         🔄 เริ่มต้นใหม่
     </button>
     <button class="btn btn-reopen-popup hidden" id="reopenGameOverBtn" onclick="reopenGameOverPopup()">
@@ -438,7 +463,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
 <script src="js/fluid-layout.js"></script>
 <script src="js/ww-ui.js"></script>
-<script src="js/host.main.js"></script>
+<script src="js/host.main.js?v=20260925-2"></script>
 
 <!-- ===== ป้ายเวอร์ชัน (แสดงผลอย่างเดียว) ===== -->
 <!-- ป้ายเวอร์ชันมุมซ้ายบน — ขาวจาง ๆ ดึงค่ามาจาก /api/config (appVersion) ให้ตรงกับเลข

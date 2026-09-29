@@ -6,7 +6,7 @@
 <meta name="viewport"
 content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
-<title>Werewolf — Lobby</title>
+<title>Werewolf-Online</title>
 
 <link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
@@ -22,27 +22,255 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <link href="https://fonts.googleapis.com/css2?family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="css/index.css">
+
+<!-- ===== INDEX SERVER-STATE BOOT GATE =====
+     ต้องตัดสินสถานะเซิร์ฟเวอร์ก่อนปล่อย Lobby ให้ browser วาดลงจอ
+     เพื่อกันอาการ refresh ตอน server ปิดแล้วเห็นหน้า Index แวบหนึ่งก่อน overlay ของ shared.server-control มา
+     ใช้ endpoint เบา /api/server-state แยกจาก /api/config เพราะ /api/config ยังทำ version/control-plane work อื่นอยู่
+     และใช้ class ที่ติดบน <html> ตั้งแต่ parse <head> เพื่อซ่อน UI เดิมก่อน first paint -->
+<style id="wwIndexBootGateStyle">
+html.ww-index-server-pending body{background:#0b0f19 !important;}
+html.ww-index-server-pending body > *:not(#wwIndexServerBoot){visibility:hidden !important;}
+html.ww-index-server-pending #wwIndexServerBoot{visibility:visible !important;}
+html:not(.ww-index-server-pending) #wwIndexServerBoot{display:none !important;}
+html.ww-index-server-closed #wwIndexServerBoot{display:flex !important;visibility:visible !important;}
+#wwIndexServerBoot{
+    position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;
+    padding:24px;box-sizing:border-box;background:radial-gradient(circle at 50% 28%,#1b2440 0%,#0b0f19 72%);
+    color:#fff;text-align:center;font-family:'IBM Plex Sans Thai','Noto Sans Thai',system-ui,sans-serif;
+    touch-action:pan-y;-webkit-user-select:none;user-select:none;
+}
+#wwIndexServerBoot[hidden]{display:none;}
+#wwIndexServerBoot .wwIndexBootInner{width:min(420px,100%);display:flex;flex-direction:column;align-items:center;}
+#wwIndexServerBoot .wwIndexBootIcon{width:72px;height:72px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;border-radius:16px;background-position:center;background-repeat:no-repeat;background-size:contain;background-color:rgba(255,255,255,.06);}
+#wwIndexServerBoot .wwIndexBootTitle{font-size:24px;font-weight:700;margin-bottom:10px;}
+#wwIndexServerBoot .wwIndexBootText{font-size:15px;line-height:1.7;color:rgba(255,255,255,.72);margin-bottom:20px;}
+#wwIndexServerBoot .wwIndexBootDots{display:flex;align-items:center;justify-content:center;margin-top:2px;}
+#wwIndexServerBoot .wwIndexBootDots span{display:inline-block;width:9px;height:9px;margin:0 4px;border-radius:50%;background:#7c5cff;animation:wwIndexBootDot 1.3s infinite ease-in-out;}
+#wwIndexServerBoot .wwIndexBootDots span:nth-child(2){animation-delay:.2s;}
+#wwIndexServerBoot .wwIndexBootDots span:nth-child(3){animation-delay:.4s;}
+@keyframes wwIndexBootDot{0%,80%,100%{opacity:.25;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
+html.ww-index-server-closed #wwIndexServerBoot{background:radial-gradient(circle at 50% 28%,#1b2440 0%,#0b0f19 72%);}
+#wwIndexServerBoot .wwIndexBootMsg{display:none;font-size:16px;font-weight:600;line-height:1.6;margin:0 0 12px;padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.08);word-break:break-word;}
+#wwIndexServerBoot .wwIndexBootEta{display:none;font-size:14px;color:#c9bcff;margin:0 0 18px;}
+html.ww-index-server-closed #wwIndexServerBoot .wwIndexBootDots{margin-bottom:0;}
+html.ww-index-server-closed #wwIndexServerBoot .wwIndexBootMsg{display:none;}
+html.ww-index-server-closed #wwIndexServerBoot .wwIndexBootEta{display:none;}
+</style>
+<script id="wwIndexServerBootGate">
+(function(){
+    'use strict';
+    var root=document.documentElement;
+    var state={settled:false,closed:false,requestStartedAt:Date.now(),timer:null};
+    root.classList.add('ww-index-server-pending');
+
+    function setBootContent(closed, info){
+        var el=document.getElementById('wwIndexServerBoot');
+        if(!el) return;
+        var title=el.querySelector('.wwIndexBootTitle');
+        var text=el.querySelector('.wwIndexBootText');
+        var icon=el.querySelector('.wwIndexBootIcon');
+        if(icon && info){
+            var iconUrl=typeof info.serverIconUrl==='string'?info.serverIconUrl:'';
+            if(iconUrl){
+                var safeIconUrl=iconUrl.replace(/\\/g,'\\\\').replace(/\"/g,'\\"');
+                icon.style.backgroundImage='url(\"'+safeIconUrl+'\")';
+            } else {
+                icon.style.backgroundImage='none';
+            }
+        }
+        if(title) title.textContent=closed?'เซิร์ฟเวอร์กำลังปิด':'กำลังตรวจสอบเซิร์ฟเวอร์';
+        if(text) text.innerHTML=closed
+            ? 'ตอนนี้ยังเข้าเกมไม่ได้ (รีเฟรชก็ไม่ได้)<br>เมื่อเซิร์ฟเวอร์เปิดอีกครั้ง ระบบจะพาคุณกลับหน้าแรกให้อัตโนมัติ'
+            : 'กำลังตรวจสอบสถานะเซิร์ฟเวอร์ก่อนเปิดหน้าเกม';
+
+        var msg=el.querySelector('.wwIndexBootMsg');
+        if(msg){
+            var value=info&&typeof info.message==='string'?info.message:'';
+            msg.textContent=value;
+            msg.style.display=value?'block':'none';
+        }
+        var eta=el.querySelector('.wwIndexBootEta');
+        if(eta){
+            var reopenAt=info&&Number(info.reopenAt)>0?Number(info.reopenAt):0;
+            if(reopenAt){
+                var clock='';
+                try{
+                    var d=new Date(reopenAt), now=new Date(info.serverNow||Date.now());
+                    clock=d.toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',hour12:false});
+                    if(d.toDateString()!==now.toDateString()) clock=d.toLocaleDateString('th-TH',{day:'numeric',month:'short'})+' '+clock;
+                    var mins=Math.ceil((reopenAt-(info.serverNow||Date.now()))/60000);
+                    eta.textContent=mins<=0?'เลยเวลาที่คาดไว้แล้ว — กำลังรอแอดมินเปิด':'คาดว่าจะเปิดประมาณ '+clock+' น. (อีกประมาณ '+(mins<60?mins+' นาที':Math.floor(mins/60)+' ชม.'+(mins%60?' '+mins%60+' นาที':''))+')';
+                    eta.style.display='block';
+                }catch(_){ eta.textContent=''; eta.style.display='none'; }
+            }else{ eta.textContent=''; eta.style.display='none'; }
+        }
+    }
+
+    function reveal(){
+        if(state.settled || state.closed) return;
+        state.settled=true;
+        window.__WW_INDEX_EARLY_SERVER_OPEN__=true;
+        window.__WW_INDEX_BOOT_STATE_CONFIRMED__=true;
+        if(state.timer) clearTimeout(state.timer);
+        root.classList.remove('ww-index-server-pending');
+        root.classList.remove('ww-index-server-closed');
+        var el=document.getElementById('wwIndexServerBoot');
+        if(el) el.hidden=true;
+    }
+
+    function closed(info){
+        state.settled=true;
+        state.closed=true;
+        window.__WW_INDEX_EARLY_SERVER_OPEN__=false;
+        window.__WW_INDEX_BOOT_STATE_CONFIRMED__=true;
+        if(state.timer) clearTimeout(state.timer);
+        root.classList.remove('ww-index-server-pending');
+        root.classList.add('ww-index-server-closed');
+        window.__WW_INDEX_EARLY_SERVER_CLOSED__=Object.assign({},info||{});
+        setBootContent(true,info||{});
+    }
+
+    function syncElement(){
+        var el=document.getElementById('wwIndexServerBoot');
+        if(!el) return;
+        if(state.closed){
+            root.classList.remove('ww-index-server-pending');
+            root.classList.add('ww-index-server-closed');
+            setBootContent(true,window.__WW_INDEX_EARLY_SERVER_CLOSED__||{});
+            el.hidden=false;
+        }else if(state.settled){
+            root.classList.remove('ww-index-server-pending');
+            root.classList.remove('ww-index-server-closed');
+            el.hidden=true;
+        }else{
+            root.classList.add('ww-index-server-pending');
+            root.classList.remove('ww-index-server-closed');
+            el.hidden=false;
+            setBootContent(false,{});
+        }
+    }
+
+    function handoffClosed(){
+        var el=document.getElementById('wwIndexServerBoot');
+        if(el) el.hidden=true;
+    }
+
+    // Reload/navigation handoff: iOS/Chrome may briefly paint the previous document snapshot
+    // before the new Index document starts executing. If that old snapshot was the closed-server
+    // screen, replace it with the same neutral boot gate before the document is discarded.
+    // This prevents an old "เซิร์ฟเวอร์กำลังปิด" frame from flashing after the server has already reopened.
+    function prepareForNavigation(){
+        try{
+            root.classList.remove('ww-index-server-closed');
+            root.classList.add('ww-index-server-pending');
+            var oldOverlay=document.getElementById('wwClosedOverlay');
+            if(oldOverlay && oldOverlay.parentNode) oldOverlay.parentNode.removeChild(oldOverlay);
+            var boot=document.getElementById('wwIndexServerBoot');
+            if(boot){ boot.hidden=false; setBootContent(false,{}); }
+        }catch(_){}
+    }
+    // visibilitychange usually fires before pagehide/beforeunload on mobile browsers.
+    // Neutralize the closed screen at the earliest lifecycle boundary so a compositor/document
+    // snapshot has the same neutral boot frame instead of preserving "เซิร์ฟเวอร์กำลังปิด".
+    document.addEventListener('visibilitychange',function(){
+        if(document.visibilityState==='hidden'){
+            prepareForNavigation();
+        }else{
+            syncElement();
+        }
+    },true);
+    window.addEventListener('freeze',prepareForNavigation,true);
+    window.addEventListener('pagehide',prepareForNavigation,true);
+    window.addEventListener('beforeunload',prepareForNavigation,true);
+
+    window.__WW_INDEX_BOOT_GATE__={reveal:reveal,closed:closed,handoffClosed:handoffClosed,sync:syncElement,prepareForNavigation:prepareForNavigation};
+    setBootContent(false,{});
+    if(document.readyState === 'loading'){
+        document.addEventListener('DOMContentLoaded',syncElement,{once:true});
+    }else{
+        syncElement();
+    }
+
+    function failOpenAfterTimeout(){
+        // Network failure is not the same as a confirmed closed server. Do not freeze the lobby forever.
+        // shared.server-control.js remains the secondary safety net and will show the closed overlay if it later learns serverClosed=true.
+        if(state.settled) return;
+        reveal();
+    }
+
+    state.timer=setTimeout(failOpenAfterTimeout,4200);
+    try{
+        fetch('/api/server-state?boot=1',{cache:'no-store',credentials:'same-origin',headers:{'Accept':'application/json'}})
+            .then(function(r){ if(!r.ok) throw new Error('server_state_'+r.status); return r.json(); })
+            .then(function(d){
+                if(d&&d.imageBase){
+                    try{ window.WW_IMG_BASE=d.imageBase; }catch(_){}
+                }
+                if(d&&d.serverOpen===false){
+                    closed({message:typeof d.noticeMessage==='string'?d.noticeMessage:'',reopenAt:Number(d.reopenAt)||0,serverNow:Number(d.serverNow)||Date.now(),closingInMs:Number(d.closingInMs)||0,imageBase:typeof d.imageBase==='string'?d.imageBase:'',imageVersion:typeof d.imageVersion==='string'?d.imageVersion:'',serverIconUrl:typeof d.serverIconUrl==='string'?d.serverIconUrl:''});
+                }else{
+                    reveal();
+                }
+            })
+            .catch(function(){
+                // A failed state probe is allowed to time out to the normal page rather than blocking a healthy site forever.
+            });
+    }catch(_){
+        // Keep the timeout fallback.
+    }
+})();
+</script>
 </head>
 
 <body data-page="index">
 
+<!-- First-paint safety gate: this element is the only visible body child while /api/server-state is pending. -->
+<div id="wwIndexServerBoot" aria-live="polite">
+    <div class="wwIndexBootInner">
+        <div class="wwIndexBootIcon" aria-hidden="true"></div>
+        <div class="wwIndexBootTitle">กำลังตรวจสอบเซิร์ฟเวอร์</div>
+        <div class="wwIndexBootText">กำลังตรวจสอบสถานะเซิร์ฟเวอร์ก่อนเปิดหน้าเกม</div>
+        <div class="wwIndexBootMsg"></div>
+        <div class="wwIndexBootEta"></div>
+        <div class="wwIndexBootDots" aria-hidden="true"><span></span><span></span><span></span></div>
+    </div>
+</div>
+<script>try{if(window.__WW_INDEX_BOOT_GATE__&&typeof window.__WW_INDEX_BOOT_GATE__.sync==='function')window.__WW_INDEX_BOOT_GATE__.sync();}catch(_){}
+</script>
+
+<div id="gameActionStatus" class="runtime-action-status hidden" role="status" aria-live="polite"></div>
+
+<div class="lobby-page" id="lobbyPage">
+    <header class="lobby-header" aria-label="Werewolf Online">
+        <div class="lobby-header-brand">
+            <span class="lobby-header-wolf" aria-hidden="true">🐺</span>
+            <span class="lobby-header-title">WEREWOLF ONLINE</span>
+        </div>
+        <div class="lobby-header-caption">เกมหมาป่าออนไลน์</div>
+    </header>
+
 <script src="/socket.io/socket.io.js"></script>
-<script src="js/error-reporter.js?v=3"></script>
+<script src="js/error-reporter.js?v=8"></script>
+<script src="js/runtime-audit-engine.js?v=20260926-2"></script>
+<script src="js/runtime-audit-action-registry.js?v=20260926-4"></script>
+<script src="js/runtime-audit.js?v=20260926-2"></script>
+<script src="js/runtime-audit-actions.js?v=20260926-4"></script>
+<script src="js/game-runtime-client.js?v=20260926-7"></script>
 <script src="js/shared.config-client.js?v=1"></script>
 <script src="js/shared.touch-guard.js"></script>
 <script src="js/shared.reset-guard.js"></script>
-<script src="js/shared.server-control.js"></script>
+<script src="js/shared.server-control.js?v=20260926-boot-gate-icons-server"></script>
 <script src="js/account.identity.js"></script>
 <script src="js/ww-ui.js"></script>
 
-<!-- ป้ายชื่อของ Game Account — กดเพื่อเปิด Profile / สถิติ / เปลี่ยนชื่อ -->
-<div class="name-badge hidden" id="nameBadge" onclick="openStatsModal()">
+<!-- Account chip: บนจอเล็กกดเพื่อเปิด Profile; เมื่อจอใหญ่พอ Profile จะ dock อยู่ข้าง ๆ และซ่อน trigger ซ้ำ -->
+<button class="name-badge hidden" id="nameBadge" type="button" onclick="openStatsModal()" aria-controls="statsModal" aria-label="เปิดโปรไฟล์บัญชี">
     <span class="name-badge-icon">👤</span>
     <span class="name-badge-text" id="nameBadgeText"></span>
-</div>
+</button>
 
-<!-- ป็อปอัปสถิติผู้เล่น (กดที่ป้ายชื่อมุมขวาบนเพื่อเปิด) — ชื่อ / อัตราชนะรวม / อัตราชนะแยกตามทีม
-     ที่กางดูรายอาชีพย่อยได้อีกที ดึงข้อมูลจาก /api/player-stats (ดู openStatsModal ใน index.main.js) -->
+<!-- Profile: จอเล็กใช้ modal; จอใหญ่ใช้ dock ข้าง Lobby โดยใช้ข้อมูลจาก /api/player-stats ชุดเดียวกัน -->
 <!-- บัญชีเดิมถูกลบ/หาไม่พบ: ห้ามสร้างใหม่อัตโนมัติ ต้องให้ผู้ใช้เริ่มบัญชีใหม่เองและตั้งชื่อใหม่ -->
 <div class="modal-overlay hidden" id="accountRecreateOverlay">
     <div class="modal-box account-recreate-box">
@@ -77,49 +305,79 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
     </div>
 </div>
 
-<div class="card">
+<main class="lobby-layout">
+    <section class="card" aria-label="Werewolf Online Lobby">
+        <div class="lobby-brand-block">
+            <div class="seal">
+                <span class="seal-wolf" aria-hidden="true">🐺</span>
+                <span class="seal-eyebrow">Night Falls</span>
+                <span class="seal-title">Werewolf</span>
+            </div>
 
-    <div class="seal">
-        <span class="seal-wolf">🐺</span>
-        <span class="seal-eyebrow">Night Falls</span>
-        <span class="seal-title">Werewolf</span>
-    </div>
+            <div class="hero-copy">
+                <h1>เกมหมาป่าออนไลน์</h1>
+                <p class="sub">
+                    เล่นกับเพื่อนได้ทุกที่<br>
+                    <span>Host คุมเกม &nbsp;·&nbsp; Player เล่นผ่านมือถือ</span>
+                </p>
+            </div>
 
-    <p class="sub">
-        ระบบจัดการเกมล่ามนุษย์หมาป่า<br>
-        Host คุมเกม &nbsp;·&nbsp; Player เล่นผ่านมือถือ
-    </p>
+            <div class="lobby-brand-note" aria-hidden="true">
+                <span></span>
+                <b>TRUST NOBODY</b>
+                <span></span>
+            </div>
+        </div>
 
-    <!-- ===== ชื่อของคุณ ===== -->
-    <!-- ตั้งได้ "ครั้งแรกครั้งเดียว" เท่านั้น พอตั้งแล้วช่องนี้จะถูกซ่อนไป (ดู refreshNameUI() ใน
-         index.main.js) เปลี่ยนไปโชว์เป็นป้ายอ่านอย่างเดียวที่มุมขวาบนแทน (#nameBadge ด้านบน)
-         แก้ทีหลังไม่ได้จากหน้านี้อีกแล้ว ต้องให้แอดมินแก้ให้ผ่าน admin.html เท่านั้น -->
-    <div class="name-field" id="nameField">
-        <input
-            type="text"
-            id="displayNameInput"
-            placeholder="ชื่อของคุณ"
-            maxlength="24"
-            autocomplete="off"
-        >
-        <div class="name-error" id="displayNameError"></div>
-    </div>
+        <div class="lobby-controls">
+            <div class="section-heading">
+                <span class="section-kicker">READY?</span>
+                <h2>เริ่มเกม</h2>
+            </div>
 
-    <button class="btn btn-host" onclick="openHostModal()">
-        <span class="btn-icon">🎮</span>
-        สร้างห้อง — ควบคุมเกม
-    </button>
+            <!-- ===== ชื่อของคุณ ===== -->
+            <!-- ตั้งได้ครั้งแรกตามกติกาบัญชีเดิม; หลังตั้งแล้วจะย้ายไปแสดงเป็น Account chip และ Profile -->
+            <div class="name-field" id="nameField">
+                <label for="displayNameInput">ชื่อผู้เล่น</label>
+                <div class="name-input-wrap">
+                    <span class="name-input-icon" aria-hidden="true">👤</span>
+                    <input
+                        type="text"
+                        id="displayNameInput"
+                        placeholder="ชื่อของคุณ"
+                        maxlength="24"
+                        autocomplete="off"
+                    >
+                </div>
+                <div class="name-error" id="displayNameError"></div>
+            </div>
 
-    <button class="btn btn-player" onclick="player()">
-        <span class="btn-icon">👤</span>
-        เข้าร่วมห้อง — ผู้เล่น
-    </button>
+            <div class="lobby-actions" aria-label="ตัวเลือกการเล่น">
+                <button class="btn btn-host" type="button" onclick="openHostModal()">
+                    <span class="btn-icon">🎮</span>
+                    <span class="btn-copy">สร้างห้อง
+                        <small>สร้างห้องและควบคุมเกม</small>
+                    </span>
+                    <span class="btn-arrow" aria-hidden="true">→</span>
+                </button>
 
-    <div class="footer">Trust nobody. Night starts.</div>
+                <button class="btn btn-player" type="button" onclick="player()">
+                    <span class="btn-icon">👤</span>
+                    <span class="btn-copy">เข้าร่วมห้อง
+                        <small>เข้าร่วมในฐานะผู้เล่น</small>
+                    </span>
+                    <span class="btn-arrow" aria-hidden="true">→</span>
+                </button>
+            </div>
+
+            <div class="footer">Trust nobody. Night starts.</div>
+        </div>
+    </section>
+</main>
 
 </div>
 
-<script src="js/index.main.js"></script>
+<script src="js/index.main.js?v=20260926-6"></script>
 
 <!-- ป้ายเวอร์ชันมุมซ้ายบน — ขาวจาง ๆ ดึงค่ามาจาก /api/config (appVersion) ให้ตรงกับเลข
      "Running version" ที่เห็นในหน้า Environment overview ของ AWS Elastic Beanstalk -->
@@ -158,6 +416,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 #wwUpdateOverlay.show{ display:flex; }
 body.ww-update-lock{ overflow:hidden; }
 </style>
+<script src="js/shared.update-check.js?v=1"></script>
 <script src="js/index.auto-update.js"></script>
 
 </body>

@@ -12,7 +12,7 @@
 <meta name="viewport"
 content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
 
-<title>Werewolf — ผู้เล่น</title>
+<title>Werewolf-Online</title>
 <link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
@@ -28,9 +28,12 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <body data-page="player" class="lobby-beach is-day">
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="js/error-reporter.js?v=3"></script>
-<script src="js/runtime-audit-engine.js?v=1"></script>
-<script src="js/runtime-audit.js?v=1"></script>
+<script src="js/error-reporter.js?v=8"></script>
+<script src="js/runtime-audit-engine.js?v=20260926-4"></script>
+<script src="js/runtime-audit-action-registry.js?v=20260926-4"></script>
+<script src="js/runtime-audit.js?v=20260926-4"></script>
+<script src="js/runtime-audit-actions.js?v=20260926-4"></script>
+<script src="js/game-runtime-client.js?v=20260926-7"></script>
 <script src="js/shared.config-client.js?v=1"></script>
 <script src="js/shared.touch-guard.js"></script>
 <script src="js/shared.reset-guard.js"></script>
@@ -53,6 +56,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
        (ดู releaseBotAndReturn ถูกเรียกจาก dblclick listener บน #players ใน player.main.js) -->
 
 <div id="connBanner" class="conn-banner hidden">🔌 ขาดการเชื่อมต่อ กำลังพยายามเชื่อมต่อใหม่...</div>
+<div id="gameActionStatus" class="runtime-action-status hidden" role="status" aria-live="polite"></div>
 
 <!-- JOIN CARD : BEACH LOBBY -->
 <div class="card" id="joinCard">
@@ -156,13 +160,22 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
 <div id="selectInfo" class="small"></div>
 
-<!-- ROLES-IN-GAME PANEL (จอกว้างมาก ๆ เท่านั้น — โผล่เป็นคอลัมน์ซ้ายสุด คู่กับกริดผู้เล่นตรงกลาง
-     และแชทขวาสุด ดู @media (min-width:1400px) ใน player.css. เนื้อหาก๊อปมาจากลิสต์เดียวกับ
-     #popupRolesInGame (ดู showGameInfo ใน player.main.js) จอแคบกว่านี้ element นี้ไม่แสดงผล
-     (ไม่มี CSS ให้ fixed) ดูบทได้ผ่านป๊อปอัปเดิมตามปกติ -->
+<!-- ROLES-IN-GAME PANEL (จอ 1280px ขึ้นไป — เป็นคอลัมน์ซ้ายสุดของ workspace เกม)
+     เนื้อหาก๊อปมาจากลิสต์เดียวกับ #popupRolesInGame (ดู showGameInfo ใน player.main.js)
+     จอ/หน้าต่างแคบกว่านี้จะซ่อนแผงนี้เพื่อรักษาพื้นที่กริดผู้เล่น -->
 <div class="card hidden" id="rolesPanelCard">
     <h3>บทในเกมรอบนี้</h3>
     <div id="rolesInGamePanel"></div>
+</div>
+
+<div class="card runtime-card hidden" id="spectatorCard" aria-live="polite"></div>
+
+<div class="card runtime-card hidden" id="gameTimelineCard">
+    <div class="runtime-card-head">
+        <div><span class="runtime-kicker">GAME TIMELINE</span><h3>เหตุการณ์ล่าสุด</h3></div>
+        <span class="runtime-state-pill" id="playerStateVersion">v1</span>
+    </div>
+    <div id="gameTimeline" class="runtime-timeline"></div>
 </div>
 
 <div class="card hidden" id="playersCard">

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex, nofollow">
-<title>Werewolf — เซิร์ฟเวอร์กำลังปิด</title>
+<title>Werewolf-Online</title>
 <link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
@@ -17,6 +17,17 @@
   ล้างเฉพาะของที่ผูกกับห้อง/เซสชัน (รายการเดียวกับ SESSION_KEYS ใน shared.server-control.js) ชื่อที่ตั้งไว้/สถานะผ่านรหัสไม่ถูกล้าง
   ไปหน้าแรกเฉพาะตอนได้คำตอบชัดว่าเปิดแล้วเท่านั้น (เน็ตหลุด/server ล่มชั่วคราว = รอต่อ) จึงไม่วนลูป
 -->
+<script>
+/* Standalone runtime audit for the maintenance response: it must work while normal JS assets are unavailable. */
+window.__WW_MAINTENANCE_RUNTIME_AUDIT__ = { version:"2.0", page:"maintenance", startedAt:Date.now(), events:[], findings:[] };
+(function(){
+    const a=window.__WW_MAINTENANCE_RUNTIME_AUDIT__;
+    const record=(type,detail)=>{ try{ a.events.push({at:new Date().toISOString(),type,detail:String(detail||"").slice(0,500)}); if(a.events.length>120)a.events.shift(); }catch(_){} };
+    window.addEventListener("error",e=>{a.findings.push({code:"MAINTENANCE_RUNTIME_ERROR",message:String(e?.message||"error")}); record("error",e?.message||"");});
+    window.addEventListener("unhandledrejection",e=>{a.findings.push({code:"MAINTENANCE_UNHANDLED_REJECTION",message:String(e?.reason?.message||e?.reason||"rejection")}); record("unhandledrejection",e?.reason||"");});
+    const fetch0=window.fetch; if(typeof fetch0==="function"){ window.fetch=async function(...args){ const started=Date.now(); try{ const r=await fetch0.apply(this,args); record("request",`${String(args?.[0]||"")} ${r.status} ${Date.now()-started}ms`); if(!r.ok)a.findings.push({code:"MAINTENANCE_HTTP_ERROR",status:r.status,url:String(args?.[0]||"")}); return r; }catch(e){ a.findings.push({code:"MAINTENANCE_NETWORK_ERROR",message:String(e?.message||e)}); record("request-error",e?.message||e); throw e; } }; }
+})();
+</script>
 <style>
     *{ box-sizing:border-box; }
     html,body{ min-height:100%; margin:0; }
@@ -56,6 +67,7 @@
     .role-desc{ font-size:12.5px; line-height:1.55; color:rgba(255,255,255,.75); }
     .role-desc img{ max-height:1.2em; vertical-align:middle; }
     .icon{ font-size:56px; line-height:1; margin-bottom:14px; }
+    .icon img{ display:block; width:72px; height:72px; object-fit:contain; border-radius:16px; margin:0 auto; }
     h1{ font-size:24px; font-weight:700; margin:0 0 10px; }
     p{ font-size:15px; line-height:1.7; color:rgba(255,255,255,.72); margin:0 0 22px; }
     .msg{
@@ -85,7 +97,7 @@
 </head>
 <body>
 <div class="box">
-    <div class="icon">🔧</div>
+    <div class="icon"><img id="serverIcon" src="" alt="" width="72" height="72"></div>
     <h1>เซิร์ฟเวอร์กำลังปิด</h1>
     <p>ตอนนี้ยังเข้าเกมไม่ได้<br>เมื่อเซิร์ฟเวอร์เปิดอีกครั้ง หน้านี้จะพาคุณกลับหน้าแรกให้อัตโนมัติ</p>
     <div class="msg" id="noticeMsg"></div>
@@ -234,6 +246,10 @@
             .then(function (r) { if (!r.ok) throw new Error("bad_status"); return r.json(); })
             .then(function (d) {
                 if (d && typeof d.serverNow === "number") clockSkew = d.serverNow - Date.now();
+                if (d && d.serverIconUrl) {
+                    var iconEl = document.getElementById("serverIcon");
+                    if (iconEl) iconEl.src = String(d.serverIconUrl);
+                }
                 if (d && d.serverOpen === false) renderNotice(d);
                 if (d && d.serverOpen === true) {
                     reloading = true;
