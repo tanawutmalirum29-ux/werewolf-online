@@ -25,4 +25,4 @@ jobs:
         with:
           application-name: werewolf-online
           environment-name: werewolf-online-th-env
-          region: ap-southeast-7
+          aws-region: ap-southeast-7
