@@ -8,8 +8,24 @@ const os = require("os");
 const compression = require("compression");
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
-const { getAppVersion, getCachedAppVersion, startAppVersionRefresh } = require("./utils/getAppVersion");
+const { pipeline } = require("stream/promises");
+const { getAppVersion, getCachedAppVersion, getAppEnvironmentState, getCachedAppEnvironmentState, startAppVersionRefresh } = require("./utils/getAppVersion");
+const {
+    configuredEnvironmentName,
+    normalizeVersionLabel,
+    isValidVersionLabel,
+    publicApplicationVersion,
+    isKnownDeployableStatus,
+    describeEnvironment,
+    listApplicationVersions,
+    getApplicationVersion,
+    deployApplicationVersion,
+    getSourceBundleObject,
+    makeSafeDownloadFilename,
+} = require("./utils/elastic-beanstalk-version-manager");
 const { listBugReplayScenarios, getBugReplayScenario, runBugReplayScenario, createRuntimeAudit } = require("./utils/bug-replay-runner");
+const { getGithubBugReportConfig, buildGithubBugReportStatus, buildGithubBugReportIssue, createGithubBugReportIssue, createGithubScreenshotFiles, screenshotGithubPath, clearAllGithubIssues, listAllGithubIssues, searchGithubIssuesByText, clearAllGithubScreenshotFiles, MAX_SCREENSHOT_BYTES } = require("./utils/github-bug-reports");
+const { DIAGNOSTIC_FEATURE_TAXONOMY_VERSION, FEATURE_LABELS, normalizeDiagnosticFeatureKeys, featureAreaLabel, featureLabels, buildGameDiagnosticProfile } = require("./utils/diagnostic-feature-taxonomy");
 
 // ============================================================
 // DIAGNOSTICS CENTER — เก็บข้อผิดพลาดจาก server + browser เพื่อให้ Admin ดูได้
@@ -30,7 +46,7 @@ const DIAGNOSTIC_REDACT_KEYS = /token|secret|password|authorization|cookie|sessi
 // Public diagnostic shares are capability URLs: anyone holding the random token can read
 // the selected diagnostic snapshot until it expires. Reports are persisted in the existing
 // DynamoDB table so a CloudFront/Elastic Beanstalk request can land on another instance.
-const DIAGNOSTIC_SHARE_VERSION = 3;
+const DIAGNOSTIC_SHARE_VERSION = 4;
 const DIAGNOSTIC_SHARE_TTL_MS = Math.max(15 * 60_000, Math.min(7 * 24 * 60 * 60_000, Number(process.env.DIAGNOSTIC_SHARE_TTL_MS) || 3 * 24 * 60 * 60_000));
 const DIAGNOSTIC_SHARE_MAX_MEMORY = 160;
 const DIAGNOSTIC_SHARE_MAX_BYTES = 320 * 1024;
@@ -44,12 +60,33 @@ const DIAGNOSTIC_CAUSAL_MAX_EDGES = 72;
 const DIAGNOSTIC_CAUSAL_WINDOW_MS = 3 * 60 * 1000;
 const DIAGNOSTIC_CAUSAL_STRONG_WINDOW_MS = 15 * 60 * 1000;
 const diagnosticShares = new Map();
+const diagnosticGithubReports = new Map();
+let githubIssueClearInFlight = false;
+let diagnosticGithubBatchInFlight = false;
+let githubScreenshotClearInFlight = false;
+const adminGithubScreenshotUploads = new Map();
+const ADMIN_GITHUB_SCREENSHOT_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
+const DIAGNOSTIC_GITHUB_REPORT_TTL_MS = 24 * 60 * 60 * 1000;
+const DIAGNOSTIC_GITHUB_INCIDENT_TTL_MS = DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS;
+const DIAGNOSTIC_EVENT_DEDUPE_WINDOW_MS = 15 * 1000;
+const DIAGNOSTIC_NOISY_DEDUPE_KINDS = new Set(["network_error", "resource_error", "fetch_aborted"]);
+const DIAGNOSTIC_AWS_SERVICE_PREFIXES = new Set(["dynamodb", "elasticbeanstalk", "s3", "cloudfront"]);
+const diagnosticGithubIncidentReports = new Map();
+const diagnosticGithubIncidentInFlight = new Map();
+const diagnosticGithubEventInFlight = new Map();
+
+// Short-lived capability used only after an authenticated Admin request asks for a
+// historical Elastic Beanstalk source bundle. The browser never receives the EB
+// managed S3 bucket/key; it receives this signed ticket instead. It is deliberately
+// stateless so a load-balanced EB environment can serve the follow-up GET from any
+// healthy instance.
+const ADMIN_VERSION_DOWNLOAD_TTL_MS = 2 * 60 * 1000;
 
 // ============================================================
 // ADMIN BUG REPLAY / SIMULATION RUNNER
 // ============================================================
-// รันชุดจำลองแบบ allow-list; โหมด all หยุดที่ failure แรก ส่วน deep จะเดินต่อเพื่อเก็บ failure หลายจุดใน run เดียว
-// จำกัดจำนวน failure ที่เก็บเผยแพร่เพื่อไม่ให้ Diagnostics/หน้า Admin โตไม่จำกัด
+// รันชุดจำลองแบบ allow-list และเดินต่อจนครบทุก scenario ในรอบเดียว
+// live UI จำกัด failure rows ที่ส่งขึ้นหน้าจอ แต่ aggregate report เก็บ reference ของทุก failure ที่พบ
 const BUG_REPLAY_MAX_JOBS = 8;
 const BUG_REPLAY_MAX_FAILURES = 12;
 const BUG_REPLAY_JOB_TTL_MS = 30 * 60 * 1000;
@@ -130,18 +167,126 @@ function diagnosticEventCode(event = {}) {
     const context = event.context || {};
     const detail = event.detail || {};
     const authBootstrapError = detail.authObservation?.testerPassBootstrapError || detail.authPresence?.testerPassBootstrapError || "";
+    const hintedCode = String(event.causalHint?.causeCode || "").trim().toUpperCase();
+    // A browser/client hint is never enough to prove an AWS IAM denial. Keep other
+    // client hints (ACK_TIMEOUT, SOCKET_*, etc.) intact, but require server-side
+    // evidence before exposing IAM_ACCESS_DENIED as the event's effective code.
+    const safeHintedCode = hintedCode === "IAM_ACCESS_DENIED" && String(event.source || "").toLowerCase() !== "server" ? "" : hintedCode;
     return String(
         context.ackCode || context.serverCode || context.code || context.errorCode ||
         detail.ackCode || detail.serverCode || detail.code || detail.errorCode ||
-        authBootstrapError || event.causalHint?.causeCode || ""
+        authBootstrapError || safeHintedCode || ""
     ).trim().toUpperCase();
 }
 
-function classifyDiagnosticCause({ kind = "", message = "", status = 0, context = {}, permission = null, causalHint = null } = {}) {
-    const code = String(context?.ackCode || context?.serverCode || context?.code || context?.errorCode || causalHint?.causeCode || "").toUpperCase();
+function diagnosticIsAuditSummaryEvent(item = {}) {
+    const code = diagnosticEventCode(item);
+    const kind = String(item.kind || item.type || "").toLowerCase();
+    return code === "RUNTIME_AUDIT_SUMMARY" || kind === "runtime_audit_summary";
+}
+
+function diagnosticIsStartupMutationFinding(item = {}) {
+    const code = diagnosticEventCode(item);
+    if (code !== "DOM_MUTATION_BURST") return false;
+    const context = item.context || item.detail || {};
+    if (context.runtimeAuditSynthetic !== true) return false;
+    const firstSeenElapsedMs = Number(context.firstSeenElapsedMs);
+    return Number.isFinite(firstSeenElapsedMs) && firstSeenElapsedMs <= 1500;
+}
+
+function extractRuntimeAuditFindingEvents(owner = {}) {
+    const context = owner?.context && typeof owner.context === "object" ? owner.context : {};
+    const audit = context?.audit && typeof context.audit === "object" ? context.audit : context;
+    const findings = Array.isArray(audit?.findings) ? audit.findings : [];
+    if (!findings.length) return [];
+    const summaryMs = Number(audit?.summary?.durationMs);
+    const ownerAt = diagnosticTimeMs(owner);
+    const startAt = ownerAt && Number.isFinite(summaryMs) ? ownerAt - Math.max(0, summaryMs) : ownerAt;
+    return findings.slice(0, 180).map((finding, index) => {
+        const firstSeenElapsedMs = Number(finding?.firstSeenElapsedMs);
+        const atMs = startAt && Number.isFinite(firstSeenElapsedMs)
+            ? startAt + Math.max(0, firstSeenElapsedMs)
+            : ownerAt;
+        const code = String(finding?.code || "RUNTIME_AUDIT_FINDING").trim().toUpperCase();
+        const severity = String(finding?.severity || "warning").toLowerCase();
+        const category = String(finding?.category || "runtime");
+        const detail = {
+            ...(finding?.detail && typeof finding.detail === "object" ? finding.detail : {}),
+            code,
+            runtimeAuditSynthetic: true,
+            summaryEventId: String(owner?.id || ""),
+            auditCategory: category,
+            firstSeenElapsedMs: Number.isFinite(firstSeenElapsedMs) ? firstSeenElapsedMs : null,
+            lastSeenElapsedMs: Number.isFinite(Number(finding?.lastSeenElapsedMs)) ? Number(finding.lastSeenElapsedMs) : null,
+            findingCount: Number.isFinite(Number(finding?.count)) ? Number(finding.count) : 1,
+        };
+        const id = `${String(owner?.id || "audit")}:finding:${index}:${code}:${Number.isFinite(firstSeenElapsedMs) ? firstSeenElapsedMs : "na"}`;
+        return {
+            id,
+            time: atMs ? new Date(atMs).toISOString() : String(owner?.time || ""),
+            source: String(owner?.source || "client"),
+            type: "runtime_audit",
+            kind: "runtime_audit_finding",
+            page: String(owner?.page || ""),
+            label: code,
+            message: String(finding?.message || code),
+            traceId: String(owner?.traceId || ""),
+            sessionId: String(owner?.sessionId || ""),
+            roomId: String(owner?.roomId || ""),
+            context: detail,
+            severity,
+            causalHint: {
+                failureStage: `runtime_audit.${category}`,
+                causeCode: code,
+                confidence: severity === "critical" || severity === "error" ? "high" : "medium",
+            },
+        };
+    });
+}
+
+function isLikelyAwsIamAction(action = "") {
+    const raw = String(action || "").trim();
+    const match = raw.match(/^([a-z0-9-]+):([A-Za-z0-9*]+)$/i);
+    if (!match) return false;
+    return DIAGNOSTIC_AWS_SERVICE_PREFIXES.has(match[1].toLowerCase());
+}
+
+function hasAuthoritativeIamEvidence({ source = "", message = "", stack = "", permission = null, context = {} } = {}) {
+    if (String(source || "").toLowerCase() !== "server") return false;
+    const text = [message, stack, typeof context === "string" ? context : JSON.stringify(context || {})].join("\n");
+    const explicitAwsException = /\b(?:AccessDeniedException|UnauthorizedOperation)\b/i.test(text);
+    const explicitAwsAction = /\bnot authorized to perform(?::)?\s*([a-z0-9-]+):([A-Za-z0-9*]+)\b/i.exec(text);
+    if (explicitAwsAction && isLikelyAwsIamAction(`${explicitAwsAction[1]}:${explicitAwsAction[2]}`)) return true;
+    if (explicitAwsException) {
+        if (!permission?.action) return true;
+        return isLikelyAwsIamAction(permission.action);
+    }
+    // A structured permission denial is authoritative only when its action is a known
+    // AWS service action used by this application. Values such as node:fs/node:internal
+    // come from the replay/test runtime and must never become IAM_ACCESS_DENIED.
+    return !!permission?.accessDenied && isLikelyAwsIamAction(permission.action);
+}
+
+function classifyDiagnosticCause({ source = "", kind = "", message = "", stack = "", status = 0, context = {}, permission = null, causalHint = null } = {}) {
+    const rawHintCode = String(causalHint?.causeCode || "").toUpperCase();
+    const safeHintCode = rawHintCode === "IAM_ACCESS_DENIED" && String(source || "").toLowerCase() !== "server" ? "" : rawHintCode;
+    const code = String(context?.ackCode || context?.serverCode || context?.code || context?.errorCode || safeHintCode || "").toUpperCase();
     const text = String(message || "");
-    if (permission?.accessDenied || /AccessDenied|not authorized|UnauthorizedOperation/i.test(text)) {
-        return { code: "IAM_ACCESS_DENIED", stage: "server.persistence", confidence: "high", explanation: "AWS ปฏิเสธสิทธิ์ของ operation ที่ระบบกำลังทำ" };
+    if (code === "DOM_VIEWPORT_UNAVAILABLE") {
+        return { code, stage: "browser.layout", confidence: "high", explanation: "เบราว์เซอร์ของหน้าเกมมี viewport เป็น 0×0 ทำให้ไม่สามารถคำนวณพื้นที่แสดงผลของ UI ได้" };
+    }
+    if (code === "DOM_GRID_OFFSCREEN") {
+        return { code, stage: "browser.layout", confidence: "high", explanation: "พื้นที่กริดผู้เล่นทั้งก้อนอยู่นอก viewport แม้ viewport มีขนาดจริง จึงต้องตรวจลำดับความสูงของ header/workspace และจังหวะการจัด layout ของ Host" };
+    }
+    if (code === "DOM_OVERFLOW" || code === "DOM_OUTSIDE_VIEWPORT") {
+        return { code, stage: "browser.layout", confidence: "high", explanation: "องค์ประกอบ UI ของหน้าเกมล้นหรืออยู่นอกพื้นที่แสดงผลที่มีอยู่จริง" };
+    }
+    if (hasAuthoritativeIamEvidence({ source, message, stack, permission, context })) {
+        return { code: "IAM_ACCESS_DENIED", stage: "server.persistence", confidence: "high", explanation: "พบหลักฐานจากฝั่งเซิร์ฟเวอร์ว่า AWS ปฏิเสธสิทธิ์ของ operation ที่กำลังทำ" };
+    }
+    if (code === "IAM_ACCESS_DENIED") {
+        // Never turn an untrusted client hint into an IAM diagnosis.
+        return { code: "UNCLASSIFIED", stage: "unknown", confidence: "low", explanation: "มีข้อความ/รหัสที่อ้างถึง IAM แต่ยังไม่มีหลักฐาน AWS ฝั่งเซิร์ฟเวอร์ยืนยัน" };
     }
     if (code) {
         if (/^(ACCOUNT_DELETED|ACCOUNT_SESSION_EXPIRED|ACCOUNT_NOT_FOUND|ACCOUNT_RECREATE_REQUIRED|ACCOUNT_TOKEN_REQUIRED|GOOGLE_REAUTH_REQUIRED|ACCOUNT_AUTH_FAILED|ACCOUNT_EXPIRED)$/.test(code)) {
@@ -172,15 +317,19 @@ function diagnosticIsBenignLifecycleEvent(item = {}) {
     const kind = String(item.kind || item.type || "").toLowerCase();
     const code = diagnosticEventCode(item);
     return /^(browser_exit_signal|browser_exit_armed|browser_exit_cancelled|browser_exit_applied|room_closed_after_browser_exit)$/.test(kind)
-        || /^(BROWSER_EXIT_SIGNAL|BROWSER_EXIT_ARMED|BROWSER_EXIT_CANCELLED|BROWSER_EXIT_RECONNECTED|BROWSER_EXIT_KEPT_ROOM_OPEN|BROWSER_EXIT_APPLIED|BROWSER_EXIT_CLOSE_ROOM|ROOM_CLOSED)$/.test(code);
+        || /^(BROWSER_EXIT_SIGNAL|BROWSER_EXIT_ARMED|BROWSER_EXIT_CANCELLED|BROWSER_EXIT_RECONNECTED|BROWSER_EXIT_KEPT_ROOM_OPEN|BROWSER_EXIT_APPLIED|BROWSER_EXIT_CLOSE_ROOM|ROOM_CLOSED|BROWSER_EXIT_DUPLICATE_IGNORED)$/.test(code);
 }
 
 function diagnosticIsFailureEvent(item = {}) {
     if (diagnosticIsBenignLifecycleEvent(item)) return false;
+    if (diagnosticIsAuditSummaryEvent(item)) return false;
+    if (diagnosticIsStartupMutationFinding(item)) return false;
+    const severity = String(item.severity || "").toLowerCase();
+    if (severity === "info") return false;
     const kind = String(item.kind || item.type || "").toLowerCase();
     const code = diagnosticEventCode(item);
     const message = String(item.message || item.label || "");
-    if (item.permission?.accessDenied) return true;
+    if (item.permission?.accessDenied || hasAuthoritativeIamEvidence(item)) return true;
     if (Number(item.status) >= 400) return true;
     if (code && !/^(OK|SUCCESS)$/.test(code)) return true;
     if (/error|fail|exception|denied|timeout|reject|disconnect|close|aborted|invalid|unavailable|ล้มเหลว|ไม่สำเร็จ|ปฏิเสธ/i.test(kind + " " + message)) return true;
@@ -193,7 +342,7 @@ function diagnosticStageForItem(item = {}) {
     const type = String(item.type || "").toLowerCase();
     const label = String(item.label || "").toLowerCase();
     const code = diagnosticEventCode(item);
-    if (item.permission?.accessDenied || /accessdenied|not authorized|iam_access_denied/.test(String(item.message || "").toLowerCase())) return "server.persistence";
+    if (hasAuthoritativeIamEvidence(item)) return "server.persistence";
     if (/^tester_/.test(kind) || /^tester[_\.]/.test(code.toLowerCase())) return "tester.authentication";
     if (/account_/.test(kind) || /account\./.test(code.toLowerCase())) return "account.authentication";
     if (code === "ACK_TIMEOUT" || label.indexOf("ack.timeout") === 0) return "socket.ack";
@@ -354,11 +503,13 @@ function diagnosticSemanticCausalSignal(before = {}, after = {}) {
     let score = 0;
     const add = (points, reason) => { score += points; reasons.push(reason); };
 
+    if (bk === "runtime_audit_finding" && ak === "runtime_audit_summary") add(98, "runtime audit finding was observed before the summary report that packaged it");
+    if (bk === "runtime_audit_finding" && /runtime_audit_summary/.test(ak) && diagnosticEventCode(before) === "DOM_VIEWPORT_UNAVAILABLE") add(100, "viewport failure was observed before the runtime audit summary was emitted");
     if (bk === "socket" && bl.startsWith("emit:") && ak === "socket_ack_timeout") add(92, "client emitted Socket.IO event, then the same operation timed out waiting for ACK");
     if (bk === "socket_breadcrumb" && bl.startsWith("handler.start:") && ak === "socket_ack_error") add(78, "server handler started before client received a rejected ACK");
     if (bk === "socket_handler_error" && ak === "socket_ack_error") add(90, "server handler error preceded client/server ACK rejection");
     if (/dynamodb|database/.test(bk + " " + bl) && (ak === "socket_handler_error" || ak === "http_error" || ak === "socket_ack_error")) add(88, "database failure preceded a higher-level server failure");
-    if (before.permission?.accessDenied && (ak === "socket_handler_error" || ak === "http_error" || ak === "socket_ack_error")) add(96, "IAM denial preceded the higher-level operation failure");
+    if (hasAuthoritativeIamEvidence(before) && (ak === "socket_handler_error" || ak === "http_error" || ak === "socket_ack_error")) add(96, "AWS IAM denial preceded the higher-level operation failure");
     if (bk === "socket" && bl.startsWith("ack:") && ak === "socket_ack_error") add(100, "server ACK rejection surfaced as the matching client ACK error");
     if (bk === "socket_ack_error" && ak === "unhandled_rejection") add(86, "socket ACK error preceded an unhandled rejection in the same client flow");
     if ((bk === "socket_ack_error" || bk === "socket_handler_error") && (ak.includes("disconnect") || al.includes("disconnect"))) add(74, "error preceded Socket.IO disconnect");
@@ -542,7 +693,7 @@ function buildDiagnosticCausalGraph(primary = {}, related = []) {
         neighborhood: nodeNeighbors.get(n.id) || { upstream:[], downstream:[], correlated:[] },
     }));
     const primaryId = String(primary.id || "");
-    const upstream = edges.filter(e => e.to === primaryId && e.relation === "probable_cause").sort((a,b) => b.score-a.score);
+    const upstream = edges.filter(e => e.to === primaryId && ["probable_cause", "causal_context", "downstream_effect"].includes(e.relation)).sort((a,b) => b.score-a.score);
     const downstream = edges.filter(e => e.from === primaryId && (e.relation === "probable_cause" || e.relation === "downstream_effect" || e.relation === "causal_context")).sort((a,b) => b.score-a.score);
     const contextual = edges.filter(e => (e.to === primaryId || e.from === primaryId) && e.relation === "correlated_event").sort((a,b) => b.score-a.score);
 
@@ -550,7 +701,7 @@ function buildDiagnosticCausalGraph(primary = {}, related = []) {
     const visited = new Set([primaryId]);
     let cursor = primaryId;
     for (let hops = 0; hops < 8; hops++) {
-        const edge = edges.filter(e => e.to === cursor && e.relation === "probable_cause" && !visited.has(e.from)).sort((a,b) => b.score-a.score)[0];
+        const edge = edges.filter(e => e.to === cursor && ["probable_cause", "causal_context", "downstream_effect"].includes(e.relation) && !visited.has(e.from)).sort((a,b) => b.score-a.score)[0];
         if (!edge) break;
         rootPath.unshift(edge.from);
         visited.add(edge.from);
@@ -646,21 +797,34 @@ function buildDiagnosticAnalysis(event, related = []) {
             });
         }
     }
-    const evidencePool = relatedEvents.concat(breadcrumbEvidence);
+    const runtimeAuditEvidenceById = new Map();
+    for (const owner of [event, ...relatedEvents]) {
+        for (const finding of extractRuntimeAuditFindingEvents(owner)) {
+            if (!runtimeAuditEvidenceById.has(finding.id)) runtimeAuditEvidenceById.set(finding.id, finding);
+        }
+    }
+    const runtimeAuditEvidence = Array.from(runtimeAuditEvidenceById.values());
+    const evidencePool = relatedEvents.concat(runtimeAuditEvidence, breadcrumbEvidence);
     const ordered = evidencePool.sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
     const timeline = buildDiagnosticTimeline(ordered);
     const eventCode = diagnosticEventCode(event);
-    const cause = classifyDiagnosticCause({ kind:event.kind, message:event.message, status:event.status, context:event.context, permission:event.permission, causalHint:event.causalHint });
-    const causalGraph = buildDiagnosticCausalGraph(event, relatedEvents);
+    const cause = classifyDiagnosticCause({ source:event.source, kind:event.kind, message:event.message, stack:event.stack, status:event.status, context:event.context, permission:event.permission, causalHint:event.causalHint });
+    const causalGraph = buildDiagnosticCausalGraph(event, relatedEvents.concat(runtimeAuditEvidence));
 
     const candidates = ordered.filter(diagnosticIsFailureEvent).map((item, index) => {
         const code = diagnosticEventCode(item);
         const stage = diagnosticStageForItem(item);
         let score = 20;
-        if (item.permission?.accessDenied) score += 60;
+        if (hasAuthoritativeIamEvidence(item)) score += 60;
+        else if (item.permission?.accessDenied) score += 12;
         if (code && !/^(SOCKET_ACK_ERROR|SOCKET_ERROR|NETWORK_ERROR|UNCLASSIFIED)$/.test(code)) score += 45;
+        if (String(item.severity || "").toLowerCase() === "critical") score += 35;
+        else if (String(item.severity || "").toLowerCase() === "error") score += 20;
         if (item.source === "server") score += 25;
         if (Number(item.status) >= 500) score += 25;
+        if (item.kind === "runtime_audit_finding") score += 12;
+        if (code === "DOM_VIEWPORT_UNAVAILABLE") score += 18;
+        if (code === "DOM_GRID_OFFSCREEN") score += 24;
         if (item.type === "socket" && /^ack:/.test(String(item.label || "")) && item.detail?.ok === false) score += 35;
         if (String(item.kind || "").includes("handler_error")) score += 30;
         if (String(item.kind || "").includes("unhandled_rejection")) score -= 20;
@@ -671,8 +835,10 @@ function buildDiagnosticAnalysis(event, related = []) {
 
     const strongest = candidates[0]?.item || event;
     const strongestCause = strongest === event ? cause : classifyDiagnosticCause({
+        source: strongest.source,
         kind: strongest.kind,
         message: strongest.message || strongest.label,
+        stack: strongest.stack || "",
         status: strongest.status,
         context: strongest.context || strongest.detail || {},
         permission: strongest.permission,
@@ -697,7 +863,7 @@ function buildDiagnosticAnalysis(event, related = []) {
     if (opId) evidence.push(`operation:${opId}`);
     if (reqId) evidence.push(`request:${reqId}`);
     if (strongest !== event) evidence.push(`root-event:${strongest.kind || strongest.type || "event"}`);
-    if (strongest.permission?.accessDenied) evidence.push(`iam:${strongest.permission.action || "AccessDenied"}`);
+    if (hasAuthoritativeIamEvidence(strongest)) evidence.push(`iam:${strongest.permission?.action || "AccessDenied"}`);
     if (strongest.source) evidence.push(`source:${strongest.source}`);
 
     const chain = [];
@@ -713,7 +879,7 @@ function buildDiagnosticAnalysis(event, related = []) {
                 : "server did not receive a tester pass");
         chain.push({ stage:"tester.authentication", status:authObservation.testerGranted ? "granted" : "mismatch", evidence:`auth observation: requestedTester=true; ${passState}` });
     }
-    const persistenceFailure = ordered.find((x) => x.source === "server" && (x.permission?.accessDenied || /dynamodb|persistence/i.test(String(x.type || "") + " " + String(x.kind || ""))) && diagnosticIsFailureEvent(x));
+    const persistenceFailure = ordered.find((x) => x.source === "server" && (hasAuthoritativeIamEvidence(x) || /dynamodb|persistence/i.test(String(x.type || "") + " " + String(x.kind || ""))) && diagnosticIsFailureEvent(x));
     if (persistenceFailure) chain.push({ stage:"server.persistence", status:"failed", evidence:diagnosticHumanLabel(persistenceFailure) });
     const ackFailure = ordered.find((x) => x.type === "socket" && String(x.label || "").startsWith("ack:") && x.detail?.ok === false);
     if (ackFailure) chain.push({ stage:"socket.server_response", status:"rejected", evidence:diagnosticHumanLabel(ackFailure) });
@@ -766,7 +932,11 @@ function buildDiagnosticAnalysis(event, related = []) {
         ? "ไล่จาก timeline ตาม correlation ID โดยตรวจเหตุการณ์แรกที่เปลี่ยนสถานะจากสำเร็จเป็นผิดพลาด; ยังไม่ควรสรุปจากข้อความ generic เพียงอย่างเดียว"
         : (effective.code === "IAM_ACCESS_DENIED"
             ? "แก้ IAM action/resource ตามหลักฐาน AWS แล้วทดสอบ operation เดิมซ้ำจาก client เดิม"
-            : "ใช้ Root Cause + Causal Chain + Correlation IDs ในรายงานนี้ตรวจต้นเหตุที่ event ต้นน้ำ ก่อนแก้ผลลัพธ์ปลายทาง");
+            : (effective.code === "DOM_VIEWPORT_UNAVAILABLE"
+                ? "ตรวจ parent/iframe layout lifecycle ให้พื้นที่แสดงผลมากกว่า 0×0 แล้ว replay หน้า Host ใน Internal Browser; อย่าแก้ที่จำนวนผู้เล่นก่อน"
+                : (effective.code === "DOM_GRID_OFFSCREEN"
+                    ? "ตรวจความสูงของส่วนหัว/toolbar ก่อน #list ใน Host เมื่อจอแคบ, ให้ player grid อยู่ใน viewport แรก แล้ว replay เคส 29 bots ที่ขนาด 696×601"
+                    : "ใช้ Root Cause + Causal Chain + Correlation IDs ในรายงานนี้ตรวจต้นเหตุที่ event ต้นน้ำ ก่อนแก้ผลลัพธ์ปลายทาง")));
 
     return {
         rootCause,
@@ -848,6 +1018,9 @@ const DIAGNOSTIC_EXPECTED_PERMISSIONS = [
     { action: "dynamodb:Query", reason: "อ่านบัญชี/สถิติ/ประวัติ" },
     { action: "dynamodb:Scan", reason: "ค้นหารายการทั้งหมดและล้างข้อมูล" },
     { action: "elasticbeanstalk:DescribeEnvironments", reason: "อ่าน Running version ของ Elastic Beanstalk (ถ้าตั้ง EB_ENVIRONMENT_NAME)" },
+    { action: "elasticbeanstalk:DescribeApplicationVersions", reason: "อ่านประวัติ Application Version เพื่อแสดง/ดาวน์โหลด/เลือกย้อนกลับ" },
+    { action: "elasticbeanstalk:UpdateEnvironment", reason: "สั่ง environment ให้กลับไปใช้ Application Version เดิม" },
+    { action: "s3:GetObject", reason: "ดาวน์โหลด source bundle ของ Elastic Beanstalk Application Version ลงเครื่อง Admin" },
 ];
 
 function trimDiagnosticText(value, max = DIAGNOSTIC_MAX_TEXT) {
@@ -857,18 +1030,303 @@ function trimDiagnosticText(value, max = DIAGNOSTIC_MAX_TEXT) {
 
 function extractAwsPermissionFailure(text) {
     const raw = String(text || "");
-    const actionMatch = raw.match(/(?:perform|action)[^\n]*?\b([a-z0-9-]+:[A-Za-z0-9]+)\b/);
-    const action = actionMatch ? actionMatch[1] : "";
+    const explicitActionMatch = raw.match(/\bnot authorized to perform(?::)?\s*([a-z0-9-]+):([A-Za-z0-9*]+)\b/i);
+    const genericActionMatch = raw.match(/(?:perform|action)[^\n]*?\b([a-z0-9-]+):([A-Za-z0-9*]+)\b/i);
+    const candidate = explicitActionMatch
+        ? `${explicitActionMatch[1]}:${explicitActionMatch[2]}`
+        : (genericActionMatch ? genericActionMatch[1] : "");
+    const explicitAwsException = /\b(?:AccessDeniedException|UnauthorizedOperation)\b/i.test(raw);
+    const explicitAwsAction = !!explicitActionMatch && isLikelyAwsIamAction(candidate);
+    const action = isLikelyAwsIamAction(candidate) ? candidate : "";
     const arnMatch = raw.match(/\bresource\s*[:=]?\s*(arn:[^\s"']+)/i);
     const resource = arnMatch ? arnMatch[1] : "";
-    if (!action && !/AccessDenied|not authorized|UnauthorizedOperation/i.test(raw)) return null;
+    if (!explicitAwsException && !explicitAwsAction) return null;
     return { action, resource, accessDenied: true };
+}
+
+function diagnosticNoiseDedupeKey(event = {}) {
+    const kind = String(event.kind || "").toLowerCase();
+    if (!DIAGNOSTIC_NOISY_DEDUPE_KINDS.has(kind)) return "";
+    const correlation = String(event.traceId || event.requestId || event.clientRequestId || event.sessionId || "").trim();
+    if (!correlation) return "";
+    return [
+        String(event.source || ""), String(event.page || ""), kind,
+        String(event.fingerprint || ""), String(event.endpoint || ""), String(event.file || ""),
+        correlation, String(event.status || 0),
+    ].join("|").slice(0, 1800);
+}
+
+function findRecentDiagnosticNoiseDuplicate(event = {}) {
+    const key = diagnosticNoiseDedupeKey(event);
+    if (!key) return null;
+    const now = diagnosticTimeMs(event) || Date.now();
+    for (const existing of diagnosticEvents) {
+        const existingTime = diagnosticTimeMs(existing);
+        if (now - existingTime > DIAGNOSTIC_EVENT_DEDUPE_WINDOW_MS) break;
+        if (diagnosticNoiseDedupeKey(existing) === key) return existing;
+    }
+    return null;
+}
+
+
+let diagnosticGameProfileCache = null;
+let diagnosticGameProfileCacheAt = 0;
+let diagnosticGameProfileSourceMtime = 0;
+
+function parseStaticRoleRegistryForDiagnostics(source) {
+    const text = String(source || '');
+    const blockMatch = text.match(/(?:const|let|var)\s+roles\s*=\s*\{([\s\S]*?)\n\};/);
+    if (!blockMatch) return {};
+    const out = {};
+    const rolePattern = /"([^"]+)"\s*:\s*\{\s*team\s*:\s*"([^"]+)"\s*,\s*score\s*:\s*(-?\d+)/g;
+    for (const match of blockMatch[1].matchAll(rolePattern)) {
+        out[match[1]] = { team:match[2], score:Number(match[3]) || 0 };
+    }
+    return out;
+}
+
+function parseStaticMapForDiagnostics(source, declaration) {
+    const text = String(source || '');
+    const name = String(declaration || '')
+        .replace(/^(?:const|let|var)\s+/, '')
+        .replace(/\s*=.*$/, '')
+        .trim();
+    if (!name) return {};
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?:const|let|var)\\s+${escaped}\\s*=\\s*\\{([\\s\\S]*?)\\n\\};`);
+    const match = text.match(re);
+    if (!match) return {};
+    const out = {};
+    for (const item of match[1].matchAll(/([A-Za-z0-9_]+)\s*:\s*["']([^"']*)["']\s*,?/g)) out[item[1]] = item[2];
+    return out;
+}
+
+function parseStaticWinConditionsForDiagnostics(source) {
+    const text = String(source || '');
+    const match = text.match(/const WIN_CONDITIONS\s*=\s*\[([\s\S]*?)\]\s*;/);
+    if (!match) return [];
+    return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+}
+
+function getDiagnosticSourceSnapshot() {
+    try {
+        const file = path.join(__dirname, 'server.js');
+        const stat = fs.statSync(file);
+        const source = fs.readFileSync(file, 'utf8');
+        return { source, mtimeMs:Number(stat.mtimeMs) || 0 };
+    } catch (_) {
+        return { source:'', mtimeMs:0 };
+    }
+}
+
+function buildDiagnosticRuntimeGameSnapshotForReport(roomId = '') {
+    const registry = globalThis.__WEREWOLF_ROOMS__;
+    if (!registry) return { available:false, reason:'runtime_room_registry_not_ready' };
+    const id = String(roomId || '').trim().toUpperCase();
+    if (!id) return { available:false, roomId:'', reason:'room_id_not_available' };
+    const room = registry[id];
+    if (!room) return { available:false, roomId:id, reason:'room_not_present_in_memory' };
+    const players = Array.isArray(room.players) ? room.players : [];
+    const realPlayers = players.filter(p => !p?.isHost);
+    const alive = realPlayers.filter(p => p?.alive !== false);
+    const bots = realPlayers.filter(p => !!p?.isBot);
+    const testers = realPlayers.filter(p => !!p?.isTester);
+    const connected = realPlayers.filter(p => p?.connected !== false);
+    return {
+        available:true,
+        roomId:id,
+        roomType: room?.isTester || String(room?.type || '').toLowerCase() === 'tester' ? 'tester' : 'live',
+        phase: room?.phase || (room?.isNight ? 'night' : (room?.started ? 'day' : 'lobby')),
+        started:!!room?.started,
+        gameOver:!!room?.gameOver,
+        isClosing:!!room?.isClosing,
+        stateVersion:Number(room?.stateVersion) || 0,
+        day:Number(room?.day) || 0,
+        isNight:!!room?.isNight,
+        voteTimerEnabled:!!room?.voteTimerEnabled,
+        revealDeadRole:room?.revealDeadRole !== false,
+        maxPlayers:Number(room?.maxPlayers) || 0,
+        playerCount:realPlayers.length,
+        aliveCount:alive.length,
+        botCount:bots.length,
+        testerCount:testers.length,
+        connectedCount:connected.length,
+        roomPlayerIds:realPlayers.map(p=>String(p?.id||'').slice(0,80)).filter(Boolean).slice(0,80),
+        roleCounts:realPlayers.reduce((acc,p)=>{ const r=String(p?.role||'unknown'); acc[r]=(acc[r]||0)+1; return acc; },{}),
+        settings:{
+            revealDeadRole:room?.revealDeadRole !== false,
+            maxPlayers:Number(room?.maxPlayers) || 0,
+            hasJoinCode:!!String(room?.joinCode||''),
+            hasHostPassword:!!String(room?.hostPassword||''),
+        },
+    };
+}
+
+function getCurrentGameDiagnosticProfile({ roomId = '', force = false } = {}) {
+    const now = Date.now();
+    const sourceInfo = getDiagnosticSourceSnapshot();
+    if (!force && diagnosticGameProfileCache && diagnosticGameProfileSourceMtime === sourceInfo.mtimeMs && now - diagnosticGameProfileCacheAt < 2000) {
+        const cloned = JSON.parse(JSON.stringify(diagnosticGameProfileCache));
+        cloned.generatedAt = new Date().toISOString();
+        if (roomId) cloned.runtime = buildDiagnosticRuntimeGameSnapshotForReport(roomId);
+        return cloned;
+    }
+    const source = sourceInfo.source;
+    const actualRoles = globalThis.__WEREWOLF_ROLES__ || parseStaticRoleRegistryForDiagnostics(source);
+    const actualTeamLabels = globalThis.__WEREWOLF_TEAM_LABELS__ || parseStaticMapForDiagnostics(source, 'teamLabels');
+    const actualWinConditions = globalThis.__WEREWOLF_WIN_CONDITIONS__ || parseStaticWinConditionsForDiagnostics(source);
+    const scenarioCatalog = listBugReplayScenarios('all');
+    const profile = buildGameDiagnosticProfile({
+        source,
+        appVersion:getCachedAppVersion(),
+        roles:actualRoles,
+        teamLabels:actualTeamLabels,
+        winConditions:actualWinConditions,
+        roomSettings:['hostPassword','joinCode','maxPlayers','revealDeadRole','stateVersion'],
+        capabilities:{
+            resetStateFanout: source.includes('admin_reset_started') && source.includes('resetInvalidated'),
+            screenshotNoPreview: !source.includes('adminBrowserCapturePreview'),
+            screenshotMultiSize: source.includes('VIEWPORT_PRESETS') || source.includes('captureMultiple'),
+            screenshotCurrentViewport: source.includes('currentViewport') || source.includes('getCurrentViewport') || source.includes('captureCurrent'),
+            testerIsolation: source.includes('isTester') && source.includes('testerPass'),
+            roomRecoveryFailover: source.includes('roomLeaseEpoch') && source.includes('recoverPersistedRoomById'),
+            externalAssets: source.includes('s3') || source.includes('S3'),
+        },
+        replayScenarios:scenarioCatalog.map((item)=>({ ...item, featureKeys:item.featureKeys || [] })),
+        taxonomyVersion:DIAGNOSTIC_FEATURE_TAXONOMY_VERSION,
+        runtimeSnapshot:buildDiagnosticRuntimeGameSnapshotForReport(roomId),
+    });
+    profile.generatedAt = new Date().toISOString();
+    profile.sourceHash = require('crypto').createHash('sha256').update(source).digest('hex').slice(0,16);
+    profile.reportSchemaVersion = DIAGNOSTIC_SHARE_VERSION;
+    diagnosticGameProfileCache = profile;
+    diagnosticGameProfileCacheAt = now;
+    diagnosticGameProfileSourceMtime = sourceInfo.mtimeMs;
+    return JSON.parse(JSON.stringify(profile));
+}
+
+function diagnosticGameProfileRef(profile) {
+    if (!profile) return null;
+    return {
+        profileVersion:Number(profile.profileVersion)||0,
+        reportSchemaVersion:Number(profile.reportSchemaVersion)||DIAGNOSTIC_SHARE_VERSION,
+        appVersion:String(profile.appVersion||'unknown').slice(0,120),
+        sourceHash:String(profile.sourceHash||'').slice(0,24),
+        featureSetHash:String(profile.featureSetHash||'').slice(0,24),
+        roleCount:Number(profile.roleCount)||0,
+        teamCounts:publicDiagnosticValue(profile.teamCounts || {}),
+        enabledFeatureCount:Array.isArray(profile.mechanics?.enabledKeys) ? profile.mechanics.enabledKeys.length : 0,
+        actionRegistryHash:String(profile.actionRegistry?.hash||'').slice(0,24),
+    };
+}
+
+
+function diagnosticGameProfileSnapshot(profile) {
+    if (!profile) return null;
+    const rolesByTeam = {};
+    for (const [team, names] of Object.entries(profile.mechanics?.rolesByTeam || {})) {
+        rolesByTeam[String(team).slice(0, 40)] = Array.isArray(names) ? names.slice(0, 40).map((x)=>String(x).slice(0, 80)) : [];
+    }
+    return {
+        profileVersion:Number(profile.profileVersion)||0,
+        reportSchemaVersion:Number(profile.reportSchemaVersion)||DIAGNOSTIC_SHARE_VERSION,
+        appVersion:String(profile.appVersion||'unknown').slice(0,120),
+        sourceHash:String(profile.sourceHash||'').slice(0,24),
+        featureSetHash:String(profile.featureSetHash||'').slice(0,24),
+        roleCount:Number(profile.roleCount)||0,
+        rolesByTeam,
+        winConditions:Array.isArray(profile.winConditions) ? profile.winConditions.slice(0,32) : [],
+        implementedFeatureKeys:Array.isArray(profile.currentMechanics?.implementedKeys) ? profile.currentMechanics.implementedKeys.slice(0,80) : [],
+        implementedFeatureLabels:Array.isArray(profile.currentMechanics?.implementedLabels) ? profile.currentMechanics.implementedLabels.slice(0,80) : [],
+        room:{
+            settingKeys:Array.isArray(profile.room?.settingKeys) ? profile.room.settingKeys.slice(0,32) : [],
+            revealDeadRoleSupported:!!profile.room?.revealDeadRoleSupported,
+            revealDeadRoleEditableBeforeStart:!!profile.room?.revealDeadRoleEditableBeforeStart,
+            testerFeatures:Array.isArray(profile.room?.testerFeatures) ? profile.room.testerFeatures.slice(0,16) : [],
+        },
+        actionRegistry:{
+            socketEventCount:Number(profile.actionRegistry?.socketEventCount)||0,
+            httpRouteCount:Number(profile.actionRegistry?.httpRouteCount)||0,
+            hash:String(profile.actionRegistry?.hash||'').slice(0,24),
+        },
+        capabilities:publicDiagnosticValue(profile.capabilities || {}),
+        replay:{
+            scenarioCount:Number(profile.replay?.scenarioCount)||0,
+            featureCoverage:Array.isArray(profile.replay?.featureCoverage) ? profile.replay.featureCoverage.slice(0,60).map((x)=>({key:String(x.key||''),label:String(x.label||''),scenarioCount:Number(x.scenarioCount)||0})) : [],
+        },
+        taxonomy:{version:Number(profile.taxonomy?.version)||0},
+        runtime: profile.runtime ? {
+            available:!!profile.runtime.available,
+            roomType:String(profile.runtime.roomType||'').slice(0,30),
+            phase:String(profile.runtime.phase||'').slice(0,30),
+            started:!!profile.runtime.started,
+            gameOver:!!profile.runtime.gameOver,
+            stateVersion:Number(profile.runtime.stateVersion)||0,
+            day:Number(profile.runtime.day)||0,
+            isNight:!!profile.runtime.isNight,
+            maxPlayers:Number(profile.runtime.maxPlayers)||0,
+            playerCount:Number(profile.runtime.playerCount)||0,
+            aliveCount:Number(profile.runtime.aliveCount)||0,
+            botCount:Number(profile.runtime.botCount)||0,
+            testerCount:Number(profile.runtime.testerCount)||0,
+            connectedCount:Number(profile.runtime.connectedCount)||0,
+            roleCounts:publicDiagnosticValue(profile.runtime.roleCounts || {}),
+            settings: profile.runtime.settings ? {
+                revealDeadRole:profile.runtime.settings.revealDeadRole !== false,
+                maxPlayers:Number(profile.runtime.settings.maxPlayers)||0,
+                hasJoinCode:!!profile.runtime.settings.hasJoinCode,
+                hasHostPassword:!!profile.runtime.settings.hasHostPassword,
+            } : null,
+        } : null,
+    };
+}
+
+function inferDiagnosticFeatureKeysForEvent({ kind='', page='', message='', action='', endpoint='', context={}, data={} } = {}) {
+    const explicit = [];
+    if (Array.isArray(context?.featureKeys)) explicit.push(...context.featureKeys);
+    if (Array.isArray(data?.featureKeys)) explicit.push(...data.featureKeys);
+    const haystack = `${kind} ${page} ${message} ${action} ${endpoint} ${context?.scenarioId || ''} ${context?.testPath || ''}`.toLowerCase();
+    const rules = [
+        [/bug.?replay|replay/,['bug_replay','replay_engine']],
+        [/screenshot|capture/,['screenshots']],
+        [/diagnostic|causal|incident|share/,['diagnostics']],
+        [/github/,['github']],
+        [/reset|wipe|ล้างข้อมูล/,['reset_state','room_reset']],
+        [/room|ห้อง/,['rooms','room_state']],
+        [/join.?code|room.?password|collision/,['room_security']],
+        [/reconnect|recover|failover|handoff/,['reconnect','room_recovery']],
+        [/bot|possession/,['bot_ai','possession']],
+        [/tester|test.?mode/,['tester','tester_conditions']],
+        [/viewport|fullscreen|grid/,['viewport','player_grid']],
+        [/role|บทบาท|อาชีพ/,['roles']],
+        [/wolf|หมาป่า/,['wolf_team']],
+        [/cult|ลัทธิ/,['cult']],
+        [/bandit|โจร|สมรู้ร่วมคิด/,['bandit','accomplice']],
+        [/cupid|กามเทพ|lover|คู่รัก/,['cupid','lovers']],
+        [/instigator|ผู้ยุยง/,['instigator']],
+        [/vote|โหวต|ประหาร/,['voting']],
+        [/night|กลางคืน|resolve/,['night_actions','game_phase']],
+        [/day|กลางวัน/,['day_actions','game_phase']],
+        [/chat|แชท/,['chat']],
+        [/google|oauth|login|auth|session/,['account','session']],
+        [/aws|dynamodb|iam|s3|cloudfront/,['aws']],
+        [/network|fetch|http|socket/,['network','socket']],
+        [/performance|timeout|slow/,['performance']],
+        [/deployment|deploy|version|stale|update/,['deployment','version_drift']],
+    ];
+    for (const [pattern, keys] of rules) if (pattern.test(haystack)) explicit.push(...keys);
+    if (String(page).toLowerCase() === 'admin') explicit.push('admin');
+    if (String(kind).toLowerCase().includes('github')) explicit.push('github');
+    return normalizeDiagnosticFeatureKeys(explicit);
 }
 
 function recordDiagnostic({ source = "server", kind = "error", page = "server", message = "", stack = "", file = "", line = 0, column = 0, status = 0, endpoint = "", data = "", context = null, state = null, breadcrumbs = null, traceId = "", sessionId = "", action = "", operation = "", roomId = "", requestId = "", clientRequestId = "", durationMs = 0, operationId = "", causalHint = null, fingerprint = "" } = {}) {
     const asyncCtx = currentDiagnosticContext();
     const fullText = trimDiagnosticText([message, stack, typeof data === "string" ? data : JSON.stringify(data || {})].filter(Boolean).join("\n"));
-    const iam = extractAwsPermissionFailure(fullText);
+    const iam = String(source || "").toLowerCase() === "server" ? extractAwsPermissionFailure(fullText) : null;
+    const eventFeatureKeys = inferDiagnosticFeatureKeysForEvent({ kind, page, message, action, endpoint, context:context || {}, data:typeof data === "object" ? data : {} });
+    const gameProfile = getCurrentGameDiagnosticProfile({ roomId:String(roomId || asyncCtx.roomId || "") });
+    const eventGameProfileRef = diagnosticGameProfileRef(gameProfile);
     const eventTraceId = String(traceId || asyncCtx.traceId || makeDiagnosticId("tr")).slice(0, 120);
     const eventSessionId = String(sessionId || asyncCtx.sessionId || "").slice(0, 120);
     const eventAction = String(action || asyncCtx.action || inferDiagnosticAction(message)).slice(0, 120);
@@ -903,9 +1361,29 @@ function recordDiagnostic({ source = "server", kind = "error", page = "server", 
         operationId: String(operationId || context?.operationId || "").slice(0, 120),
         causalHint: safeDiagnosticValue(causalHint || {}),
         fingerprint: String(fingerprint || diagnosticFingerprint([kind, message, endpoint, status, diagnosticEventCode({ context })])).slice(0, 80),
+        featureKeys: eventFeatureKeys,
+        featureLabels: featureLabels(eventFeatureKeys),
+        featureArea: eventFeatureKeys[0] || "",
+        gameProfileRef: eventGameProfileRef,
+        gameProfileSnapshot: diagnosticGameProfileSnapshot(gameProfile),
         permission: iam ? { action: iam.action, resource: iam.resource, accessDenied: true } : null,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        coalescedCount: 1,
+        coalescedEventIds: [],
         serverInstance: { hostname: os.hostname(), pid: process.pid, uptimeSec: Math.round(process.uptime()), appVersion: getCachedAppVersion() },
     };
+    const noiseDuplicate = findRecentDiagnosticNoiseDuplicate(event);
+    if (noiseDuplicate) {
+        noiseDuplicate.coalescedCount = Math.max(1, Number(noiseDuplicate.coalescedCount) || 1) + 1;
+        noiseDuplicate.lastSeenAt = event.time;
+        noiseDuplicate.latestMessage = trimDiagnosticText(event.message, 1200);
+        noiseDuplicate.coalescedEventIds = Array.isArray(noiseDuplicate.coalescedEventIds) ? noiseDuplicate.coalescedEventIds : [];
+        noiseDuplicate.coalescedEventIds.push(event.id);
+        noiseDuplicate.coalescedEventIds = noiseDuplicate.coalescedEventIds.slice(-12);
+        refreshDiagnosticEventAnalysis(noiseDuplicate);
+        return noiseDuplicate;
+    }
     event.analysis = buildDiagnosticAnalysis(event, [event]);
     diagnosticEvents.unshift(event);
     if (diagnosticEvents.length > DIAGNOSTIC_MAX_EVENTS) diagnosticEvents.length = DIAGNOSTIC_MAX_EVENTS;
@@ -948,6 +1426,8 @@ function publicBugReplayJob(job) {
         currentScenarioId: job.currentScenarioId || "",
         currentScenarioTitle: job.currentScenarioTitle || "",
         currentAction: job.currentAction || "",
+        currentScenarioFeatureKeys: Array.isArray(job.currentScenarioFeatureKeys) ? job.currentScenarioFeatureKeys.slice(0, 40) : [],
+        currentScenarioFeatureLabels: Array.isArray(job.currentScenarioFeatureLabels) ? job.currentScenarioFeatureLabels.slice(0, 40) : [],
         currentStepIndex: Number.isInteger(job.currentStepIndex) ? job.currentStepIndex : -1,
         currentTestPath: job.currentTestPath || "",
         completedScenarios: job.completedScenarios || 0,
@@ -962,6 +1442,19 @@ function publicBugReplayJob(job) {
         failuresTruncated: (Number(job.totalFailureCount) || 0) > BUG_REPLAY_MAX_FAILURES,
         auditSummary: job.audit ? job.audit.summary() : null,
         phase2Reports: Array.isArray(job.phase2Reports) ? job.phase2Reports.slice(-12) : [],
+        report: job.report ? {
+            status: job.report.status || 'pending',
+            reportKind: job.report.reportKind || '',
+            url: job.report.url || '',
+            jsonUrl: job.report.jsonUrl || '',
+            aiUrl: job.report.aiUrl || job.report.jsonUrl || '',
+            jsonDownloadUrl: job.report.jsonDownloadUrl || '',
+            textDownloadUrl: job.report.textDownloadUrl || '',
+            createdAt: job.report.createdAt || '',
+            error: job.report.error || ''
+        } : { status:'pending', reportKind:'', url:'', jsonUrl:'', aiUrl:'', jsonDownloadUrl:'', textDownloadUrl:'', createdAt:'', error:'' },
+        failureEventCount: Array.isArray(job.failureEventIds) ? job.failureEventIds.length : 0,
+        scenarioResults: Array.isArray(job.scenarioResults) ? job.scenarioResults : [],
         failures: Array.isArray(job.failures) ? job.failures.slice(0, BUG_REPLAY_MAX_FAILURES).map((failure) => ({
             eventId: failure.eventId || "",
             scenarioIndex: failure.scenarioIndex,
@@ -976,6 +1469,7 @@ function publicBugReplayJob(job) {
             durationMs: failure.durationMs,
         })) : [],
         stoppedByAdmin: !!job.stoppedByAdmin,
+        stopReason: job.stopReason || "",
         failedScenario: job.failedScenario ? {
             index: job.failedScenario.index,
             id: job.failedScenario.id,
@@ -1029,9 +1523,11 @@ function recordBugReplayFailure({ runId, scenarioIndex, summary, failure, job })
             stdout: sanitizeBugReplayText(failure.stdout, 5000),
             stderr: sanitizeBugReplayText(failure.stderr, 8000),
             mode: job.mode,
+            featureKeys:Array.isArray(summary.featureKeys) ? summary.featureKeys.slice(0, 40) : [],
             completedScenarios: job.completedScenarios,
             completedSteps: job.completedSteps,
             failedSteps: job.failedSteps,
+            featureLabels:Array.isArray(summary.featureLabels) ? summary.featureLabels.slice(0, 40) : [],
         },
         context: {
             code: "BUG_REPLAY_FAILED",
@@ -1050,14 +1546,382 @@ function recordBugReplayFailure({ runId, scenarioIndex, summary, failure, job })
     return { ...failure, eventId: diagnostic.id, scenarioIndex, scenarioId: summary.id, scenarioTitle: summary.title, action: summary.action };
 }
 
-async function startBugReplayJob(mode = "all") {
+
+function bugReplayReportScenarioSummary(job) {
+    return (Array.isArray(job?.scenarioResults) ? job.scenarioResults : []).map((scenario) => ({
+        index: Number(scenario.index) || 0,
+        id: String(scenario.id || ''),
+        title: String(scenario.title || ''),
+        action: String(scenario.action || ''),
+        ok: !!scenario.ok,
+        stopped: !!scenario.stopped,
+        stepCount: Number(scenario.stepCount) || 0,
+        failedSteps: Number(scenario.failedSteps) || 0,
+        passedSteps: Number(scenario.passedSteps) || 0,
+        skippedSteps: Number(scenario.skippedSteps) || 0,
+        featureKeys: Array.isArray(scenario.featureKeys) ? scenario.featureKeys.slice(0, 32) : (listBugReplayScenarios('all').find((x)=>x.id===String(scenario.id||''))?.featureKeys || []),
+        featureLabels: Array.isArray(scenario.featureLabels) ? scenario.featureLabels.slice(0, 32) : (listBugReplayScenarios('all').find((x)=>x.id===String(scenario.id||''))?.featureLabels || []),
+        steps: Array.isArray(scenario.steps) ? scenario.steps.map((step) => ({
+            index: Number(step.index) || 0,
+            testPath: String(step.testPath || ''),
+            ok: !!step.ok,
+            skipped: !!step.skipped,
+            timedOut: !!step.timedOut,
+            exitCode: step.exitCode ?? null,
+            signal: step.signal || null,
+            durationMs: Number(step.durationMs) || 0,
+        })) : [],
+    }));
+}
+
+function bugReplayFailureSummary(job, failure, event, token) {
+    const eventId = String(failure?.eventId || event?.id || '');
+    const shareBase = String(job?.publicBaseUrl || '').replace(/\/+$/, '');
+    return {
+        eventId,
+        scenarioIndex: Number(failure?.scenarioIndex) || 0,
+        scenarioId: String(failure?.scenarioId || ''),
+        scenarioTitle: String(failure?.scenarioTitle || ''),
+        action: String(failure?.action || ''),
+        testPath: String(failure?.testPath || ''),
+        stepIndex: Number(failure?.stepIndex) || 0,
+        durationMs: Number(failure?.durationMs) || 0,
+        timedOut: !!failure?.timedOut,
+        exitCode: failure?.exitCode ?? null,
+        signal: failure?.signal || null,
+        message: publicDiagnosticText(event?.message || failure?.stderr || failure?.stdout || 'ไม่ระบุข้อความ'),
+        kind: String(event?.kind || 'bug_replay_failure'),
+        source: String(event?.source || 'server'),
+        time: String(event?.time || ''),
+        fingerprint: String(event?.fingerprint || ''),
+        featureKeys: Array.isArray(event?.featureKeys) ? event.featureKeys.slice(0, 32) : [],
+        featureLabels: Array.isArray(event?.featureLabels) ? event.featureLabels.slice(0, 32) : [],
+        reportUrl: token && eventId ? `${shareBase}/diagnostics/share/${encodeURIComponent(token)}/event/${encodeURIComponent(eventId)}` : '',
+        jsonReportUrl: token && eventId ? `${shareBase}/diagnostics/share/${encodeURIComponent(token)}/event/${encodeURIComponent(eventId)}.json` : '',
+        aiReportUrl: token && eventId ? `${shareBase}/diagnostics/share/${encodeURIComponent(token)}/event/${encodeURIComponent(eventId)}.json` : '',
+    };
+}
+
+function bugReplayShareText(bundle, token = '') {
+    const replay = bundle?.replay || {};
+    const failures = Array.isArray(bundle?.failures) ? bundle.failures : [];
+    const scenarios = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults : [];
+    const rootUrl = bundle?.shareUrls?.html || (bundle?.shareBaseUrl && token ? `${String(bundle.shareBaseUrl).replace(/\/+$/, '')}/diagnostics/share/${encodeURIComponent(token)}` : '');
+    const aiUrl = bundle?.shareUrls?.ai || bundle?.shareUrls?.json || (rootUrl ? `${rootUrl}.json` : '');
+    const lines = [
+        'WEREWOLF BUG REPLAY AGGREGATE REPORT v1',
+        '========================================',
+        `Run ID: ${replay.runId || bundle.reportId || '-'}`,
+        `Mode: ${replay.mode || '-'}`,
+        `Status: ${replay.status || '-'}`,
+        `Created: ${bundle.createdAt || '-'}`,
+        `Finished: ${replay.finishedAt || '-'}`,
+        `Scenarios: ${Number(replay.completedScenarios) || 0} / ${Number(replay.totalScenarios) || scenarios.length}`,
+        `Steps: ${Number(replay.completedSteps) || 0} / ${Number(replay.totalSteps) || 0}`,
+        `Passed steps: ${Number(replay.passedSteps) || 0}`,
+        `Failed steps: ${Number(replay.failedSteps) || 0}`,
+        `Failure points: ${failures.length}`,
+        `Game build at event: ${bundle.gameProfile?.appVersion || '-'}`,
+        `Feature set hash: ${bundle.gameProfile?.featureSetHash || '-'}`,
+        `Role count: ${Number(bundle.gameProfile?.roleCount) || 0}`,
+        `Implemented features: ${(bundle.gameProfile?.implementedFeatureLabels || []).slice(0,18).join(', ') || '-'}`,
+        `Win conditions: ${(bundle.gameProfile?.winConditions || []).join(', ') || '-'}`,
+        `Replay feature coverage: ${(bundle.gameProfile?.replay?.featureCoverage || []).slice(0,18).map((x)=>`${x.label} (${Number(x.scenarioCount)||0})`).join(', ') || '-'}`,
+        ...(bundle.gameProfile?.runtime?.available ? [
+            `Runtime: ${bundle.gameProfile.runtime.roomType || '-'} / ${bundle.gameProfile.runtime.phase || '-'} / players=${Number(bundle.gameProfile.runtime.playerCount)||0} / alive=${Number(bundle.gameProfile.runtime.aliveCount)||0} / bots=${Number(bundle.gameProfile.runtime.botCount)||0}`,
+            `Reveal dead role: ${bundle.gameProfile.runtime.settings?.revealDeadRole === false ? 'off' : 'on'}`,
+        ] : []),
+        rootUrl ? `AGGREGATE REPORT URL: ${rootUrl}` : '',
+        aiUrl ? `AI REPORT URL (JSON): ${aiUrl}` : '',
+        '',
+        'FAILURE INDEX',
+    ];
+    failures.forEach((f, i) => {
+        lines.push(`${i + 1}. ${f.scenarioTitle || f.scenarioId || '-'} | ${f.testPath || '-'} | step ${(Number(f.stepIndex) || 0) + 1}`);
+        lines.push(`   Message: ${f.message || '-'}`);
+        lines.push(`   REPORT: ${f.reportUrl || '-'}`);
+        lines.push(`   JSON: ${f.jsonReportUrl || '-'}`);
+    });
+    lines.push('', 'SCENARIO RESULTS');
+    scenarios.forEach((s, i) => {
+        lines.push(`${i + 1}. ${s.title || s.id || '-'} | ${s.ok ? 'PASS' : (s.stopped ? 'STOPPED' : 'FAILED')} | ${s.passedSteps || 0} passed / ${s.failedSteps || 0} failed / ${s.skippedSteps || 0} skipped`);
+        for (const step of (s.steps || [])) lines.push(`   ${step.ok ? 'PASS' : (step.skipped ? 'SKIP' : 'FAIL')} | ${step.testPath || '-'} | ${Number(step.durationMs) || 0}ms`);
+    });
+    lines.push('', 'RUNTIME AUDIT', JSON.stringify(bundle.audit || {}, null, 2));
+    return lines.filter((x, i) => x !== '' || lines[i - 1] !== '').join('\n');
+}
+
+function bugReplayShareHtml(bundle, token) {
+    const replay = bundle?.replay || {};
+    const failures = Array.isArray(bundle?.failures) ? bundle.failures : [];
+    const scenarios = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults : [];
+    const jsonHref = token ? `./${encodeURIComponent(String(token))}.json` : '';
+    const rows = failures.map((f, i) => {
+        const anchor = f.eventId ? `#failure-${encodeURIComponent(String(f.eventId))}` : '';
+        const link = anchor ? `<a href="${anchor}">เปิดจุดนี้ในรายงาน</a>` : '';
+        const json = '';
+        return `<article class="failure" id="failure-${escapeDiagnosticHtml(f.eventId || String(i + 1))}"><div class="failure-head"><strong>#${i + 1} · ${escapeDiagnosticHtml(f.scenarioTitle || f.scenarioId || 'Unknown')}</strong><span>${escapeDiagnosticHtml(f.kind || 'failure')}</span></div><div class="meta">${escapeDiagnosticHtml(f.testPath || '-')} · step ${(Number(f.stepIndex) || 0) + 1} · ${escapeDiagnosticHtml(f.time || '')}</div><div class="msg">${escapeDiagnosticHtml(f.message || 'ไม่ระบุข้อความ')}</div>${f.stack ? `<details><summary>Stack / evidence</summary><div class="audit">${escapeDiagnosticHtml(f.stack)}</div></details>` : ''}${f.data ? `<details><summary>Context data</summary><div class="audit">${escapeDiagnosticHtml(typeof f.data === 'string' ? f.data : JSON.stringify(f.data, null, 2))}</div></details>` : ''}<div class="links">${link}</div></article>`;
+    }).join('');
+    const scenarioRows = scenarios.map((s, i) => `<tr><td>${i + 1}</td><td>${escapeDiagnosticHtml(s.title || s.id || '-')}</td><td>${s.ok ? 'PASS' : (s.stopped ? 'STOPPED' : 'FAILED')}</td><td>${Number(s.passedSteps) || 0}</td><td>${Number(s.failedSteps) || 0}</td><td>${Number(s.skippedSteps) || 0}</td></tr>`).join('');
+    const text = bugReplayShareText(bundle, token);
+    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta http-equiv="Referrer-Policy" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"><title>Werewolf Bug Replay Aggregate Report</title><style>body{margin:0;background:#0a0d14;color:#e8edf8;font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}main{width:min(1180px,calc(100% - 32px));margin:24px auto}header,.panel{margin-bottom:14px;padding:16px 18px;border:1px solid #222a3b;border-radius:14px;background:#101624}h1,h2{margin:0 0 6px}h1{font-size:20px}h2{font-size:15px}p{margin:0;color:#aab5ca}.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:12px}.kpi{padding:10px;border:1px solid #2a3346;border-radius:10px;background:#0b101c}.kpi b{display:block;font-size:17px}.kpi span{color:#93a0b8;font-size:11px}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.links a{color:#aeb8ff;text-decoration:none;padding:5px 8px;border:1px solid #303a51;border-radius:8px}.failure{padding:13px;margin:8px 0;border:1px solid #3a2b38;border-radius:12px;background:#0c111c}.failure-head{display:flex;justify-content:space-between;gap:10px}.failure-head span{color:#ff9e9e;font-size:11px}.meta{color:#8d9ab0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:4px;overflow-wrap:anywhere}.msg{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere}.scenario-table{width:100%;border-collapse:collapse;font-size:12px}.scenario-table th,.scenario-table td{padding:7px 8px;border-bottom:1px solid #20293b;text-align:left;vertical-align:top}.scenario-table th{color:#8d9ab0}.audit{max-height:420px;overflow:auto;background:#070a11;border:1px solid #222a3b;border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}details summary{cursor:pointer;color:#bdc8df} @media(max-width:760px){main{width:min(100% - 18px,1180px);margin:10px auto}.kpis{grid-template-columns:repeat(2,1fr)}.scenario-table{display:block;overflow:auto}}</style></head><body><main><header><h1>🧪 Werewolf Bug Replay — รายงานรวมทั้งรอบ</h1><p>Run ${escapeDiagnosticHtml(replay.runId || bundle.reportId || '-')} · ${escapeDiagnosticHtml(replay.status || '-')} · สร้าง ${escapeDiagnosticHtml(bundle.createdAt || '-')}</p><div class="kpis"><div class="kpi"><b>${Number(replay.totalScenarios) || scenarios.length}</b><span>Scenarios</span></div><div class="kpi"><b>${Number(replay.completedScenarios) || 0}</b><span>Completed</span></div><div class="kpi"><b>${Number(replay.totalSteps) || 0}</b><span>Total steps</span></div><div class="kpi"><b>${Number(replay.failedSteps) || 0}</b><span>Failed steps</span></div><div class="kpi"><b>${failures.length}</b><span>Failure points</span></div></div><div class="links">${jsonHref ? `<a href="${jsonHref}">JSON รวม</a>` : ''}</div></header><section class="panel"><h2>🚨 Failure points ทั้งหมด (${failures.length})</h2>${rows || '<p>ไม่พบ failure</p>'}</section><section class="panel"><h2>📋 Scenario results</h2><div style="overflow:auto"><table class="scenario-table"><thead><tr><th>#</th><th>Scenario</th><th>Status</th><th>Pass</th><th>Fail</th><th>Skip</th></tr></thead><tbody>${scenarioRows || '<tr><td colspan="6">ไม่มีข้อมูล</td></tr>'}</tbody></table></div></section><section class="panel"><details><summary>🔬 Runtime Audit</summary><div class="audit">${escapeDiagnosticHtml(JSON.stringify(bundle.audit || {}, null, 2))}</div></details></section><section class="panel"><details><summary>📄 Plain-text report</summary><div class="audit">${escapeDiagnosticHtml(text)}</div></details></section></main></body></html>`;
+}
+
+function publicBugReplayFailureEvent(event = {}) {
+    const pub = publicDiagnosticEventForShare(event, false);
+    pub.stack = String(pub.stack || '').slice(0, 900);
+    pub.data = typeof pub.data === 'string' ? pub.data.slice(0, 500) : safeDiagnosticValue(pub.data || {});
+    pub.context = safeDiagnosticValue(pub.context || {});
+    pub.state = {};
+    pub.breadcrumbs = Array.isArray(pub.breadcrumbs) ? pub.breadcrumbs.slice(-4) : [];
+    pub.serverBreadcrumbs = [];
+    delete pub.analysis;
+    return pub;
+}
+
+function buildBugReplayRunBundle(job, { token = '', includeShareUrls = false } = {}) {
+    if (!job) return null;
+    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
+    const createdAt = job.report?.createdAt || new Date().toISOString();
+    const expiresAt = job.report?.expiresAt || new Date(Date.now() + DIAGNOSTIC_SHARE_TTL_MS).toISOString();
+    const eventMap = new Map(diagnosticEvents.map((event) => [String(event.id), event]));
+    const refs = Array.isArray(job.failureRefs) ? job.failureRefs : [];
+    const failures = refs.map((ref) => {
+        const event = eventMap.get(String(ref.eventId || ''));
+        const summary = bugReplayFailureSummary(job, ref, event, token);
+        if (event) {
+            const pub = publicBugReplayFailureEvent(event);
+            return { ...summary, event: pub, stack: String(pub.stack || ''), data: pub.data, context:pub.context };
+        }
+        return summary;
+    });
+    const bundle = {
+        schemaVersion: DIAGNOSTIC_SHARE_VERSION,
+        reportKind: 'BUG_REPLAY_RUN',
+        reportId: job.runId,
+        createdAt,
+        expiresAt,
+        shareBaseUrl: baseUrl,
+        gameProfile: job.gameProfileSnapshot || (failures[0]?.event?.gameProfileSnapshot || null),
+        primary: failures[0]?.event || null,
+        relatedEvents: failures.map((x) => x.event).filter(Boolean).slice(0, 180),
+        causalGraph: { nodes: [], edges: [], nodeCount:0, edgeCount:0 },
+        nodeReports: [],
+        analysis: { rootCause: failures.length ? `Bug Replay พบ ${failures.length} failure point` : 'ไม่พบ failure', causeCode: failures.length ? 'BUG_REPLAY_RUN_FAILURES' : 'BUG_REPLAY_CLEAN', failureStage:'bug_replay', confidence:'high' },
+        replay: {
+            runId: job.runId,
+            mode: job.mode,
+            status: job.status,
+            startedAt: job.startedAt,
+            finishedAt: job.finishedAt || null,
+            totalScenarios: job.totalScenarios,
+            completedScenarios: job.completedScenarios,
+            totalSteps: job.totalSteps,
+            completedSteps: job.completedSteps,
+            passedSteps: job.passedSteps,
+            failedSteps: job.failedSteps,
+            skippedSteps: Math.max(0, job.completedSteps - job.passedSteps - job.failedSteps),
+            totalFailureCount: job.totalFailureCount,
+            stoppedByAdmin: !!job.stoppedByAdmin,
+        },
+        failures,
+        scenarioResults: bugReplayReportScenarioSummary(job),
+        audit: job.audit ? job.audit.snapshot({ timelineLimit:500, findingLimit:220 }) : null,
+    };
+    if (includeShareUrls && token) bundle.shareUrls = diagnosticShareUrls(baseUrl, token);
+    return bundle;
+}
+
+function buildBugReplayFirstFailureBundle(job, { token = '', includeShareUrls = false } = {}) {
+    if (!job) return null;
+    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
+    const createdAt = job.report?.createdAt || new Date().toISOString();
+    const expiresAt = job.report?.expiresAt || new Date(Date.now() + DIAGNOSTIC_SHARE_TTL_MS).toISOString();
+    const firstFailure = job.failure || (Array.isArray(job.failures) ? job.failures[0] : null);
+    const eventId = String(firstFailure?.eventId || '');
+    const event = eventId ? diagnosticEvents.find((item) => String(item.id || '') === eventId) : null;
+    const failureSummary = firstFailure ? bugReplayFailureSummary(job, firstFailure, event, token) : null;
+    let publicEvent = null;
+    if (event) {
+        publicEvent = publicDiagnosticEventForShare(event, true);
+        if (publicEvent) {
+            failureSummary.event = publicEvent;
+            failureSummary.stack = String(publicEvent.stack || '');
+            failureSummary.data = publicEvent.data;
+            failureSummary.context = publicEvent.context;
+        }
+    }
+    const failedScenarioIndex = Number(firstFailure?.scenarioIndex);
+    const scenarioResults = bugReplayReportScenarioSummary(job).filter((scenario) =>
+        Number.isFinite(failedScenarioIndex) ? Number(scenario.index) === failedScenarioIndex : false
+    );
+    const bundle = {
+        schemaVersion: DIAGNOSTIC_SHARE_VERSION,
+        reportKind: 'BUG_REPLAY_FIRST_FAILURE',
+        reportId: `${job.runId}:first-failure`,
+        createdAt,
+        expiresAt,
+        shareBaseUrl: baseUrl,
+        gameProfile: job.gameProfileSnapshot || (publicEvent?.gameProfileSnapshot || null),
+        primary: publicEvent || null,
+        relatedEvents: publicEvent ? [publicEvent] : [],
+        causalGraph: { nodes: [], edges: [], nodeCount:0, edgeCount:0 },
+        nodeReports: [],
+        analysis: {
+            rootCause: firstFailure ? `พบ failure แรกใน ${firstFailure.scenarioTitle || firstFailure.scenarioId || 'scenario'}` : 'ไม่พบ failure',
+            causeCode: firstFailure ? 'BUG_REPLAY_FIRST_FAILURE' : 'BUG_REPLAY_FIRST_FAILURE_CLEAN',
+            failureStage: 'bug_replay.first_failure',
+            confidence: firstFailure ? 'high' : 'medium',
+        },
+        replay: {
+            runId: job.runId,
+            mode: 'first',
+            status: job.status,
+            stopReason: job.stopReason || (firstFailure ? 'first_failure' : ''),
+            firstFailureEventId: eventId,
+            startedAt: job.startedAt,
+            finishedAt: job.finishedAt || null,
+            totalScenarios: job.totalScenarios,
+            completedScenarios: job.completedScenarios,
+            totalSteps: job.totalSteps,
+            completedSteps: job.completedSteps,
+            passedSteps: job.passedSteps,
+            failedSteps: job.failedSteps,
+            skippedSteps: Math.max(0, job.completedSteps - job.passedSteps - job.failedSteps),
+            totalFailureCount: firstFailure ? 1 : 0,
+        },
+        firstFailure: failureSummary,
+        failures: failureSummary ? [failureSummary] : [],
+        scenarioResults,
+        audit: job.audit ? job.audit.snapshot({ timelineLimit:180, findingLimit:90 }) : null,
+    };
+    if (includeShareUrls && token) bundle.shareUrls = diagnosticShareUrls(baseUrl, token);
+    return bundle;
+}
+
+function bugReplayFirstFailureShareText(bundle, token = '') {
+    const replay = bundle?.replay || {};
+    const failure = bundle?.firstFailure || (Array.isArray(bundle?.failures) ? bundle.failures[0] : null);
+    const scenario = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults[0] : null;
+    const rootUrl = bundle?.shareUrls?.html || (bundle?.shareBaseUrl && token ? `${String(bundle.shareBaseUrl).replace(/\/+$/, '')}/diagnostics/share/${encodeURIComponent(token)}` : '');
+    const jsonUrl = bundle?.shareUrls?.json || (rootUrl ? `${rootUrl}.json` : '');
+    const lines = [
+        'WEREWOLF BUG REPLAY FIRST FAILURE REPORT v1',
+        '============================================',
+        `Run ID: ${replay.runId || bundle.reportId || '-'}`,
+        'Mode: first',
+        `Status: ${replay.status || '-'}`,
+        `Stop reason: ${replay.stopReason || '-'}`,
+        `Created: ${bundle.createdAt || '-'}`,
+        `Finished: ${replay.finishedAt || '-'}`,
+        `First failure event: ${replay.firstFailureEventId || failure?.eventId || '-'}`,
+        `Failure points in this report: ${failure ? 1 : 0}`,
+        rootUrl ? `FIRST FAILURE REPORT URL: ${rootUrl}` : '',
+        jsonUrl ? `JSON URL: ${jsonUrl}` : '',
+        '',
+        'FIRST FAILURE',
+        failure ? `Scenario: ${failure.scenarioTitle || failure.scenarioId || '-'}` : 'ไม่พบ failure',
+        failure ? `Test: ${failure.testPath || '-'}` : '',
+        failure ? `Step: ${(Number(failure.stepIndex) || 0) + 1}` : '',
+        failure ? `Action: ${failure.action || '-'}` : '',
+        failure ? `Time: ${failure.time || '-'}` : '',
+        failure ? `Exit code: ${failure.exitCode ?? '-'}` : '',
+        failure ? `Timed out: ${failure.timedOut ? 'YES' : 'NO'}` : '',
+        failure ? `Message: ${failure.message || '-'}` : '',
+        failure ? `Fingerprint: ${failure.fingerprint || '-'}` : '',
+        '',
+        'FAILED SCENARIO STEPS',
+    ];
+    if (scenario) {
+        lines.push(`${scenario.title || scenario.id || '-'} | ${scenario.ok ? 'PASS' : (scenario.stopped ? 'STOPPED' : 'FAILED')}`);
+        for (const step of (scenario.steps || [])) lines.push(`  ${step.ok ? 'PASS' : (step.skipped ? 'SKIP' : 'FAIL')} | ${step.testPath || '-'} | ${Number(step.durationMs) || 0}ms`);
+    } else {
+        lines.push('(ไม่มีข้อมูล scenario)');
+    }
+    lines.push('', 'ROOT CAUSE', `สรุป: ${bundle.analysis?.rootCause || '-'}`, `CAUSE CODE: ${bundle.analysis?.causeCode || '-'}`, `FAILURE STAGE: ${bundle.analysis?.failureStage || '-'}`, `CONFIDENCE: ${bundle.analysis?.confidence || '-'}`);
+    lines.push('', 'RUNTIME AUDIT', JSON.stringify(bundle.audit || {}, null, 2));
+    return lines.filter((x, i) => x !== '' || lines[i - 1] !== '').join('\n');
+}
+
+function bugReplayFirstFailureShareHtml(bundle, token) {
+    const failure = bundle?.firstFailure || (Array.isArray(bundle?.failures) ? bundle.failures[0] : null);
+    const scenario = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults[0] : null;
+    const text = bugReplayFirstFailureShareText(bundle, token);
+    const jsonHref = token ? `./${encodeURIComponent(String(token))}.json` : '';
+    const failureHtml = failure ? `<section class="panel"><h2>🚨 บั๊กแรกที่พบ</h2><div class="failure"><div class="failure-head"><strong>${escapeDiagnosticHtml(failure.scenarioTitle || failure.scenarioId || 'Unknown')}</strong><span>${escapeDiagnosticHtml(failure.kind || 'failure')}</span></div><div class="meta">${escapeDiagnosticHtml(failure.testPath || '-')} · step ${(Number(failure.stepIndex) || 0) + 1} · ${escapeDiagnosticHtml(failure.time || '')}</div><div class="msg">${escapeDiagnosticHtml(failure.message || 'ไม่ระบุข้อความ')}</div>${failure.stack ? `<details><summary>Stack / evidence</summary><div class="audit">${escapeDiagnosticHtml(failure.stack)}</div></details>` : ''}${failure.data ? `<details><summary>Context data</summary><div class="audit">${escapeDiagnosticHtml(typeof failure.data === 'string' ? failure.data : JSON.stringify(failure.data, null, 2))}</div></details>` : ''}</div></section>` : `<section class="panel"><h2>✅ ไม่พบ failure</h2><p>โหมดตรวจบั๊กแรกทำงานครบโดยไม่พบ failure</p></section>`;
+    const steps = scenario?.steps || [];
+    const stepRows = steps.map((step) => `<tr><td>${Number(step.index) + 1}</td><td>${step.ok ? 'PASS' : (step.skipped ? 'SKIP' : 'FAIL')}</td><td>${escapeDiagnosticHtml(step.testPath || '-')}</td><td>${Number(step.durationMs) || 0}ms</td></tr>`).join('');
+    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta http-equiv="Referrer-Policy" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"><title>Werewolf Bug Replay First Failure Report</title><style>body{margin:0;background:#0a0d14;color:#e8edf8;font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}main{width:min(980px,calc(100% - 28px));margin:20px auto}header,.panel{margin-bottom:14px;padding:16px 18px;border:1px solid #222a3b;border-radius:14px;background:#101624}h1,h2{margin:0 0 6px}h1{font-size:20px}h2{font-size:15px}p{margin:0;color:#aab5ca}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.links a{color:#aeb8ff;text-decoration:none;padding:6px 9px;border:1px solid #303a51;border-radius:8px}.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}.kpi{padding:10px;border:1px solid #2a3346;border-radius:10px;background:#0b101c}.kpi b{display:block;font-size:17px}.kpi span{color:#93a0b8;font-size:11px}.failure{padding:13px;border:1px solid #4a3038;border-radius:12px;background:#0c111c}.failure-head{display:flex;justify-content:space-between;gap:10px}.failure-head span{color:#ff9e9e;font-size:11px}.meta{color:#8d9ab0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:4px;overflow-wrap:anywhere}.msg{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere}.steps{width:100%;border-collapse:collapse;font-size:12px}.steps th,.steps td{padding:7px 8px;border-bottom:1px solid #20293b;text-align:left}.steps th{color:#8d9ab0}.audit{max-height:420px;overflow:auto;background:#070a11;border:1px solid #222a3b;border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}details summary{cursor:pointer;color:#bdc8df}@media(max-width:700px){main{width:min(100% - 18px,980px);margin:10px auto}.kpis{grid-template-columns:repeat(2,1fr)}.steps{display:block;overflow:auto}}</style></head><body><main><header><h1>🚨 Werewolf Bug Replay — บั๊กแรกที่พบ</h1><p>Run ${escapeDiagnosticHtml(replay.runId || bundle.reportId || '-')} · ระบบหยุดทันทีหลังพบ failure แรก · สร้าง ${escapeDiagnosticHtml(bundle.createdAt || '-')}</p><div class="kpis"><div class="kpi"><b>FIRST</b><span>Mode</span></div><div class="kpi"><b>${failure ? '1' : '0'}</b><span>Failure points</span></div><div class="kpi"><b>${escapeDiagnosticHtml(failure?.scenarioTitle || failure?.scenarioId || '-')}</b><span>Scenario</span></div><div class="kpi"><b>${escapeDiagnosticHtml(failure?.testPath || '-')}</b><span>Test</span></div></div><div class="links">${jsonHref ? `<a href="${jsonHref}">ดาวน์โหลด JSON</a>` : ''}</div></header>${failureHtml}<section class="panel"><h2>📋 ขั้นตอนของ Scenario ที่เกิดบั๊ก</h2><div style="overflow:auto"><table class="steps"><thead><tr><th>#</th><th>Status</th><th>Test</th><th>Duration</th></tr></thead><tbody>${stepRows || '<tr><td colspan="4">ไม่มีข้อมูล</td></tr>'}</tbody></table></div></section><section class="panel"><h2>🔬 Root Cause / Analysis</h2><p>${escapeDiagnosticHtml(bundle.analysis?.rootCause || 'ยังระบุไม่ได้')}</p><p>Cause code: ${escapeDiagnosticHtml(bundle.analysis?.causeCode || '-')} · Stage: ${escapeDiagnosticHtml(bundle.analysis?.failureStage || '-')} · Confidence: ${escapeDiagnosticHtml(bundle.analysis?.confidence || '-')}</p></section><section class="panel"><details><summary>Runtime Audit</summary><div class="audit">${escapeDiagnosticHtml(JSON.stringify(bundle.audit || {}, null, 2))}</div></details></section><section class="panel"><details><summary>Plain-text report</summary><div class="audit">${escapeDiagnosticHtml(text)}</div></details></section></main></body></html>`;
+}
+
+async function createBugReplayFirstFailureShare(job) {
+    if (!job || job.report?.status === 'ready') return job?.report || null;
+    const token = diagnosticShareToken();
+    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
+    if (!baseUrl) throw new Error('BUG_REPLAY_REPORT_BASE_URL_MISSING');
+    const createdAt = new Date().toISOString();
+    const bundle = buildBugReplayFirstFailureBundle(job, { token, includeShareUrls:true });
+    bundle.createdAt = createdAt;
+    if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES) throw new Error('BUG_REPLAY_FIRST_FAILURE_REPORT_TOO_LARGE');
+    await persistDiagnosticShare(bundle, token, false);
+    rememberDiagnosticShare(token, bundle);
+    const firstFailureEventId = String(bundle.replay?.firstFailureEventId || '');
+    const baseExportUrl = `${baseUrl}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}&reportScope=first_failure`;
+    job.report = { status:'ready', reportKind:'BUG_REPLAY_FIRST_FAILURE', token, url:bundle.shareUrls.html, jsonUrl:bundle.shareUrls.json, aiUrl:bundle.shareUrls.json, jsonDownloadUrl:`${baseExportUrl}&format=json`, textDownloadUrl:`${baseExportUrl}&format=text`, createdAt, expiresAt:bundle.expiresAt, firstFailureEventId, error:'' };
+    return job.report;
+}
+
+async function createBugReplayRunShare(job) {
+    if (!job || job.report?.status === 'ready') return job?.report || null;
+    const token = diagnosticShareToken();
+    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
+    if (!baseUrl) throw new Error('BUG_REPLAY_REPORT_BASE_URL_MISSING');
+    const createdAt = new Date().toISOString();
+    const bundle = buildBugReplayRunBundle(job, { token, includeShareUrls:true });
+    bundle.createdAt = createdAt;
+
+    // Keep the whole run under the existing DynamoDB-safe share size while preserving all failure summaries.
+    while (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.audit?.timeline?.length > 80) bundle.audit.timeline.splice(0, Math.max(1, bundle.audit.timeline.length - 80));
+    while (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.audit?.findings?.length > 60) bundle.audit.findings.splice(0, Math.max(1, bundle.audit.findings.length - 60));
+    if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES) {
+        // Never drop failure points from the single aggregate report. If an extreme run exceeds the persisted share size, make the error explicit for the Admin instead of silently omitting reports.
+        throw new Error('BUG_REPLAY_AGGREGATE_REPORT_TOO_LARGE');
+    }
+    await persistDiagnosticShare(bundle, token, false);
+    rememberDiagnosticShare(token, bundle);
+    const firstFailureEventId = job.mode === 'first' ? String(job.failure?.eventId || '') : '';
+    const baseExportUrl = `${baseUrl}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}`;
+    const focusedQuery = firstFailureEventId ? `&eventId=${encodeURIComponent(firstFailureEventId)}` : '';
+    job.report = { status:'ready', reportKind:'BUG_REPLAY_RUN', token, url:bundle.shareUrls.html, jsonUrl:bundle.shareUrls.json, aiUrl:bundle.shareUrls.ai, jsonDownloadUrl:`${baseExportUrl}&format=json${focusedQuery}`, textDownloadUrl:`${baseExportUrl}&format=text${focusedQuery}`, createdAt, expiresAt:bundle.expiresAt, firstFailureEventId, error:'' };
+    return job.report;
+}
+
+async function finalizeBugReplayRunReport(job) {
+    if (!job || job.status === 'running') return job?.report || null;
+    if (job.report?.status === 'ready' && job.report.url) return job.report;
+    if (job.report?.status === 'generating') return job.report;
+    try {
+        const baseExportUrl = `${String(job.publicBaseUrl || '').replace(/\/+$/, '')}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}`;
+        const firstMode = job.mode === 'first';
+        job.report = { status:'generating', reportKind:firstMode ? 'BUG_REPLAY_FIRST_FAILURE' : 'BUG_REPLAY_RUN', url:'', jsonUrl:'', aiUrl:'', jsonDownloadUrl:firstMode ? `${baseExportUrl}&reportScope=first_failure&format=json` : `${baseExportUrl}&format=json`, textDownloadUrl:firstMode ? `${baseExportUrl}&reportScope=first_failure&format=text` : `${baseExportUrl}&format=text`, createdAt:'', error:'' };
+        if(firstMode) await createBugReplayFirstFailureShare(job);
+        else await createBugReplayRunShare(job);
+    } catch (err) {
+        const baseExportUrl = `${String(job.publicBaseUrl || '').replace(/\/+$/, '')}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}`;
+        job.report = { status:'error', reportKind:job.mode === 'first' ? 'BUG_REPLAY_FIRST_FAILURE' : 'BUG_REPLAY_RUN', url:'', jsonUrl:'', aiUrl:'', jsonDownloadUrl:job.mode === 'first' ? `${baseExportUrl}&reportScope=first_failure&format=json` : `${baseExportUrl}&format=json`, textDownloadUrl:job.mode === 'first' ? `${baseExportUrl}&reportScope=first_failure&format=text` : `${baseExportUrl}&format=text`, createdAt:'', error:publicDiagnosticText(err?.message || String(err)) };
+        job.audit?.addFinding('runner', 'BUG_REPLAY_REPORT_CREATE_FAILED', job.report.error, {}, 'error', 'bug-replay');
+    }
+    return job.report;
+}
+
+async function startBugReplayJob(mode = "all", { publicBaseUrl = "" } = {}) {
     cleanupBugReplayJobs();
     if (bugReplayActiveRunId) {
         const active = bugReplayJobs.get(bugReplayActiveRunId);
         if (active && active.status === "running") return { ok:false, code:"BUG_REPLAY_ALREADY_RUNNING", job:publicBugReplayJob(active) };
         bugReplayActiveRunId = "";
     }
-    const safeMode = mode === "deep" ? "deep" : (mode === "phase2" ? "phase2" : "all");
+    const safeMode = mode === "first" ? "first" : (mode === "phase2" ? "phase2" : "all");
     const scenarios = listBugReplayScenarios(safeMode);
     const runId = makeDiagnosticId("replay");
     const job = {
@@ -1066,7 +1930,7 @@ async function startBugReplayJob(mode = "all") {
         startedAt: new Date().toISOString(),
         status: "running",
         mode: safeMode,
-        continueOnFailure: safeMode === "deep",
+        continueOnFailure: safeMode !== "first",
         totalScenarios: scenarios.length,
         currentScenarioIndex: -1,
         currentScenarioId: "",
@@ -1083,6 +1947,7 @@ async function startBugReplayJob(mode = "all") {
         totalSteps: scenarios.reduce((n, s) => n + Number(s.testCount || 0), 0),
         remainingSteps: scenarios.reduce((n, s) => n + Number(s.testCount || 0), 0),
         stoppedByAdmin: false,
+        stopReason: "",
         failure: null,
         failures: [],
         failedScenario: null,
@@ -1090,6 +1955,12 @@ async function startBugReplayJob(mode = "all") {
         cancelRequested: false,
         activeChild: null,
         phase2Reports: [],
+        failureEventIds: [],
+        failureRefs: [],
+        scenarioResults: [],
+        publicBaseUrl: String(publicBaseUrl || "").replace(/\/+$/, ""),
+        report: { status:"pending", url:"", jsonUrl:"", aiUrl:"", jsonDownloadUrl:"", textDownloadUrl:"", createdAt:"", error:"" },
+        gameProfileSnapshot: diagnosticGameProfileSnapshot(getCurrentGameDiagnosticProfile({ force:true })),
         audit: createRuntimeAudit({ source:"bug-replay", runId, mode:safeMode, page:"admin" }),
     };
     bugReplayJobs.set(runId, job);
@@ -1111,6 +1982,8 @@ async function startBugReplayJob(mode = "all") {
                 job.currentScenarioId = summary.id;
                 job.currentScenarioTitle = summary.title;
                 job.currentAction = summary.action;
+                job.currentScenarioFeatureKeys = Array.isArray(summary.featureKeys) ? summary.featureKeys.slice(0, 40) : [];
+                job.currentScenarioFeatureLabels = Array.isArray(summary.featureLabels) ? summary.featureLabels.slice(0, 40) : [];
                 job.currentStepIndex = -1;
                 job.audit.record('scenario', 'scenario.start', { index:i, id:summary.id, title:summary.title, action:summary.action, testCount:summary.testCount });
                 job.currentTestPath = "";
@@ -1157,17 +2030,53 @@ async function startBugReplayJob(mode = "all") {
                 job.activeChild = null;
                 job.audit.record('scenario', 'scenario.complete', { index:i, id:summary.id, ok:!!result.ok, stopped:!!result.stopped, stepCount:Array.isArray(result.steps) ? result.steps.length : 0, failures:Array.isArray(result.failures) ? result.failures.length : (result.failure ? 1 : 0) });
 
-                const failures = Array.isArray(result.failures) ? result.failures : (result.failure ? [result.failure] : []);
+                let failures = Array.isArray(result.failures) ? result.failures : (result.failure ? [result.failure] : []);
+                let reportSteps = Array.isArray(result.steps) ? result.steps : [];
+                // First-failure mode is a hard boundary. Even if a future runner regression
+                // accidentally returns more than one failure/step, the public first-failure
+                // state must contain only the first failing step and nothing after it.
+                if (!job.continueOnFailure && failures.length) {
+                    failures = [failures[0]];
+                    const firstFailureStepIndex = Number(failures[0]?.stepIndex);
+                    if (Number.isFinite(firstFailureStepIndex)) {
+                        reportSteps = reportSteps.filter((step) => Number(step?.index) <= firstFailureStepIndex);
+                    }
+                }
+                job.scenarioResults.push({
+                    index:i, id:summary.id, title:summary.title, action:summary.action, ok:!!result.ok, stopped:!!result.stopped,
+                    stepCount:reportSteps.length,
+                    passedSteps:reportSteps.filter((x) => x.ok && !x.skipped).length,
+                    failedSteps:reportSteps.filter((x) => !x.ok && !x.skipped).length || failures.length,
+                    skippedSteps:reportSteps.filter((x) => x.skipped).length,
+                    steps:reportSteps.map((step) => ({ index:step.index, testPath:step.testPath, ok:!!step.ok, skipped:!!step.skipped, timedOut:!!step.timedOut, exitCode:step.exitCode ?? null, signal:step.signal || null, durationMs:Number(step.durationMs)||0 })),
+                });
                 if (failures.length) {
                     for (const failure of failures) {
                         job.totalFailureCount += 1;
                         const failureWithDiagnostic = recordBugReplayFailure({ runId, scenarioIndex:i, summary, failure, job });
+                        job.failureEventIds.push(String(failureWithDiagnostic.eventId || ''));
+                        job.failureRefs.push({
+                            eventId:String(failureWithDiagnostic.eventId || ''), scenarioIndex:i, scenarioId:summary.id, scenarioTitle:summary.title,
+                            action:summary.action, testPath:failure.testPath || '', stepIndex:failure.stepIndex, exitCode:failure.exitCode, signal:failure.signal,
+                            timedOut:!!failure.timedOut, durationMs:Number(failure.durationMs)||0, stdout:sanitizeBugReplayText(failure.stdout, 1800), stderr:sanitizeBugReplayText(failure.stderr, 2600),
+                        });
                         job.audit.addFinding('test', 'BUG_REPLAY_FAILURE', `Bug Replay failure: ${summary.id} / ${failure.testPath || 'unknown'}`, { scenarioId:summary.id, scenarioIndex:i, testPath:failure.testPath || '', stepIndex:failure.stepIndex, exitCode:failure.exitCode, signal:failure.signal, timedOut:!!failure.timedOut, eventId:failureWithDiagnostic.eventId }, 'error', 'bug-replay');
                         if (job.failures.length < BUG_REPLAY_MAX_FAILURES) job.failures.push(failureWithDiagnostic);
                         if (!job.failure) job.failure = failureWithDiagnostic;
                     }
                     job.failedScenario = summary;
                     job.lastOutput = `❌ พบ ${failures.length} ปัญหาใน scenario: ${summary.title}`;
+                    if (!job.continueOnFailure) {
+                        job.status = "failed";
+                        job.stopReason = "first_failure";
+                        job.currentScenarioIndex = i;
+                        job.currentStepIndex = Number(failure.stepIndex);
+                        job.currentTestPath = String(failure.testPath || "");
+                        job.lastOutput = `🛑 หยุดทันทีที่พบบั๊กแรก: ${summary.title}`;
+                        job.completedScenarios += 1;
+                        job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
+                        break;
+                    }
                 }
 
                 if (!result.ok && result.stopped) {
@@ -1175,18 +2084,11 @@ async function startBugReplayJob(mode = "all") {
                     job.stoppedByAdmin = true;
                     break;
                 }
-                if (!result.ok && !job.continueOnFailure) {
-                    job.status = "failed";
-                    break;
-                }
-
                 job.completedScenarios += 1;
                 job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
-                if (failures.length) {
-                    job.lastOutput = job.continueOnFailure
-                        ? `⚠️ ผ่านไปต่อหลังพบ ${failures.length} ปัญหาใน ${summary.title}`
-                        : `❌ หยุดที่ ${summary.title}`;
-                } else {
+                if (failures.length && job.continueOnFailure) {
+                    job.lastOutput = `⚠️ ผ่านไปต่อหลังพบ ${failures.length} ปัญหาใน ${summary.title}`;
+                } else if (!failures.length) {
                     job.lastOutput = `✅ ผ่าน scenario: ${summary.title}`;
                 }
             }
@@ -1195,8 +2097,9 @@ async function startBugReplayJob(mode = "all") {
                 if (job.cancelRequested) job.stoppedByAdmin = true;
             }
             job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
-            job.audit.record('runner', 'run.complete', { status:job.status, completedScenarios:job.completedScenarios, completedSteps:job.completedSteps, passedSteps:job.passedSteps, failedSteps:job.failedSteps, slowSteps:job.slowSteps });
             job.finishedAt = new Date().toISOString();
+            job.audit.record('runner', 'run.complete', { status:job.status, completedScenarios:job.completedScenarios, completedSteps:job.completedSteps, passedSteps:job.passedSteps, failedSteps:job.failedSteps, slowSteps:job.slowSteps });
+            await finalizeBugReplayRunReport(job);
         } catch (err) {
             job.audit.addFinding('runner', 'BUG_REPLAY_RUNNER_ERROR', err?.message || String(err), { scenarioId:job.currentScenarioId, stepIndex:job.currentStepIndex }, 'critical', 'bug-replay');
             const diagnostic = recordDiagnostic({
@@ -1209,6 +2112,7 @@ async function startBugReplayJob(mode = "all") {
             job.failedSteps += 1;
             job.status = "failed";
             job.finishedAt = new Date().toISOString();
+            await finalizeBugReplayRunReport(job);
         } finally {
             job.activeChild = null;
             if (bugReplayActiveRunId === runId) bugReplayActiveRunId = "";
@@ -1304,6 +2208,7 @@ let appDraining = false;
 app.get("/health", (req, res) => {
     const alive = !appDraining;
     const ready = appBootReady && !appDraining && roomRecoveryHealthy && adminAuthReadyForDeployment();
+    const environmentState = getCachedAppEnvironmentState();
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     res.setHeader("Pragma", "no-cache");
     return res.status(alive ? 200 : 503).json({
@@ -1317,11 +2222,16 @@ app.get("/health", (req, res) => {
         adminAuthRequiredInDeployment: !!EB_ENVIRONMENT_NAME,
         uptimeSec: Math.round(process.uptime()),
         version: getCachedAppVersion(),
+        environmentStatus: environmentState.status,
+        environmentVersionLabel: environmentState.versionLabel,
+        deploymentState: environmentState.deploymentState,
+        deploymentInProgress: environmentState.deploymentState === "updating",
     });
 });
 
 app.get("/ready", (req, res) => {
     const baseReady = appBootReady && !appDraining && roomRecoveryHealthy;
+    const environmentState = getCachedAppEnvironmentState();
     const adminReady = adminAuthReadyForDeployment();
     const ready = baseReady && adminReady;
     let status = "ready";
@@ -1343,6 +2253,10 @@ app.get("/ready", (req, res) => {
         adminAuthRequiredInDeployment: !!EB_ENVIRONMENT_NAME,
         uptimeSec: Math.round(process.uptime()),
         version: getCachedAppVersion(),
+        environmentStatus: environmentState.status,
+        environmentVersionLabel: environmentState.versionLabel,
+        deploymentState: environmentState.deploymentState,
+        deploymentInProgress: environmentState.deploymentState === "updating",
     });
 });
 
@@ -1360,6 +2274,13 @@ app.use(compression());
 const io = new Server(server, {
     pingInterval: 25_000,
     pingTimeout: 90_000, // เดิม 20s → 60s → 90s
+    // ช่วยกู้ connection state ของ Socket.IO เองในกรณีเน็ตสะดุด/แท็บถูกพักชั่วคราว
+    // ภายใน instance เดิม; การสลับ instance ระหว่าง Immutable deployment ยังใช้ Account Session +
+    // membershipId + durable room snapshot เป็น source of truth และจะ auto-rejoin ต่อให้ state recovery นี้ใช้ไม่ได้
+    connectionStateRecovery: {
+        maxDisconnectionDuration: 120_000,
+        skipMiddlewares: false,
+    },
     // perMessageDeflate: บีบอัดข้อมูลที่วิ่งผ่าน WebSocket (room_update ทุกครั้งที่มีการ
     // เปลี่ยนสถานะห้อง คือข้อความที่ส่งบ่อย/ถี่ที่สุดในเกมนี้) ค่า default ของ socket.io
     // ปิดฟีเจอร์นี้ไว้ (เพื่อประหยัด CPU/RAM ฝั่ง server) แต่สำหรับเกมนี้ผู้เล่นส่วนใหญ่อยู่บน
@@ -1412,7 +2333,7 @@ let imageEpochTouchedByAdmin = false;
 let serverStateResolve;
 const serverStateReady = new Promise((resolve) => { serverStateResolve = resolve; });
 
-const MAINTENANCE_FALLBACK_HTML = '<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>เซิร์ฟเวอร์ปิดอยู่</title></head><body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0f19;color:#fff;font-family:sans-serif;text-align:center"><div><div style="font-size:48px">🔧</div><h1>เซิร์ฟเวอร์กำลังปิด</h1><p>กรุณารอสักครู่</p></div><script>setInterval(function(){fetch("/api/config",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.serverOpen===true){try{["ww_joinedRoom","ww_lastRoom","ww_token","ww_host_room","ww_host_token","ww_bot_tokens"].forEach(function(k){localStorage.removeItem(k);sessionStorage.removeItem(k)})}catch(e){}location.replace("/")}}).catch(function(){})},4000)</script></body></html>';
+const MAINTENANCE_FALLBACK_HTML = '<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>เซิร์ฟเวอร์ปิดอยู่</title></head><body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0f19;color:#fff;font-family:sans-serif;text-align:center"><div><div style="width:72px;height:72px;margin:0 auto 14px"><img id="serverIcon" src="" alt="" width="72" height="72" style="display:block;width:72px;height:72px;object-fit:contain;border-radius:16px"></div><h1>เซิร์ฟเวอร์กำลังปิด</h1><p>กรุณารอสักครู่</p></div><script>function check(){fetch("/api/config",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.serverIconUrl){var i=document.getElementById("serverIcon");if(i)i.src=String(d.serverIconUrl);}if(d&&d.serverOpen===true){try{["ww_joinedRoom","ww_lastRoom","ww_token","ww_host_room","ww_host_token","ww_bot_tokens"].forEach(function(k){localStorage.removeItem(k);sessionStorage.removeItem(k)})}catch(e){}location.replace("/")}}).catch(function(){})}check();setInterval(check,4000)</script></body></html>';
 let maintenanceHtmlCache = null;
 function getMaintenanceHtml() {
     if (maintenanceHtmlCache === null) {
@@ -1421,6 +2342,14 @@ function getMaintenanceHtml() {
         } catch (e) {
             console.error("[server-control] อ่าน public/maintenance.html ไม่ได้ ใช้หน้าสำรองแทน:", e.message);
             maintenanceHtmlCache = MAINTENANCE_FALLBACK_HTML;
+        }
+        // maintenance.html is served directly by the closed-server gate, not through getStampedHtml().
+        // Rewrite only the dedicated server icon marker so the actual image always comes from S3/CDN.
+        if (typeof IMAGE_BASE_URL === "string" && IMAGE_BASE_URL) {
+            const version = typeof currentImageVersion === "function" ? currentImageVersion() : "";
+            const src = imgUrl(SERVER_CLOSED_ICON_PATH);
+            maintenanceHtmlCache = maintenanceHtmlCache.replace(/src=""([^>]*id="serverIcon"[^>]*)>/i, `src="${src}"$1>`);
+            maintenanceHtmlCache = maintenanceHtmlCache.replace(/src=""([^>]*id='serverIcon'[^>]*)>/i, `src="${src}"$1>`);
         }
     }
     return maintenanceHtmlCache;
@@ -1603,10 +2532,10 @@ app.use((req, res, next) => {
         res.setHeader("X-WW-Server-Instance", `${os.hostname()}:${process.pid}`);
         if (clientRequestId) res.setHeader("X-WW-Client-Request-Id", clientRequestId);
         addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.start ${req.method} ${sanitizeDiagnosticPath(req.path)}`, traceId, sessionId, page: "server", detail: { method: req.method, endpoint: sanitizeDiagnosticPath(req.path), requestId, clientRequestId } });
-        res.once("finish", () => addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.end ${req.method} ${sanitizeDiagnosticPath(req.path)} ${res.statusCode}`, traceId, sessionId, page: "server", detail: { status: res.statusCode, durationMs: Date.now() - startedAt, requestId } }));
+        res.once("finish", () => addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.end ${req.method} ${sanitizeDiagnosticPath(req.path)} ${res.statusCode}`, traceId, sessionId, page: "server", detail: { status: res.statusCode, durationMs: Date.now() - startedAt, requestId, clientRequestId } }));
         res.once("close", () => {
             if (res.writableFinished) return;
-            addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.close ${req.method} ${sanitizeDiagnosticPath(req.path)}`, traceId, sessionId, page: "server", detail: { durationMs: Date.now() - startedAt, requestId } });
+            addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.close ${req.method} ${sanitizeDiagnosticPath(req.path)}`, traceId, sessionId, page: "server", detail: { durationMs: Date.now() - startedAt, requestId, clientRequestId } });
         });
     }
     diagnosticAsyncContext.run({ traceId, sessionId, clientRequestId, action, requestId, roomId: inferDiagnosticRoomId(req.path) }, next);
@@ -1617,6 +2546,77 @@ app.use("/api/admin", (req, res, next) => {
     if (!adminAuthRequired()) return res.status(503).json({ error: "admin_auth_not_configured", code: "ADMIN_AUTH_NOT_CONFIGURED" });
     if (isAdminSessionValid(req)) return next();
     return res.status(401).json({ error: "admin_auth_required", code: "ADMIN_AUTH_REQUIRED" });
+});
+
+// IMPORTANT: this route is intentionally registered before the server-closed gate.
+// A valid Admin download ticket must remain usable even while the public game is
+// temporarily closed, so an Admin can recover a previous source bundle during an
+// incident/rollback workflow.
+app.get("/api/eb-version-download/:ticket", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'");
+
+    const payload = verifySignedState(String(req.params.ticket || ""), ADMIN_SESSION_SECRET);
+    const now = Date.now();
+    const nonce = String(payload?.n || "");
+    const envName = configuredEnvironmentName();
+    const versionLabel = normalizeVersionLabel(payload?.versionLabel);
+
+    const revokedUntil = Number(adminTabSessionRevoked.get(String(payload?.adminSessionNonce || "")) || 0);
+    if (!payload || payload.type !== "admin_eb_version_download" || payload.admin !== true || !nonce
+        || !envName || payload.environmentName !== envName || !isValidVersionLabel(versionLabel)
+        || Number(payload.exp || 0) <= now || revokedUntil > now) {
+        return res.status(404).type("text/plain").send("download_ticket_invalid");
+    }
+
+    try {
+        const environment = await describeEnvironment({ environmentName: envName });
+        const applicationName = String(environment.ApplicationName || "").trim();
+        if (!applicationName || applicationName !== String(payload.applicationName || "").trim()) {
+            return res.status(404).type("text/plain").send("download_source_changed");
+        }
+        const version = await getApplicationVersion({ applicationName, versionLabel });
+        if (!version.downloadable) {
+            return res.status(404).type("text/plain").send("download_source_not_found");
+        }
+
+        const object = await getSourceBundleObject({ version });
+        if (!object?.Body) throw Object.assign(new Error("S3 GetObject returned no body"), { code: "EB_VERSION_SOURCE_EMPTY" });
+        const filename = makeSafeDownloadFilename(versionLabel);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/zip");
+        if (Number.isFinite(Number(object.ContentLength))) res.setHeader("Content-Length", String(object.ContentLength));
+        if (object.LastModified) res.setHeader("Last-Modified", new Date(object.LastModified).toUTCString());
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        await pipeline(object.Body, res);
+    } catch (e) {
+        const code = String(e?.code || e?.name || "");
+        const message = String(e?.message || e || "");
+        const accessDenied = /AccessDenied|Forbidden|not authorized|UnauthorizedOperation/i.test(`${code} ${message}`);
+        recordDiagnostic({
+            source: "server",
+            kind: accessDenied ? "admin_version_download_access_denied" : "admin_version_download_failed",
+            page: "admin",
+            action: "admin_version_download",
+            operation: "S3.GetObject",
+            message: message || code || "Elastic Beanstalk source-bundle download failed",
+            stack: e?.stack || "",
+            endpoint: `/api/eb-version-download/${versionLabel}`,
+            data: { versionLabel, environmentName: envName, code: code.slice(0, 160) },
+        });
+        if (res.headersSent) {
+            try { res.destroy(e); } catch (_) {}
+            return;
+        }
+        if (accessDenied) return res.status(403).type("text/plain").send("EB_VERSION_SOURCE_ACCESS_DENIED");
+        if (e?.code === "EB_VERSION_SOURCE_NOT_FOUND" || e?.code === "EB_VERSION_NOT_FOUND") {
+            return res.status(404).type("text/plain").send("EB_VERSION_SOURCE_NOT_FOUND");
+        }
+        return res.status(503).type("text/plain").send("EB_VERSION_DOWNLOAD_FAILED");
+    }
 });
 
 const CLOSED_ALLOWED_PATHS = new Set([
@@ -1631,12 +2631,24 @@ app.use(async (req, res, next) => {
         res.setHeader("Set-Cookie", `${TESTER_PASS_COOKIE}=${qTp}; Path=/; Max-Age=${Math.floor(TESTER_PASS_TTL_MS / 1000)}; SameSite=Lax; HttpOnly`);
         return next();
     }
-
-    if (!serverClosed) return next();
     if (isTesterPassValid(testerTokenFromCookie(req.headers))) return next();
 
     const p = req.path;
-    if (p === "/api/config" || p.startsWith("/api/admin/") || p.startsWith("/api/diagnostics/") || p.startsWith("/socket.io/") || p.startsWith("/diagnostics/share/") || CLOSED_ALLOWED_PATHS.has(p)) {
+
+    // EB/CloudFront can briefly keep more than one Node instance alive during a
+    // rolling/immutable deploy. serverClosed is process-local, while the persisted
+    // SERVER_STATE row is shared. Reconcile the navigation/config state before the
+    // closed-server gate so an instance that still thinks "closed" never returns the
+    // maintenance document after Admin has already reopened the server elsewhere.
+    const shouldSyncPersistedState = p === "/" || p === "/index.html" || p === "/api/config" || p === "/api/server-state";
+    if (shouldSyncPersistedState) {
+        const forceAuthorityRead = p === "/" || p === "/index.html" || (p === "/api/server-state" && (req.query.boot === "1" || req.query.verify === "1"));
+        await syncServerStateFromAuthority({ force: forceAuthorityRead });
+    }
+
+    if (!serverClosed) return next();
+
+    if (p === "/api/config" || p === "/api/server-state" || p.startsWith("/api/admin/") || p.startsWith("/api/diagnostics/") || p.startsWith("/socket.io/") || p.startsWith("/diagnostics/share/") || CLOSED_ALLOWED_PATHS.has(p)) {
         return next();
     }
     // หน้า "เซิร์ฟเวอร์กำลังปิด" ต้องโหลดข้อมูลอาชีพ + รูปอาชีพเองได้แม้เพิ่งเปิดหน้าเว็บ/ไม่เคยเข้าเกมมาก่อน (iPad/iPhone/Android)
@@ -1652,6 +2664,13 @@ app.use(async (req, res, next) => {
     }
     const ext = path.extname(p).toLowerCase();
     if (ext === "" || ext === ".html" || ext === ".htm") {
+        // Do not let a maintenance document become a reusable browser/CDN snapshot.
+        // This is especially important on iPad/Chrome when the root page is reloaded
+        // immediately after an Admin reopen on another instance.
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Surrogate-Control", "no-store");
+        res.setHeader("Expires", "0");
         return res.status(200).type("html").send(getMaintenanceHtml());
     }
     return res.status(503).type("text/plain").send("server_closed");
@@ -1669,6 +2688,11 @@ function isAdminSocket(socket) {
 io.use(async (socket, next) => {
     await serverStateReady;
     await roomRecoveryReady;
+    if (appDraining) {
+        const err = new Error("server_draining");
+        err.data = { code: "SERVER_DRAINING", retryAfterMs: 5000 };
+        return next(err);
+    }
     // บัตรผ่านผู้ทดสอบสำหรับ Socket.IO ต้องผูกกับ "แท็บที่เปิดโหมดทดสอบ" เท่านั้น
     // ห้ามอ่าน ww_tp จาก cookie มาเลื่อนสิทธิ์ให้ socket ปกติ เพราะ HttpOnly cookie
     // เป็น cookie ระดับ origin เดียวกันทั้งเบราว์เซอร์: ถ้าแอดมินเปิดแท็บ Tester แล้ว
@@ -1703,12 +2727,18 @@ io.use(async (socket, next) => {
     }
     socket.data.testerPassPresented = testerPassPresented;
     socket.data.testerPassValid = testerPassValid;
+    const adminAuthToken = String(socket.handshake?.auth?.adminToken || "").trim();
+    const adminPresentedTabId = sanitizeAdminTabId(socket.handshake?.auth?.adminTabId || "");
+    const adminSessionValid = isAdminSocket(socket);
     addDiagnosticBreadcrumb({ source:"server", type:"socket", label:"auth.handshake", traceId:String(socket.data.diagnosticTraceId || ""), sessionId:String(socket.data.diagnosticSessionId || ""), page:"server", detail:{
         authObservation:{
             testerPassPresented,
             testerPassValid,
             testerPassBootstrapError:String(socket.data.testerPassBootstrapError || ""),
             hasAdminIntent:socket.handshake?.auth?.admin === true,
+            hasAdminToken:!!adminAuthToken,
+            hasAdminTabId:!!adminPresentedTabId,
+            adminSessionValid,
             hasDiagSession:!!socket.handshake?.auth?.wwDiagSessionId,
         },
     } });
@@ -1716,6 +2746,32 @@ io.use(async (socket, next) => {
     // สมาชิกห้องผู้ทดสอบที่ไม่ได้ถือบัตร tp cookie (ดูคอมเมนต์ที่ isProtectedHandshake ด้านบน) — ถือว่าผ่านด่านปิด
     // เหมือนกับถือบัตรเลย (roomTesterAuth) ให้ครอบคลุมทั้ง handshake นี้และ event ต่างๆ ที่จะตามมา (ดู socket.on wrapper ด้านล่าง)
     if (isProtectedHandshake(socket)) socket.data.roomTesterAuth = true;
+
+    // Admin sockets must fail the handshake when their signed tab credential is
+    // missing/expired/mismatched. Previously an { auth: { admin:true } } socket
+    // could connect while not actually authenticated; the later admin_* event
+    // guard then returned ADMIN_AUTH_REQUIRED. That left the Admin UI connected
+    // at the transport layer but unable to load rooms/accounts, and because the
+    // handshake itself succeeded it did not reliably enter the client's
+    // connect_error → ensureAdminLogin recovery path.
+    if (socket.handshake?.auth?.admin === true && !isAdminSocket(socket)) {
+        addDiagnosticBreadcrumb({
+            source: "server",
+            type: "socket",
+            label: "auth.rejected:admin_auth_required",
+            traceId: String(socket.data.diagnosticTraceId || ""),
+            sessionId: String(socket.data.diagnosticSessionId || ""),
+            page: "server",
+            detail: {
+                reason: "admin_auth_required",
+                code: "ADMIN_AUTH_REQUIRED",
+                hasAdminToken: !!adminAuthToken,
+                hasAdminTabId: !!adminPresentedTabId,
+            },
+        });
+        return next(new Error("admin_auth_required"));
+    }
+
     if (!serverClosed || isAdminSocket(socket) || socket.data.testerToken || socket.data.roomTesterAuth) return next();
     // ถูกปฏิเสธที่ middleware → socket.io client จะ "ไม่ reconnect เอง" (socket.active=false) และยิง connect_error
     // (message = "server_closed") — หน้าเกมจับตัวนี้ไปโชว์หน้า "เซิร์ฟเวอร์กำลังปิด" ส่วนตอนเปิดคืนหน้านั้นจะรีโหลดเองจาก /api/config
@@ -1809,9 +2865,23 @@ function refreshVersionParts() {
     return hashes;
 }
 
-// hash ของหน้า Admin โดยเฉพาะ — admin.html เป็น inline JS/HTML จึงแยกจาก clientHash ของเกม
+// fingerprint รุ่นที่หน้า Admin ควรตรวจจับ — ไม่ใช่แค่ admin.html อย่างเดียว
+// เพราะการ deploy ใหม่อาจเปลี่ยน server.js / client JS / CSS / asset โดยไม่ได้แก้ admin.html
+// แต่ Admin ที่เปิดค้างอยู่ก็ควรรู้ว่าชุดโปรแกรมที่รันอยู่เปลี่ยนรุ่นแล้ว
+// ใช้ hash ของ admin.html + version parts ของ client/assets/server เพื่อให้
+// deploy ที่มีผลต่อระบบจริงสร้าง admin release ใหม่อย่างสม่ำเสมอทุก instance
 function computeAdminHash() {
-    try { return crypto.createHash("sha1").update(fs.readFileSync(path.join(PUBLIC_DIR, "admin.html"))).digest("hex").slice(0, 12); } catch (_) { return "0"; }
+    try {
+        const adminFile = fs.readFileSync(path.join(PUBLIC_DIR, "admin.html"));
+        const parts = refreshVersionParts();
+        const releaseSource = Buffer.concat([
+            Buffer.from("admin-html\0"), adminFile,
+            Buffer.from(`\0client:${parts.client}\0assets:${parts.assets}\0server:${parts.server}`)
+        ]);
+        return crypto.createHash("sha1").update(releaseSource).digest("hex").slice(0, 12);
+    } catch (_) {
+        return "0";
+    }
 }
 
 // คืน hash ของโค้ดฝั่ง client ล้วนๆ (ใช้ต่อท้าย URL js/css) — เปลี่ยนเมื่อ html/js/css/json ใน public เปลี่ยนเท่านั้น
@@ -1824,7 +2894,12 @@ function computeClientHash() {
 function computeServerVersion() {
     try {
         const p = refreshVersionParts();
-        return crypto.createHash("sha1").update(`${p.client}|${p.assets}|${p.server}|${imageEpoch || ""}`).digest("hex").slice(0, 12);
+        // Canonical update version is intentionally broader than clientHash:
+        // changing Admin itself is still an application update, so /api/config -> version
+        // must move even when public/admin.html is the only file changed. Keep clientHash
+        // semantics unchanged so ordinary game asset cache-busting does not broaden.
+        const adminRelease = computeAdminHash();
+        return crypto.createHash("sha1").update(`${p.client}|${p.assets}|${p.server}|${imageEpoch || ""}|admin:${adminRelease}`).digest("hex").slice(0, 12);
     } catch (e) {
         return "0";
     }
@@ -1845,12 +2920,14 @@ function currentImageVersion() {
 // โปรเจคนี้ตั้งใจให้รูปภาพทั้งหมดอยู่นอก deploy zip; เมื่อ IMAGE_BASE_URL ถูกตั้งแล้ว
 // imgUrl()/wwImg() จะสร้าง URL แบบเต็มไปยัง S3/CDN และจะไม่มีการ fallback กลับไปหาไฟล์รูปใน public/
 const IMAGE_BASE_URL = (process.env.IMAGE_BASE_URL || "").replace(/\/+$/, "");
+// Closed-server icon is stored at the same image-origin root level as cover-1200x630.png.
+const SERVER_CLOSED_ICON_PATH = "/icons-server.png";
 if (!IMAGE_BASE_URL) {
     console.warn("IMAGE_BASE_URL is not configured; external S3/CDN images will not resolve until the Elastic Beanstalk environment variable is set.");
 }
 
 // imgUrl: ประกอบ URL รูปภาพจาก S3/CDN เท่านั้น = IMAGE_BASE_URL + path + (?v=<imageEpoch>)
-// ถ้ายังไม่ได้ตั้ง IMAGE_BASE_URL จะคืนค่าว่างแทนการสร้าง /images/... เพื่อกัน client ไปดึงรูปจาก origin
+// ถ้ายังไม่ได้ตั้ง IMAGE_BASE_URL จะคืนค่าว่างแทนการสร้าง local /images/... เพื่อกัน client ไปดึงรูปจาก origin
 function imgUrl(imgPath) {
     if (!IMAGE_BASE_URL) return "";
     const v = currentImageVersion();
@@ -1893,6 +2970,8 @@ const STATS_TABLE_NAME = process.env.DYNAMODB_STATS_TABLE || "WerewolfPlayerStat
 const EB_ENVIRONMENT_NAME = String(process.env.EB_ENVIRONMENT_NAME || "").trim();
 
 const rooms = {};
+// Server-internal pointer used by diagnostics to snapshot the live room registry without coupling early boot code to the rooms lexical binding.
+globalThis.__WEREWOLF_ROOMS__ = rooms;
 
 // ============================================================
 // DURABLE ROOM SNAPSHOTS / RECOVERY
@@ -1910,12 +2989,27 @@ const ROOM_PERSISTENCE_TABLE = process.env.DYNAMODB_ROOMS_TABLE || STATS_TABLE_N
 const ROOM_SNAPSHOT_STAT_KEY = "ROOM_SNAPSHOT";
 const ROOM_INDEX_STAT_KEY = "ROOM_INDEX";
 const ROOM_KEY_PREFIX = "__ROOM__:";
-const ROOM_SNAPSHOT_SCHEMA = 1;
+const ROOM_SNAPSHOT_SCHEMA = 2;
 const ROOM_PERSISTENCE_DEBOUNCE_MS = Math.max(250, Number(process.env.ROOM_PERSISTENCE_DEBOUNCE_MS) || 750);
 const ROOM_PERSISTENCE_SCAN_MS = Math.max(750, Number(process.env.ROOM_PERSISTENCE_SCAN_MS) || 1500);
 const ROOM_RECOVERY_TIMEOUT_MS = Math.max(2000, Number(process.env.ROOM_RECOVERY_TIMEOUT_MS) || 8000);
 const ROOM_RECOVERY_TTL_MS = Math.max(60 * 60_000, Number(process.env.ROOM_RECOVERY_TTL_MS) || 7 * 24 * 60 * 60_000);
 const ROOM_SNAPSHOT_MAX_BYTES = Math.min(380 * 1024, Math.max(100 * 1024, Number(process.env.ROOM_SNAPSHOT_MAX_BYTES) || 350 * 1024));
+
+// Deployment handoff / fencing. A room is never treated as "missing" merely because the
+// new Immutable instance has not received the old instance's final handoff yet. The lease is
+// intentionally a short-lived coordination record: it protects the deployment boundary without
+// turning normal multi-instance read/recovery into a hard single-instance dependency.
+const INSTANCE_ID = `${os.hostname()}:${process.pid}:${crypto.randomUUID()}`;
+const ROOM_LEASE_STAT_KEY = "ROOM_LEASE";
+const ROOM_LEASE_TTL_MS = Math.max(8_000, Math.min(60_000, Number(process.env.ROOM_LEASE_TTL_MS) || 20_000));
+const ROOM_LEASE_RENEW_MS = Math.max(2_000, Math.min(10_000, Number(process.env.ROOM_LEASE_RENEW_MS) || 5_000));
+const ROOM_FAILOVER_RETRY_MS = Math.max(500, Math.min(8_000, Number(process.env.ROOM_FAILOVER_RETRY_MS) || 1_500));
+const roomLeaseEpochs = new Map();
+const roomLeaseTimers = new Map();
+let roomRecoveryDeferred = false;
+let roomRecoveryDeferredTimer = null;
+let deploymentRoomRecoveryCompleted = false;
 
 const roomPersistenceTimers = new Map();
 const roomPersistenceSignatures = new Map();
@@ -1966,6 +3060,16 @@ const ACCOUNT_GOOGLE_HANDOFF_TTL_MS = 90 * 1000;
 const ACCOUNT_GOOGLE_IDENTITY_PREFIX = "IDENTITY#GOOGLE#";
 const ACCOUNT_SESSION_PREFIX = "SESSION#";
 const ACCOUNT_SESSION_BY_ACCOUNT_PREFIX = "ACCOUNT_SESSION#";
+const ACCOUNT_ACTIVE_SESSION_HASH_FIELD = "activeSessionHash";
+const ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD = "activeSessionUpdatedAt";
+const ACCOUNT_ACTIVE_DEVICE_ID_FIELD = "activeDeviceId";
+const ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD = "activeActivityType";
+const ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD = "activeRoomId";
+const ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD = "activeMembershipId";
+const ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD = "activeActivityUpdatedAt";
+const ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD = "activeActivitySessionHash";
+const ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD = "activeActivityDeviceId";
+const ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD = "activeActivityTabId";
 const ACCOUNT_MIGRATION_PREFIX = "MIGRATION#LEGACY#";
 const GOOGLE_STATE_COOKIE = "ww_google_state";
 const GOOGLE_HANDOFF_COOKIE = "ww_google_handoff";
@@ -2009,6 +3113,54 @@ let accountDbWarnedAt = 0;
 // GLOBAL PAGE PRESENCE — ผู้เล่นถือว่าออนไลน์ถ้ายังเปิดหน้าเกมไว้และหน้าอยู่เบื้องหน้า
 const accountPresence = new Map(); // accountId -> Map(socketId, { page, visible, lastPing, roomId, isHost })
 const PRESENCE_STALE_MS = 70_000;
+const ACCOUNT_SESSION_WATCH_INTERVAL_MS = Math.max(2500, Math.min(15000, Number(process.env.ACCOUNT_SESSION_WATCH_INTERVAL_MS) || 4000));
+const accountSessionWatchAt = new Map();
+let accountSessionWatchTimer = null;
+
+async function validateConnectedAccountSessionsCrossInstance() {
+    const now = Date.now();
+    const accountIds = new Set();
+    for (const sock of io?.sockets?.sockets?.values?.() || []) {
+        if (!sock?.connected) continue;
+        const id = normalizeAccountId(sock.data?.accountId || "");
+        if (id) accountIds.add(id);
+    }
+    for (const id of accountIds) {
+        const last = Number(accountSessionWatchAt.get(id) || 0);
+        if (now - last < ACCOUNT_SESSION_WATCH_INTERVAL_MS) continue;
+        accountSessionWatchAt.set(id, now);
+        try {
+            const profile = await getAccountProfile(id, { forceFresh: true });
+            if (!profile) continue;
+            if (profile.status === "deleted" || profile.status === "suspended") {
+                const reason = profile.status === "deleted" ? "account_deleted" : "account_suspended";
+                disconnectAccountSockets(id, "__NO_ACTIVE_SESSION__", reason, "");
+                continue;
+            }
+            const activeHash = String(profile[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || "");
+            if (!activeHash) continue;
+            const activeDevice = normalizeDeviceId(profile[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "");
+            for (const sock of getConnectedSocketsForAccount(id)) {
+                if (String(sock.data?.accountSessionHash || "") !== activeHash || (activeDevice && normalizeDeviceId(sock.data?.deviceId || "") && activeDevice !== normalizeDeviceId(sock.data?.deviceId || ""))) {
+                    sock.data.accountSessionRevoked = true;
+                    try { sock.emit("account_session_revoked", { reason: "new_login", deviceId: activeDevice }); } catch (_) {}
+                    setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 20);
+                }
+            }
+        } catch (_) {
+            // Do not disconnect on a transient DynamoDB read error; the next cycle is authoritative.
+        }
+    }
+}
+
+function ensureAccountSessionWatchdog() {
+    if (accountSessionWatchTimer) return;
+    accountSessionWatchTimer = setInterval(() => {
+        validateConnectedAccountSessionsCrossInstance().catch(() => {});
+    }, ACCOUNT_SESSION_WATCH_INTERVAL_MS);
+    if (typeof accountSessionWatchTimer.unref === "function") accountSessionWatchTimer.unref();
+}
+
 
 function setAccountPresenceSocket(accountId, socketId, data = {}) {
     const id = normalizeAccountId(accountId);
@@ -2068,6 +3220,19 @@ function normalizeAccountToken(accountToken) {
     const value = String(accountToken || "").trim();
     if (!value || value.length > 256) return "";
     return value;
+}
+function normalizeDeviceId(deviceId) {
+    const value = String(deviceId || "").trim();
+    if (!value || value.length > 160) return "";
+    return value.replace(/[^A-Za-z0-9._:-]/g, "_");
+}
+function normalizeTabId(tabId) {
+    const value = String(tabId || "").trim();
+    if (!value || value.length > 160) return "";
+    return value.replace(/[^A-Za-z0-9._:-]/g, "_");
+}
+function generateMembershipId() {
+    return crypto.randomUUID ? crypto.randomUUID() : `mem-${genId()}-${genId()}-${genId()}`;
 }
 
 // OAuth return target must remain a local path. Never accept an absolute URL or protocol-relative
@@ -2399,7 +3564,146 @@ function accountLegacyMigrationKey(name) {
     return `${ACCOUNT_MIGRATION_PREFIX}${hash}`;
 }
 
-async function issueGoogleAccountSession(accountId) {
+function sameAccountActivity(a, type, roomId) {
+    return !!a && String(a[ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD] || "") === String(type || "") &&
+        String(a[ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD] || "").toUpperCase() === String(roomId || "").toUpperCase();
+}
+function getAccountActiveActivity(profile) {
+    if (!profile) return null;
+    const type = String(profile[ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD] || "").trim().toUpperCase();
+    const roomId = String(profile[ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD] || "").trim().toUpperCase();
+    if (!type || !roomId) return null;
+    return {
+        type,
+        roomId,
+        membershipId: String(profile[ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD] || ""),
+        sessionHash: String(profile[ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD] || ""),
+        deviceId: normalizeDeviceId(profile[ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD] || ""),
+        tabId: normalizeTabId(profile[ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD] || ""),
+        updatedAt: profile[ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD] || null,
+    };
+}
+async function acquireAccountActivity(accountId, { type, roomId, membershipId = "", sessionHash = "", deviceId = "", tabId = "", allowMultipleTabs = false } = {}) {
+    const id = normalizeAccountId(accountId);
+    const safeType = String(type || "").trim().toUpperCase();
+    const safeRoom = String(roomId || "").trim().toUpperCase();
+    const safeMembership = String(membershipId || "").trim().slice(0, 160);
+    const safeSession = String(sessionHash || "").trim().slice(0, 128);
+    const safeDevice = normalizeDeviceId(deviceId);
+    const safeTab = normalizeTabId(tabId);
+    if (!id || !safeType || !safeRoom) return { ok: false, code: "ACCOUNT_ACTIVITY_INVALID" };
+    const doc = await getDynamoDocClient();
+    const now = new Date().toISOString();
+    const setValues = { ":type": safeType, ":room": safeRoom, ":membership": safeMembership, ":updated": now, ":session": safeSession, ":device": safeDevice, ":tab": safeTab, ":empty": "" };
+    const updateExpression = "SET #type = :type, #room = :room, #membership = :membership, #updated = :updated, #session = :session, #device = :device, #tab = :tab";
+    const names = {
+        "#type": ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD, "#room": ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD,
+        "#membership": ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD, "#updated": ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD,
+        "#session": ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD, "#device": ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD,
+        "#tab": ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD,
+    };
+    try {
+        const current = await getAccountProfile(id, { forceFresh: true });
+        const active = getAccountActiveActivity(current);
+        const sameRoom = sameAccountActivity(current, safeType, safeRoom);
+        // Multiple tabs/frames on the SAME authenticated device are views of one activity,
+        // not multiple activities. The durable guard only prevents a second *different*
+        // activity (another room or host/player mode). Session/device takeover is handled
+        // separately by verifyAccountLogin + activeSessionHash.
+        let condition = "attribute_not_exists(#type) OR (#type = :type AND #room = :room)";
+        const out = await doc.send(new UpdateCommand({
+            TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
+            UpdateExpression: updateExpression, ConditionExpression: condition,
+            ExpressionAttributeNames: names, ExpressionAttributeValues: setValues, ReturnValues: "ALL_NEW",
+        }));
+        accountProfileCache.set(id, out.Attributes || current || null);
+        return { ok: true, activity: getAccountActiveActivity(out.Attributes || {}) };
+    } catch (e) {
+        if (e?.name !== "ConditionalCheckFailedException" && e?.name !== "TransactionCanceledException") throw e;
+        const current = await getAccountProfile(id, { forceFresh: true });
+        const active = getAccountActiveActivity(current);
+        if (sameAccountActivity(current, safeType, safeRoom)) {
+            // Same activity is explicitly shareable across tabs of the same session/device.
+            // Another instance may have won the activity lease for the same account+room. A
+            // different session may legitimately take over after the old account session was revoked.
+            try {
+                const out = await doc.send(new UpdateCommand({
+                    TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
+                    UpdateExpression: updateExpression, ConditionExpression: "#type = :type AND #room = :room",
+                    ExpressionAttributeNames: names, ExpressionAttributeValues: setValues, ReturnValues: "ALL_NEW",
+                }));
+                accountProfileCache.set(id, out.Attributes || current || null);
+                return { ok: true, activity: getAccountActiveActivity(out.Attributes || {}) };
+            } catch (_) {}
+        }
+        return { ok: false, code: "ACCOUNT_ACTIVITY_CONFLICT", activity: active };
+    }
+}
+async function clearAccountActivity(accountId, { roomId = "", membershipId = "", sessionHash = "", deviceId = "", force = false } = {}) {
+    const id = normalizeAccountId(accountId);
+    if (!id) return false;
+    const doc = await getDynamoDocClient();
+    const safeRoom = String(roomId || "").trim().toUpperCase();
+    const conditions = [];
+    const values = {};
+    if (safeRoom) { conditions.push("#room = :room"); values[":room"] = safeRoom; }
+    else if (!force) return false;
+    const safeMembership = String(membershipId || "").trim().slice(0, 160);
+    const safeSession = String(sessionHash || "").trim().slice(0, 128);
+    const safeDevice = normalizeDeviceId(deviceId || "");
+    if (!force && safeMembership) { conditions.push("#membership = :membership"); values[":membership"] = safeMembership; }
+    if (!force && safeSession) { conditions.push("#session = :session"); values[":session"] = safeSession; }
+    if (!force && safeDevice) { conditions.push("#device = :device"); values[":device"] = safeDevice; }
+    const guardCondition = !force && conditions.length ? conditions.join(" AND ") : undefined;
+    try {
+        await doc.send(new UpdateCommand({
+            TableName: STATS_TABLE_NAME,
+            Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
+            UpdateExpression: "REMOVE #type, #room, #membership, #updated, #session, #device, #tab",
+            ConditionExpression: guardCondition,
+            ExpressionAttributeNames: { "#type": ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD, "#room": ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD, "#membership": ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD, "#updated": ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD, "#session": ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD, "#device": ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD, "#tab": ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD },
+            ExpressionAttributeValues: Object.keys(values).length ? values : undefined,
+        }));
+        accountProfileCache.delete(id);
+        return true;
+    } catch (e) {
+        if (e?.name === "ConditionalCheckFailedException") return false;
+        throw e;
+    }
+}
+function accountSocketMatchesSession(socket, accountId, activeHash) {
+    return !!socket && normalizeAccountId(socket.data?.accountId || "") === normalizeAccountId(accountId) &&
+        String(socket.data?.accountSessionHash || "") === String(activeHash || "");
+}
+function disconnectAccountSockets(accountId, activeHash, reason = "session_replaced", activeDeviceId = "") {
+    const id = normalizeAccountId(accountId);
+    if (!id || !io?.sockets?.sockets) return 0;
+    const nextDevice = normalizeDeviceId(activeDeviceId || "");
+    let count = 0;
+    for (const socket of io.sockets.sockets.values()) {
+        if (!socket?.data || normalizeAccountId(socket.data.accountId || "") !== id) continue;
+        if (String(socket.data.accountSessionHash || "") === String(activeHash || "")) continue;
+        socket.data.accountSessionRevoked = true;
+        count++;
+        try { socket.emit("account_session_revoked", { reason, deviceId: nextDevice }); } catch (_) {}
+        setTimeout(() => { try { socket.disconnect(true); } catch (_) {} }, 20);
+    }
+    return count;
+}
+async function revokeAllOlderAccountSessions(accountId, keepHash = "") {
+    const id = normalizeAccountId(accountId);
+    if (!id) return 0;
+    const markers = await queryAccountSessionMarkers(id);
+    const old = markers.filter((it) => String(it.tokenHash || "") && String(it.tokenHash) !== String(keepHash || ""));
+    const doc = await getDynamoDocClient();
+    await Promise.all(old.flatMap((it) => [
+        doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(it.tokenHash) } })),
+        doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey } })),
+    ]));
+    return old.length;
+}
+
+async function issueGoogleAccountSession(accountId, { deviceId = "" } = {}) {
     const id = normalizeAccountId(accountId);
     if (!id) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
     const doc = await getDynamoDocClient();
@@ -2409,13 +3713,17 @@ async function issueGoogleAccountSession(accountId) {
         const now = new Date();
         const iso = now.toISOString();
         const expires = new Date(now.getTime() + ACCOUNT_GOOGLE_SESSION_TTL_MS).toISOString();
-        const lookup = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(hash), accountId: id, tokenHash: hash, provider: "google", createdAt: iso, expiresAt: expires, updatedAt: iso };
-        const marker = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, hash), accountId: id, tokenHash: hash, provider: "google", createdAt: iso, expiresAt: expires };
+        const lookup = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(hash), accountId: id, tokenHash: hash, provider: "google", createdAt: iso, expiresAt: expires, updatedAt: iso, deviceId: normalizeDeviceId(deviceId) };
+        const marker = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, hash), accountId: id, tokenHash: hash, provider: "google", createdAt: iso, expiresAt: expires, deviceId: normalizeDeviceId(deviceId) };
         try {
             await doc.send(new TransactWriteCommand({ TransactItems: [
                 { Put: { TableName: STATS_TABLE_NAME, Item: lookup, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
                 { Put: { TableName: STATS_TABLE_NAME, Item: marker, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
+                { Update: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) }, UpdateExpression: "SET #active = :hash, #activeAt = :now, #device = :device", ExpressionAttributeNames: { "#active": ACCOUNT_ACTIVE_SESSION_HASH_FIELD, "#activeAt": ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD, "#device": ACCOUNT_ACTIVE_DEVICE_ID_FIELD }, ExpressionAttributeValues: { ":hash": hash, ":now": iso, ":device": normalizeDeviceId(deviceId) } } },
             ] }));
+            await revokeAllOlderAccountSessions(id, hash).catch((e) => { console.error("[accounts] old Google sessions cleanup failed:", e?.message || e); });
+            accountProfileCache.delete(id);
+            disconnectAccountSockets(id, hash, "new_login", normalizeDeviceId(deviceId));
             return { token: raw, tokenHash: hash, expiresAt: expires };
         } catch (e) {
             if (e?.name !== "TransactionCanceledException" && e?.name !== "ConditionalCheckFailedException") throw e;
@@ -2698,26 +4006,29 @@ async function deleteAccountData(accountId, { reason = "expired", notify = true 
     accountProfileCache.delete(id);
     accountActivityDbAt.delete(id);
     accountRenameAt.delete(id);
-    const presence = accountPresence.get(id);
-    if (presence && notify) {
-        for (const [sid] of presence) {
-            const sock = io.sockets.sockets.get(sid);
-            try { if (sock?.connected) sock.emit("account_deleted", { reason, expired: reason === "expired" }); } catch (_) {}
-            setTimeout(() => { try { sock?.disconnect(true); } catch (_) {} }, 20);
+    if (notify) {
+        const notified = new Set();
+        for (const sock of getConnectedSocketsForAccount(id)) {
+            if (!sock?.connected || notified.has(sock.id)) continue;
+            notified.add(sock.id);
+            try { sock.emit("account_deleted", { reason, expired: reason === "expired" }); } catch (_) {}
+            setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 20);
         }
         accountPresence.delete(id);
     }
     return { ok: true, deletedRows: allKeys.length };
 }
 
-async function createTemporaryAccount(accountToken, name = "") {
+async function createTemporaryAccount(accountToken, name = "", deviceId = "") {
     const tokenHash = hashAccountToken(accountToken);
     if (!tokenHash) throw Object.assign(new Error("missing account token"), { code: "ACCOUNT_TOKEN_REQUIRED" });
     const doc = await getDynamoDocClient();
     const identityKey = accountIdentityKey(tokenHash);
 
     const id = generateAccountId();
-    const displayName = sanitizeName(name, "") || randomTemporaryDisplayName();
+    const displayName = (typeof name === "string" && name.length)
+        ? assertUserDisplayNameAllowed(name)
+        : randomTemporaryDisplayName();
     const now = new Date();
     const iso = now.toISOString();
     const expiry = new Date(now.getTime() + ACCOUNT_TEMPORARY_TTL_MS).toISOString();
@@ -2743,6 +4054,9 @@ async function createTemporaryAccount(accountToken, name = "") {
         leaves: 0,
         isTester: false,
         loginIdentityKey: identityKey,
+        activeSessionHash: tokenHash,
+        activeSessionUpdatedAt: iso,
+        activeDeviceId: normalizeDeviceId(deviceId),
     };
     const identityItem = {
         playerName: ACCOUNTS_PARTITION_KEY,
@@ -2783,7 +4097,7 @@ async function createTemporaryAccount(accountToken, name = "") {
     return item;
 }
 
-async function verifyAccountLogin(accountId, accountToken) {
+async function verifyAccountLogin(accountId, accountToken, { deviceId = "" } = {}) {
     let id = normalizeAccountId(accountId);
     const token = normalizeAccountToken(accountToken);
     if (!token) return { ok: false, code: "ACCOUNT_TOKEN_REQUIRED", profile: null, accountId: id };
@@ -2824,6 +4138,53 @@ async function verifyAccountLogin(accountId, accountToken) {
             authenticated = true;
         }
     }
+    if (authenticated) {
+        const activeHash = String(profile?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || "");
+        if (activeHash && activeHash !== tokenHash) {
+            return { ok: false, code: "ACCOUNT_SESSION_REVOKED", profile, accountId: id, session: session || null };
+        }
+        const activeDevice = normalizeDeviceId(profile?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "");
+        const currentDevice = normalizeDeviceId(deviceId || "");
+        if (activeDevice && currentDevice && activeDevice !== currentDevice) {
+            return { ok: false, code: "ACCOUNT_DEVICE_CONFLICT", profile, accountId: id, session: session || null };
+        }
+        if (!activeHash) {
+            try {
+                await doc.send(new UpdateCommand({
+                    TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
+                    UpdateExpression: "SET #active = :hash, #activeAt = :now",
+                    ConditionExpression: "attribute_not_exists(#active)",
+                    ExpressionAttributeNames: { "#active": ACCOUNT_ACTIVE_SESSION_HASH_FIELD, "#activeAt": ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD },
+                    ExpressionAttributeValues: { ":hash": tokenHash, ":now": new Date().toISOString() },
+                }));
+                profile[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] = tokenHash;
+            } catch (_) {
+                const latest = await getAccountProfile(id, { forceFresh: true });
+                if (String(latest?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || "") !== tokenHash) return { ok: false, code: "ACCOUNT_SESSION_REVOKED", profile: latest || profile, accountId: id, session: session || null };
+                profile = latest || profile;
+            }
+        }
+        if ((profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY && currentDevice) {
+            const activeDeviceNow = normalizeDeviceId(profile?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "");
+            if (activeDeviceNow && activeDeviceNow !== currentDevice) return { ok: false, code: "ACCOUNT_DEVICE_CONFLICT", profile, accountId: id, session: session || null };
+            if (!activeDeviceNow) {
+                try {
+                    await doc.send(new UpdateCommand({
+                        TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
+                        UpdateExpression: "SET #device = :device",
+                        ConditionExpression: "attribute_not_exists(#device) OR #device = :empty",
+                        ExpressionAttributeNames: { "#device": ACCOUNT_ACTIVE_DEVICE_ID_FIELD },
+                        ExpressionAttributeValues: { ":device": currentDevice, ":empty": "" },
+                    }));
+                    profile[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] = currentDevice;
+                } catch (_) {
+                    const latest = await getAccountProfile(id, { forceFresh: true });
+                    if (normalizeDeviceId(latest?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "") !== currentDevice) return { ok: false, code: "ACCOUNT_DEVICE_CONFLICT", profile: latest || profile, accountId: id, session: session || null };
+                    profile = latest || profile;
+                }
+            }
+        }
+    }
     if (!authenticated) {
         // บัญชีเก่าที่ไม่มี credential: รองรับ migration ครั้งเดียว แต่ต้องล็อก identity index ด้วยเงื่อนไข
         if (!storedHash && (profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY) {
@@ -2849,13 +4210,19 @@ async function docOrDynamo(existing, fn) {
     return fn(existing || await getDynamoDocClient());
 }
 
-async function touchOrCreateAccount(accountId, name, { accountToken = "", roomId = "", isHost = false, join = false } = {}) {
+async function touchOrCreateAccount(accountId, name, { accountToken = "", roomId = "", isHost = false, join = false, deviceId = "", tabId = "" } = {}) {
     if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
     try {
+        const requestedAccountId = normalizeAccountId(accountId || "");
+        const requestedName = sanitizeName(name, "");
+        // ตรวจชื่อก่อนแตะ/สร้างข้อมูลบัญชี เพื่อให้ผู้ใช้ที่ส่งชื่อสงวนเข้ามาโดยตรง
+        // ได้ NAME_RESERVED กลับไปอย่างชัดเจน และไม่เกิดบัญชี/row ใหม่ทิ้งไว้ก่อน reject
+        if ((!requestedAccountId || join) && requestedName && isReservedTesterName(requestedName)) {
+            return { ok: false, code: "NAME_RESERVED", accountId: requestedAccountId, currentName: requestedName, profile: null };
+        }
         const token = normalizeAccountToken(accountToken);
         if (!token) return { ok: false, code: "ACCOUNT_TOKEN_REQUIRED", accountId: normalizeAccountId(accountId), currentName: sanitizeName(name, ""), profile: null };
-        const requestedAccountId = normalizeAccountId(accountId || "");
-        let identity = await verifyAccountLogin(requestedAccountId, token);
+        let identity = await verifyAccountLogin(requestedAccountId, token, { deviceId });
         if (identity.ok === false) {
             // Temporary Account ที่หมดอายุแล้วสามารถ cleanup แล้วออกบัญชีใหม่ได้ตามนโยบายเดิม
             if (identity.code === "ACCOUNT_EXPIRED" && identity.profile?.accountType === ACCOUNT_TYPE_TEMPORARY) {
@@ -2877,7 +4244,7 @@ async function touchOrCreateAccount(accountId, name, { accountToken = "", roomId
         }
         let createdNow = false;
         if (!identity.profile) {
-            identity.profile = await createTemporaryAccount(token, name);
+            identity.profile = await createTemporaryAccount(token, name, deviceId);
             identity.accountId = identity.profile.accountId;
             createdNow = true;
         }
@@ -2887,7 +4254,6 @@ async function touchOrCreateAccount(accountId, name, { accountToken = "", roomId
         if (isTemporaryExpired(existing)) return { ok: false, code: "ACCOUNT_EXPIRED", accountId: id, currentName: existing.currentName || "", profile: existing };
 
         const existingName = sanitizeName(existing.currentName || "", "");
-        const requestedName = sanitizeName(name, "");
         const effectiveName = existingName && existingName !== "ผู้เล่น" ? existingName : (requestedName || existingName || randomTemporaryDisplayName());
         const nowMs = Date.now();
         // createTemporaryAccount() already wrote a complete profile + identity index atomically.
@@ -2959,11 +4325,11 @@ async function ensureNormalAccountIdentity(accountId, name, meta = {}) {
     }
 }
 
-async function renameOwnAccount(accountId, accountToken, newName) {
+async function renameOwnAccount(accountId, accountToken, newName, deviceId = "") {
     const id = normalizeAccountId(accountId);
     const token = normalizeAccountToken(accountToken);
     if (!id || !token) throw Object.assign(new Error("account authentication required"), { code: "ACCOUNT_AUTH_FAILED" });
-    const verification = await verifyAccountLogin(id, token);
+    const verification = await verifyAccountLogin(id, token, { deviceId });
     if (!verification.profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
     if (verification.ok === false) throw Object.assign(new Error("account unavailable"), { code: verification.code });
     if (verification.profile.status !== "active") throw Object.assign(new Error("account unavailable"), { code: "ACCOUNT_SUSPENDED" });
@@ -2971,8 +4337,7 @@ async function renameOwnAccount(accountId, accountToken, newName) {
     const remain = ACCOUNT_NAME_CHANGE_COOLDOWN_MS - (Date.now() - last);
     if (remain > 0) throw Object.assign(new Error(`กรุณารอ ${Math.ceil(remain / 1000)} วินาทีก่อนเปลี่ยนชื่ออีกครั้ง`), { code: "NAME_COOLDOWN", retryAfterMs: remain });
     const oldName = sanitizeName(verification.profile.currentName || "ผู้เล่น", "ผู้เล่น");
-    const trimmed = sanitizeName(newName, "");
-    if (!trimmed || trimmed === "ผู้เล่น") throw Object.assign(new Error("ชื่อไม่ถูกต้อง"), { code: "BAD_NAME" });
+    const trimmed = assertUserDisplayNameAllowed(newName);
     if (trimmed === oldName) return { ok: true, accountId: id, name: oldName, changed: false, profile: verification.profile };
     await assertAccountNameAvailable(trimmed, id);
     const aliases = Array.isArray(verification.profile.aliases) ? verification.profile.aliases.slice(-30) : [];
@@ -2998,6 +4363,11 @@ async function renameOwnAccount(accountId, accountToken, newName) {
     updateLiveAccountNames(id, trimmed);
     emitAccountEventToSockets(id, "name_updated_by_host", { name: trimmed, accountId: id });
     return { ok: true, accountId: id, name: trimmed, changed: true, profile: next };
+}
+
+async function getFreshAccountActivity(accountId) {
+    const profile = await getAccountProfile(accountId, { forceFresh: true });
+    return { profile, activity: getAccountActiveActivity(profile) };
 }
 
 async function touchAccountPresence(accountId, { roomId = "", name = "", isHost = false } = {}) {
@@ -3180,7 +4550,7 @@ async function renameLegacyPlayer(oldName, newName) {
     if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
     try {
     const from = String(oldName || "").trim();
-    const to = sanitizeName(newName, from);
+    const to = assertUserDisplayNameAllowed(newName);
     if (!from) throw Object.assign(new Error("missing old name"), { code: "LEGACY_NOT_FOUND" });
     if (!to || from === to) return { changed: false, oldName: from, newName: to };
     const oldItems = await queryLegacyPlayerByName(from);
@@ -3278,6 +4648,9 @@ async function queryAccountDetails(accountId) {
         roles,
         events,
         live,
+        connectionCount: live.length,
+        activeActivity: getAccountActiveActivity(profile),
+        sessionCount: live.length,
     };
 }
 
@@ -3291,13 +4664,41 @@ function getLiveSessionsForAccount(accountId) {
             if (!p || p.isBot || p.isTester || normalizeAccountId(p.accountId || "") !== id) return;
             if (p.isHost) {
                 const ids = (room.hostIds || []).filter((sid) => io.sockets.sockets.get(sid)?.connected);
-                ids.forEach((sid) => out.push({ roomId, socketId: sid, isHost: true, connected: true }));
+                ids.forEach((sid) => { const sock = io.sockets.sockets.get(sid); out.push({ roomId, socketId: sid, isHost: true, connected: true, deviceId: normalizeDeviceId(sock?.data?.deviceId || ""), tabId: normalizeTabId(sock?.data?.tabId || ""), membershipId: p.membershipId || room.hostMembershipId || "" }); });
             } else if (isPlayerCurrentlyConnected(p)) {
-                out.push({ roomId, socketId: p.id, isHost: false, connected: true });
+                const sock = p.id ? io.sockets.sockets.get(p.id) : null;
+                // A room player can remain connected through a secondary same-account tab while
+                // the canonical player.id points at an older/disconnected Socket.IO connection.
+                // Never count that stale id as a live Admin session; the fanout pass below will
+                // add the actual connected sockets for the account.
+                if (sock?.connected) {
+                    out.push({
+                        roomId, socketId: sock.id, isHost: false, connected: true,
+                        page: String(sock.data?.page || "player"), name: p.name || "",
+                        deviceId: normalizeDeviceId(sock.data?.deviceId || p.activeDeviceId || ""),
+                        tabId: normalizeTabId(sock.data?.tabId || p.activeTabId || ""),
+                        membershipId: p.membershipId || String(sock.data?.membershipId || ""),
+                    });
+                }
             }
         });
     }
-    // รวม presence จากหน้า index ด้วย — ผู้เล่นยังไม่เข้าห้องก็ถือว่าออนไลน์ได้
+    // รวม socket sessions ของ Account เดียวกันทุกแท็บ/iframe ก่อน แล้วจึงเติม index presence
+    // ที่ไม่ได้ผูกกับ room. Socket ID เป็น connection locator เท่านั้น.
+    for (const sock of getConnectedSocketsForAccount(id)) {
+        if (out.some((x) => x.socketId === sock.id)) continue;
+        out.push({
+            roomId: String(sock.data?.roomId || "").toUpperCase(),
+            socketId: sock.id,
+            page: String(sock.data?.page || "unknown"),
+            name: "",
+            isHost: !!sock.data?.isHost,
+            connected: true,
+            deviceId: normalizeDeviceId(sock.data?.deviceId || ""),
+            tabId: normalizeTabId(sock.data?.tabId || ""),
+            membershipId: String(sock.data?.membershipId || ""),
+        });
+    }
     const presence = getVisibleAccountPresence(id);
     const seen = new Set(out.map((x) => x.socketId));
     presence.forEach((x) => {
@@ -3345,17 +4746,17 @@ function updateLiveAccountNames(accountId, newName) {
                 touched = true;
             }
         });
-        if (touched) io.to(roomId).emit("room_update", publicRoomView(room));
+        if (touched) broadcastRoomUpdate(roomId, room);
         if (touched) schedulePersistRoom(roomId, true);
     }
     return changed;
 }
 
 async function assertAccountNameAvailable(newName, excludeAccountId = "") {
-    const target = sanitizeName(newName, "ผู้เล่น");
+    const target = assertUserDisplayNameAllowed(newName);
     const exclude = normalizeAccountId(excludeAccountId);
     const modern = await queryAllAccountProfiles();
-    const modernHit = modern.find((it) => normalizeAccountId(it.accountId || String(it.statKey || "").replace(/^ACCOUNT#/, "")) !== exclude && String(it.currentName || "") === target);
+    const modernHit = modern.find((it) => normalizeAccountId(it.accountId || String(it.statKey || "").replace(/^ACCOUNT#/, "")) !== exclude && sanitizeName(String(it.currentName || ""), "") === target);
     if (modernHit) throw Object.assign(new Error("ชื่อใหม่นี้มีบัญชีอยู่แล้ว"), { code: "NAME_IN_USE" });
     const legacy = await queryLegacyPlayerByName(target);
     if (legacy.length) throw Object.assign(new Error("ชื่อใหม่นี้มีข้อมูลผู้เล่นเดิมอยู่แล้ว"), { code: "NAME_IN_USE" });
@@ -3371,7 +4772,7 @@ async function updateAccountName(accountId, newName) {
     if (!profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
     if (profile.status === "deleted") throw Object.assign(new Error("account deleted"), { code: "ACCOUNT_DELETED" });
     const oldName = sanitizeName(profile.currentName || "ผู้เล่น", "ผู้เล่น");
-    const trimmed = sanitizeName(newName, oldName);
+    const trimmed = assertUserDisplayNameAllowed(newName);
     if (trimmed === oldName) return { profile, name: oldName, changed: false };
     await assertAccountNameAvailable(trimmed, id);
     const aliases = Array.isArray(profile.aliases) ? profile.aliases.slice(-30) : [];
@@ -3467,6 +4868,16 @@ function disconnectAccountSessions(accountId, eventName, reason) {
     if (!id) return 0;
     let count = 0;
     const sent = new Set();
+    // Source of truth for live connections is the account identity carried by the socket.
+    // This covers secondary tabs/iframes whose socket is not the room player's canonical id.
+    for (const sock of getConnectedSocketsForAccount(id)) {
+        if (!sock?.connected || sent.has(sock.id)) continue;
+        try { sock.emit(eventName, { reason: reason || "admin" }); } catch (_) {}
+        sent.add(sock.id);
+        count++;
+        setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 50);
+    }
+    // Keep a presence fallback for legacy sockets that predate account.data binding.
     const presence = accountPresence.get(id);
     if (presence) {
         for (const [sid] of presence) {
@@ -3480,23 +4891,6 @@ function disconnectAccountSessions(accountId, eventName, reason) {
             }
         }
         accountPresence.delete(id);
-    }
-    for (const roomId in rooms) {
-        const room = rooms[roomId];
-        (room.players || []).forEach((p) => {
-            if (!p || p.isBot || p.isTester || normalizeAccountId(p.accountId || "") !== id) return;
-            const ids = p.isHost ? (room.hostIds || []) : [p.id];
-            ids.forEach((sid) => {
-                if (sent.has(sid)) return;
-                const sock = io.sockets.sockets.get(sid);
-                if (sock?.connected) {
-                    sock.emit(eventName, { reason: reason || "admin" });
-                    sent.add(sid);
-                    count++;
-                    setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 50);
-                }
-            });
-        });
     }
     return count;
 }
@@ -4022,7 +5416,7 @@ function googleAuthorizeUrl(state, codeChallenge, nonce = "") {
     return u.toString();
 }
 
-async function linkGoogleIdentityToAccount(accountId, providerSubject, claims, displayNameHint) {
+async function linkGoogleIdentityToAccount(accountId, providerSubject, claims, displayNameHint, { deviceId = "" } = {}) {
     const id = normalizeAccountId(accountId);
     const identityKey = googleIdentityKey(providerSubject);
     const existing = await getAccountByGoogleIdentity(providerSubject);
@@ -4052,7 +5446,7 @@ async function linkGoogleIdentityToAccount(accountId, providerSubject, claims, d
         : { Put: { TableName: STATS_TABLE_NAME, Item: identityItem, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } };
     const tx = [
         identityPut,
-        { Update: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) }, UpdateExpression: "SET accountType = :google, provider = :google, currentName = if_not_exists(currentName, :name), lastSeen = :now, lastActivityAt = :now, updatedAt = :now REMOVE loginTokenHash, loginIdentityKey, temporaryExpiresAt", ExpressionAttributeValues: { ":google": "google", ":name": googleName, ":now": now } } },
+        { Update: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) }, UpdateExpression: "SET accountType = :google, provider = :google, currentName = if_not_exists(currentName, :name), lastSeen = :now, lastActivityAt = :now, updatedAt = :now, #active = :sessionHash, #activeAt = :now, #device = :device REMOVE loginTokenHash, loginIdentityKey, temporaryExpiresAt", ExpressionAttributeNames: { "#active": ACCOUNT_ACTIVE_SESSION_HASH_FIELD, "#activeAt": ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD, "#device": ACCOUNT_ACTIVE_DEVICE_ID_FIELD }, ExpressionAttributeValues: { ":google": "google", ":name": googleName, ":now": now, ":sessionHash": sessionHash, ":device": normalizeDeviceId(deviceId) } } },
         { Put: { TableName: STATS_TABLE_NAME, Item: sessionLookup, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
         { Put: { TableName: STATS_TABLE_NAME, Item: sessionMarker, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
     ];
@@ -4070,14 +5464,16 @@ async function linkGoogleIdentityToAccount(accountId, providerSubject, claims, d
             if (winner && normalizeAccountId(winner.accountId) === id) {
                 const current = await getAccountProfile(id, { forceFresh: true });
                 if (current?.accountType === "google" && current.provider === "google") {
-                    const session = await issueGoogleAccountSession(id);
+                    const session = await issueGoogleAccountSession(id, { deviceId });
                     return { accountId: id, token: session.token, expiresAt: session.expiresAt, profile: current };
                 }
             }
         }
         throw e;
     }
-    const next = { ...profile, accountType: "google", provider: "google", currentName: profile.currentName || googleName, updatedAt: now };
+    await revokeAllOlderAccountSessions(id, sessionHash).catch((e) => { console.error("[accounts] old linked sessions cleanup failed:", e?.message || e); });
+    disconnectAccountSockets(id, sessionHash, "google_linked", normalizeDeviceId(deviceId));
+    const next = { ...profile, accountType: "google", provider: "google", currentName: profile.currentName || googleName, updatedAt: now, activeSessionHash: sessionHash, activeSessionUpdatedAt: now, activeDeviceId: normalizeDeviceId(deviceId) };
     delete next.loginTokenHash;
     delete next.loginIdentityKey;
     delete next.temporaryExpiresAt;
@@ -4086,14 +5482,14 @@ async function linkGoogleIdentityToAccount(accountId, providerSubject, claims, d
     return { accountId: id, token: rawSession, expiresAt: sessionExpires, profile: next };
 }
 
-async function createGoogleGameAccount(providerSubject, claims) {
+async function createGoogleGameAccount(providerSubject, claims, { deviceId = "" } = {}) {
     const existing = await getAccountByGoogleIdentity(providerSubject);
     if (existing?.accountId) {
         const profile = await getAccountProfile(existing.accountId, { forceFresh: true });
         if (!profile) throw Object.assign(new Error("linked account not found"), { code: "GOOGLE_ACCOUNT_BROKEN" });
         if (profile.status === "deleted") throw Object.assign(new Error("linked account deleted"), { code: "ACCOUNT_DELETED" });
         if (profile.status === "suspended") throw Object.assign(new Error("linked account suspended"), { code: "ACCOUNT_SUSPENDED" });
-        const session = await issueGoogleAccountSession(existing.accountId);
+        const session = await issueGoogleAccountSession(existing.accountId, { deviceId });
         return { accountId: existing.accountId, token: session.token, expiresAt: session.expiresAt, profile };
     }
     let displayName = sanitizeName(claims?.name || claims?.given_name || "", "");
@@ -4107,7 +5503,7 @@ async function createGoogleGameAccount(providerSubject, claims) {
     const sessionHash = hashAccountToken(rawSession);
     const sessionExpires = new Date(now.getTime() + ACCOUNT_GOOGLE_SESSION_TTL_MS).toISOString();
     const googleIdentityItem = { playerName: ACCOUNTS_PARTITION_KEY, statKey: googleIdentityKey(providerSubject), accountId: id, provider: "google", providerSubjectHash: googleIdentitySubjectHash(providerSubject), googleSub: String(claims?.sub || ""), createdAt: iso, updatedAt: iso };
-    const profile = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id), accountId: id, accountType: "google", provider: "google", currentName: displayName, aliases: [], status: "active", firstSeen: iso, createdAt: iso, lastSeen: iso, lastActivityAt: iso, updatedAt: iso, joinCount: 0, games: 0, wins: 0, leaves: 0, isTester: false };
+    const profile = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id), accountId: id, accountType: "google", provider: "google", currentName: displayName, aliases: [], status: "active", firstSeen: iso, createdAt: iso, lastSeen: iso, lastActivityAt: iso, updatedAt: iso, joinCount: 0, games: 0, wins: 0, leaves: 0, isTester: false, activeSessionHash: sessionHash, activeSessionUpdatedAt: iso, activeDeviceId: normalizeDeviceId(deviceId) };
     const sessionLookup = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(sessionHash), accountId: id, tokenHash: sessionHash, provider: "google", createdAt: iso, expiresAt: sessionExpires, updatedAt: iso };
     const sessionMarker = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, sessionHash), accountId: id, tokenHash: sessionHash, provider: "google", createdAt: iso, expiresAt: sessionExpires };
     const tx = { TransactItems: [
@@ -4127,7 +5523,7 @@ async function createGoogleGameAccount(providerSubject, claims) {
                 if (!winnerProfile) throw Object.assign(new Error("linked account not found"), { code: "GOOGLE_ACCOUNT_BROKEN" });
                 if (winnerProfile.status === "deleted") throw Object.assign(new Error("linked account deleted"), { code: "ACCOUNT_DELETED" });
                 if (winnerProfile.status === "suspended") throw Object.assign(new Error("linked account suspended"), { code: "ACCOUNT_SUSPENDED" });
-                const session = await issueGoogleAccountSession(winner.accountId);
+                const session = await issueGoogleAccountSession(winner.accountId, { deviceId });
                 return { accountId: winner.accountId, token: session.token, expiresAt: session.expiresAt, profile: winnerProfile };
             }
         }
@@ -4156,7 +5552,7 @@ app.get("/api/auth/config", (req, res) => {
     });
 });
 
-async function prepareGoogleLoginStart(req, res, { mode = "login", accountId = "", accountToken = "", reauth = false, returnTo = "/" } = {}) {
+async function prepareGoogleLoginStart(req, res, { mode = "login", accountId = "", accountToken = "", reauth = false, returnTo = "/", deviceId = "" } = {}) {
     if (!googleIsConfigured()) throw Object.assign(new Error("Google is not configured"), { code: "GOOGLE_NOT_CONFIGURED" });
     const safeMode = mode === "link" ? "link" : "login";
     const safeAccountId = normalizeAccountId(accountId);
@@ -4182,13 +5578,15 @@ async function prepareGoogleLoginStart(req, res, { mode = "login", accountId = "
         v: 1, exp: Date.now() + ACCOUNT_GOOGLE_STATE_TTL_MS,
         n: crypto.randomBytes(18).toString("hex"), mode: safeMode, reauth: safeReauth,
         returnTo: normalizeReturnTo(returnTo || "/"),
+        deviceId: normalizeDeviceId(deviceId),
+        previousAccountId: safeMode === "login" ? safeAccountId : "",
     };
     const state = createSignedState(statePayload);
     issueGoogleContext(req, res, {
         stateNonce: statePayload.n, mode: safeMode, reauth: safeReauth,
         accountId: safeMode === "link" ? safeAccountId : (safeReauth ? safeAccountId : ""),
         accountTokenHash: safeMode === "link" ? hashAccountToken(safeAccountToken) : "",
-        returnTo: statePayload.returnTo, codeVerifier: pkce.verifier,
+        returnTo: statePayload.returnTo, codeVerifier: pkce.verifier, deviceId: statePayload.deviceId, previousAccountId: statePayload.previousAccountId,
     });
     return { state, url: googleAuthorizeUrl(state, pkce.challenge, statePayload.n), mode: safeMode, reauth: safeReauth };
 }
@@ -4236,7 +5634,7 @@ app.get("/auth/google/start", async (req, res) => {
     const accountId = normalizeAccountId(req.query.accountId || "");
     const reauth = String(req.query.reauth || "") === "1" && !!accountId;
     try {
-        const result = await prepareGoogleLoginStart(req, res, { mode: "login", accountId, reauth, returnTo: req.query.returnTo || "/" });
+        const result = await prepareGoogleLoginStart(req, res, { mode: "login", accountId, reauth, returnTo: req.query.returnTo || "/", deviceId: req.query.deviceId || "" });
         return res.redirect(302, result.url);
     } catch (e) {
         const code = String(e?.code || "GOOGLE_AUTH_FAILED");
@@ -4253,7 +5651,7 @@ app.post("/api/auth/google/start", express.json({ limit: "6kb" }), async (req, r
         const result = await prepareGoogleLoginStart(req, res, {
             mode: body.mode === "link" ? "link" : "login",
             accountId: body.accountId || "", accountToken: body.accountToken || "",
-            reauth: body.reauth === true, returnTo: body.returnTo || "/",
+            reauth: body.reauth === true, returnTo: body.returnTo || "/", deviceId: body.deviceId || "",
         });
         return res.json({ ok: true, url: result.url });
     } catch (e) {
@@ -4278,6 +5676,11 @@ function googleFriendlyError(code) {
         ACCOUNT_SUSPENDED: "บัญชีเกมนี้ถูกพักอยู่",
         ACCOUNT_EXPIRED: "บัญชีชั่วคราวหมดอายุแล้ว",
         ACCOUNT_AUTH_FAILED: "การยืนยันบัญชีไม่ผ่าน",
+        ACCOUNT_SESSION_REVOKED: "บัญชีนี้ถูกเข้าสู่ระบบจากอุปกรณ์อื่นแล้ว",
+        ACCOUNT_DEVICE_CONFLICT: "บัญชีชั่วคราวนี้ผูกกับอุปกรณ์อื่นแล้ว",
+        ACCOUNT_ACTIVITY_CONFLICT: "บัญชีนี้กำลังทำกิจกรรมอื่นอยู่",
+        ACCOUNT_ACTIVITY_ALREADY_ACTIVE: "บัญชีนี้กำลังเล่นอยู่ในอีกแท็บหนึ่ง",
+        HOST_OWNERSHIP_REQUIRED: "บัญชีนี้ไม่มีสิทธิ์คุมห้องนี้",
         GOOGLE_STATE_INVALID: "เซสชันการเข้าสู่ระบบหมดอายุ กรุณาเริ่ม Google Login ใหม่",
         GOOGLE_HANDOFF_EXPIRED: "การเข้าสู่ระบบหมดอายุ กรุณาลองใหม่อีกครั้ง",
     };
@@ -4366,9 +5769,13 @@ app.get("/auth/google/callback", async (req, res) => {
             if (isTemporaryExpired(profile)) throw Object.assign(new Error("temporary account expired"), { code: "ACCOUNT_EXPIRED" });
             const storedHash = String(profile[ACCOUNT_IDENTITY_HASH_FIELD] || "");
             if (!storedHash || storedHash !== context.accountTokenHash) throw Object.assign(new Error("account link credential is invalid"), { code: "ACCOUNT_AUTH_FAILED" });
-            result = await linkGoogleIdentityToAccount(context.accountId, verified.providerSubject, verified.claims, verified.claims?.name || "");
+            result = await linkGoogleIdentityToAccount(context.accountId, verified.providerSubject, verified.claims, verified.claims?.name || "", { deviceId: context.deviceId || "" });
         } else {
-            result = await createGoogleGameAccount(verified.providerSubject, verified.claims);
+            result = await createGoogleGameAccount(verified.providerSubject, verified.claims, { deviceId: context.deviceId || "" });
+            const previousAccountId = normalizeAccountId(context.previousAccountId || "");
+            if (previousAccountId && previousAccountId !== normalizeAccountId(result.accountId || "")) {
+                disconnectAccountSockets(previousAccountId, String(result.profile?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || ""), "new_account_login", "");
+            }
         }
         const sameAccountReauth = context.mode === "login" && !!context.reauth && normalizeAccountId(context.accountId || "") === normalizeAccountId(result.accountId || "");
         const handoff = createSignedState({ v: 1, exp: Date.now() + ACCOUNT_GOOGLE_HANDOFF_TTL_MS, n: crypto.randomBytes(18).toString("hex"), mode: context.mode, reauth: sameAccountReauth, accountId: result.accountId, accountToken: result.token, accountType: result.profile?.accountType || "google", displayName: result.profile?.currentName || "", returnTo: normalizeReturnTo(context.returnTo || "/") });
@@ -4395,14 +5802,49 @@ app.get("/api/auth/google/handoff", (req, res) => {
 app.post("/api/account/logout", express.json({ limit: "4kb" }), async (req, res) => {
     const accountId = normalizeAccountId(req.body?.accountId || "");
     const accountToken = normalizeAccountToken(req.body?.accountToken || "");
+    const deviceId = normalizeDeviceId(req.body?.deviceId || req.headers["x-ww-device-id"] || "");
     if (!accountId || !accountToken) return res.status(400).json({ ok: false, code: "ACCOUNT_AUTH_REQUIRED" });
     try {
-        const verified = await verifyAccountLogin(accountId, accountToken);
+        const verified = await verifyAccountLogin(accountId, accountToken, { deviceId });
         if (!verified.profile) return res.status(404).json({ ok: false, code: "ACCOUNT_NOT_FOUND" });
         if (verified.ok === false) return res.status(403).json({ ok: false, code: verified.code });
         if (verified.session?.provider === "google") await revokeAccountSession(accountId, accountToken);
+        disconnectAccountSockets(accountId, "", "logout", deviceId);
         res.json({ ok: true });
     } catch (e) { res.status(500).json({ ok: false, code: "ACCOUNT_LOGOUT_FAILED" }); }
+});
+
+app.get("/api/account/context", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, private");
+    const accountId = normalizeAccountId(req.query.accountId || req.headers["x-ww-account-id"] || "");
+    const accountToken = normalizeAccountToken(req.headers["x-ww-account-token"] || "");
+    const deviceId = normalizeDeviceId(req.headers["x-ww-device-id"] || "");
+    if (!accountId || !accountToken) return res.status(401).json({ ok: false, code: "ACCOUNT_AUTH_REQUIRED" });
+    try {
+        const verified = await verifyAccountLogin(accountId, accountToken, { deviceId });
+        if (!verified.profile) return res.status(404).json({ ok: false, code: "ACCOUNT_NOT_FOUND" });
+        if (verified.ok === false) return res.status(403).json({ ok: false, code: verified.code });
+        let activeActivity = getAccountActiveActivity(verified.profile);
+        let roomSummary = null;
+        if (activeActivity?.roomId) {
+            const room = rooms[activeActivity.roomId] || await recoverPersistedRoomById(activeActivity.roomId, { reason: "account_context" }).catch(() => null);
+            if (room) {
+                const member = (room.players || []).find((p) => !p.isHost && normalizeAccountId(p.accountId || "") === accountId) || (room.players || []).find((p) => p.isHost && normalizeAccountId(p.accountId || "") === accountId);
+                roomSummary = { roomId: room.id, started: !!room.started, gameOver: !!room.gameOver, isHost: !!member?.isHost, membershipId: member?.membershipId || activeActivity.membershipId || "", playerCount: (room.players || []).filter((p) => !p.isHost).length };
+            } else {
+                await clearAccountActivity(accountId, { force: true }).catch(() => {});
+                activeActivity = null;
+            }
+        }
+        res.json({ ok: true, account: accountPublicProfile(verified.profile), activeActivity, room: roomSummary });
+    } catch (e) {
+        const transient = ["ROOM_FAILOVER_WAIT", "ROOM_LEASE_UNAVAILABLE"].includes(String(e?.code || ""));
+        if (transient) {
+            res.status(503).json({ ok: false, code: String(e.code), retryAfterMs: Number(e.retryAfterMs) || ROOM_FAILOVER_RETRY_MS });
+        } else {
+            res.status(500).json({ ok: false, code: "ACCOUNT_CONTEXT_FAILED" });
+        }
+    }
 });
 
 // endpoint ให้หน้า lobby (index.html) ดึงสถิติของผู้เล่นคนเดียวไปโชว์ในป็อปอัป — ไม่ต้องใช้ socket
@@ -4537,6 +5979,126 @@ app.get("/api/admin/player-history", async (req, res) => {
     }
 });
 
+// ============================================================
+// ADMIN — ELASTIC BEANSTALK VERSION MANAGER
+// ============================================================
+// สิทธิ์เข้าถึงทุก route ใต้ /api/admin ถูกบังคับผ่าน Admin session middleware
+// ด้านบนแล้ว ดังนั้น endpoint เหล่านี้ไม่รับ "รหัสผ่าน" จาก UI เป็นตัวตัดสินซ้ำ
+// แต่ใช้ session/tab credential ที่ผ่าน middleware เป็นตัวตนจริงแทน
+function adminVersionError(res, status, code, message, extra = {}) {
+    return res.status(status).json({ ok: false, error: code, code, message, ...extra });
+}
+
+app.get("/api/admin/versions", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, private");
+    const envName = configuredEnvironmentName();
+    if (!envName) {
+        return adminVersionError(res, 503, "EB_VERSION_MANAGER_NOT_CONFIGURED", "ยังไม่ได้ตั้งค่า EB_ENVIRONMENT_NAME");
+    }
+    try {
+        const environment = await describeEnvironment({ environmentName: envName });
+        const applicationName = String(environment.ApplicationName || "").trim();
+        if (!applicationName) return adminVersionError(res, 503, "EB_APPLICATION_NAME_MISSING", "Elastic Beanstalk ไม่ส่งชื่อ Application ของ environment นี้");
+        const currentVersion = String(environment.VersionLabel || "").trim();
+        const versions = await listApplicationVersions({ applicationName });
+        return res.json({
+            ok: true,
+            environment: {
+                name: envName,
+                applicationName,
+                status: String(environment.Status || "").trim(),
+                health: String(environment.Health || "").trim(),
+                healthStatus: String(environment.HealthStatus || "").trim(),
+                versionLabel: currentVersion,
+                abortableOperationInProgress: !!environment.AbortableOperationInProgress,
+            },
+            versions: versions.map((version) => ({
+                ...publicApplicationVersion(version),
+                current: version.versionLabel === currentVersion,
+                rollbackAllowed: version.versionLabel !== currentVersion
+                    && isKnownDeployableStatus(version.status)
+                    && String(environment.Status || "") === "Ready"
+                    && !environment.AbortableOperationInProgress,
+            })),
+        });
+    } catch (e) {
+        const code = String(e?.code || e?.name || "EB_VERSION_LIST_FAILED");
+        recordDiagnostic({ source: "server", kind: "admin_version_list_failed", page: "admin", action: "admin_versions_list", operation: code, message: e?.message || String(e), stack: e?.stack || "" });
+        return adminVersionError(res, 503, code === "CredentialsProviderError" ? "EB_VERSION_AWS_CREDENTIALS" : "EB_VERSION_LIST_FAILED", "อ่านประวัติเวอร์ชันจาก Elastic Beanstalk ไม่สำเร็จ");
+    }
+});
+
+app.post("/api/admin/versions/download-ticket", express.json({ limit: "4kb" }), async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, private");
+    const envName = configuredEnvironmentName();
+    const versionLabel = normalizeVersionLabel(req.body?.versionLabel);
+    if (!envName) return adminVersionError(res, 503, "EB_VERSION_MANAGER_NOT_CONFIGURED", "ยังไม่ได้ตั้งค่า EB_ENVIRONMENT_NAME");
+    if (!isValidVersionLabel(versionLabel)) return adminVersionError(res, 400, "EB_VERSION_LABEL_INVALID", "Version Label ไม่ถูกต้อง");
+    try {
+        const environment = await describeEnvironment({ environmentName: envName });
+        const applicationName = String(environment.ApplicationName || "").trim();
+        const version = await getApplicationVersion({ applicationName, versionLabel });
+        if (!version.downloadable) return adminVersionError(res, 404, "EB_VERSION_SOURCE_NOT_FOUND", "เวอร์ชันนี้ไม่มี source bundle ให้ดาวน์โหลดแล้ว");
+        const principal = getAdminPrincipal(req);
+        const nonce = crypto.randomBytes(18).toString("hex");
+        const exp = Date.now() + ADMIN_VERSION_DOWNLOAD_TTL_MS;
+        const ticket = createSignedState({
+            v: 1,
+            admin: true,
+            type: "admin_eb_version_download",
+            applicationName,
+            environmentName: envName,
+            versionLabel,
+            adminSessionNonce: String(principal?.n || "").slice(0, 128),
+            exp,
+            n: nonce,
+        }, ADMIN_SESSION_SECRET);
+        if (!ticket) {
+            return adminVersionError(res, 503, "EB_VERSION_TICKET_FAILED", "สร้างลิงก์ดาวน์โหลดไม่สำเร็จ");
+        }
+        return res.json({ ok: true, versionLabel, expiresAt: exp, url: `/api/eb-version-download/${encodeURIComponent(ticket)}` });
+    } catch (e) {
+        const code = String(e?.code || e?.name || "EB_VERSION_DOWNLOAD_TICKET_FAILED");
+        recordDiagnostic({ source: "server", kind: "admin_version_download_ticket_failed", page: "admin", action: "admin_version_download_ticket", operation: code, message: e?.message || String(e), stack: e?.stack || "", data: { versionLabel, environmentName: envName } });
+        const status = code === "EB_VERSION_NOT_FOUND" ? 404 : 503;
+        return adminVersionError(res, status, code === "EB_VERSION_NOT_FOUND" ? code : "EB_VERSION_DOWNLOAD_TICKET_FAILED", status === 404 ? "ไม่พบ Application Version นี้" : "สร้างลิงก์ดาวน์โหลดไม่สำเร็จ");
+    }
+});
+
+app.post("/api/admin/versions/rollback", express.json({ limit: "4kb" }), async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, private");
+    const envName = configuredEnvironmentName();
+    const versionLabel = normalizeVersionLabel(req.body?.versionLabel);
+    if (!envName) return adminVersionError(res, 503, "EB_VERSION_MANAGER_NOT_CONFIGURED", "ยังไม่ได้ตั้งค่า EB_ENVIRONMENT_NAME");
+    if (!isValidVersionLabel(versionLabel)) return adminVersionError(res, 400, "EB_VERSION_LABEL_INVALID", "Version Label ไม่ถูกต้อง");
+    try {
+        const environment = await describeEnvironment({ environmentName: envName });
+        const currentVersion = String(environment.VersionLabel || "").trim();
+        if (versionLabel === currentVersion) return adminVersionError(res, 409, "EB_VERSION_ALREADY_RUNNING", "เวอร์ชันนี้กำลังรันอยู่แล้ว", { currentVersion });
+        if (String(environment.Status || "") !== "Ready" || environment.AbortableOperationInProgress) {
+            return adminVersionError(res, 409, "EB_VERSION_ENVIRONMENT_BUSY", "Elastic Beanstalk environment กำลังมี operation อยู่ จึงยังไม่สลับเวอร์ชัน", {
+                environmentStatus: String(environment.Status || ""),
+                abortableOperationInProgress: !!environment.AbortableOperationInProgress,
+                currentVersion,
+            });
+        }
+        const applicationName = String(environment.ApplicationName || "").trim();
+        const version = await getApplicationVersion({ applicationName, versionLabel });
+        if (!isKnownDeployableStatus(version.status)) {
+            return adminVersionError(res, 409, "EB_VERSION_NOT_DEPLOYABLE", `Application Version ${versionLabel} มีสถานะ ${version.status || "ไม่ทราบ"} และยังไม่ควรถูกนำกลับมาใช้`);
+        }
+        await deployApplicationVersion({ environmentName: envName, versionLabel });
+        recordDiagnostic({ source: "server", kind: "admin_version_rollback_requested", page: "admin", action: "admin_version_rollback", operation: "elasticbeanstalk.UpdateEnvironment", message: `Requested rollback to ${versionLabel}`, data: { environmentName: envName, applicationName, versionLabel, previousVersion: currentVersion } });
+        return res.json({ ok: true, requestedVersion: versionLabel, previousVersion: currentVersion, environmentName: envName, applicationName, deploymentStarted: true });
+    } catch (e) {
+        const code = String(e?.code || e?.name || "EB_VERSION_ROLLBACK_FAILED");
+        recordDiagnostic({ source: "server", kind: "admin_version_rollback_failed", page: "admin", action: "admin_version_rollback", operation: code, message: e?.message || String(e), stack: e?.stack || "", data: { versionLabel, environmentName: envName } });
+        if (code === "EB_VERSION_NOT_FOUND") return adminVersionError(res, 404, code, "ไม่พบ Application Version นี้");
+        if (/InvalidParameterValue|InsufficientPrivileges|AccessDenied|Unauthorized/i.test(code)) return adminVersionError(res, 503, "EB_VERSION_AWS_PERMISSION_FAILED", "AWS ไม่อนุญาตคำสั่งย้อนเวอร์ชัน — ตรวจ IAM ของ Elastic Beanstalk");
+        return adminVersionError(res, 503, "EB_VERSION_ROLLBACK_FAILED", "สั่งย้อนเวอร์ชันไม่สำเร็จ");
+    }
+});
+
 // APP_VERSION_LABEL: ป้ายเวอร์ชันที่จะโชว์ให้เห็นในเกม (มุมซ้ายบนทุกหน้า)
 // แหล่งเดียวกับ Running version ของ AWS Elastic Beanstalk ผ่าน utils/getAppVersion.js
 // /api/config และ socket ใช้ Running Version จาก utility เดียวกัน
@@ -4556,7 +6118,7 @@ getAppVersion({ force: true }).then((version) => {
 // คำนวณ version สดทุกครั้งที่มีการเรียก (ไม่ใช้ค่า cache ตายตัว) เพื่อให้จับการเปลี่ยนไฟล์ static
 // ได้ทันทีแม้ deploy แบบสลับไฟล์โดยไม่ restart process
 // Client-side error intake — deliberately separate from game socket so a broken game JS file can still report.
-app.post("/api/diagnostics/client-error", express.json({ limit: "24kb" }), (req, res) => {
+app.post("/api/diagnostics/client-error", express.json({ limit: "64kb" }), (req, res) => {
     if (!diagnosticRequestAllowed(req)) return res.status(429).json({ ok: false, error: "rate_limited" });
     const b = req.body || {};
     recordDiagnostic({
@@ -4665,7 +6227,16 @@ function publicDiagnosticEvent(event = {}) {
         operationId: String(event.operationId || "").slice(0, 120),
         causalHint: publicDiagnosticValue(event.causalHint || {}),
         fingerprint: String(event.fingerprint || "").slice(0, 80),
+        featureKeys: Array.isArray(event.featureKeys) ? event.featureKeys.slice(0, 32).map((x) => String(x).slice(0, 80)) : [],
+        featureLabels: Array.isArray(event.featureLabels) ? event.featureLabels.slice(0, 32).map((x) => String(x).slice(0, 160)) : [],
+        featureArea: String(event.featureArea || "").slice(0, 80),
+        gameProfileRef: event.gameProfileRef ? publicDiagnosticValue(event.gameProfileRef) : null,
+        gameProfileSnapshot: event.gameProfileSnapshot ? publicDiagnosticValue(event.gameProfileSnapshot) : null,
         permission: event.permission ? { action:String(event.permission.action || "").slice(0, 120), resource:publicDiagnosticResource(event.permission.resource), accessDenied:!!event.permission.accessDenied } : null,
+        coalescedCount: Math.max(1, Number(event.coalescedCount) || 1),
+        firstSeenAt: String(event.firstSeenAt || event.time || "").slice(0, 80),
+        lastSeenAt: String(event.lastSeenAt || event.time || "").slice(0, 80),
+        coalescedEventIds: Array.isArray(event.coalescedEventIds) ? event.coalescedEventIds.slice(0, 12).map((x) => String(x).slice(0, 120)) : [],
         serverInstance: event.serverInstance ? { appVersion:String(event.serverInstance.appVersion || "").slice(0, 120), uptimeSec:Number(event.serverInstance.uptimeSec) || 0 } : null,
     };
     out.analysis = publicDiagnosticValue(event.analysis || {});
@@ -4708,6 +6279,34 @@ function diagnosticIncidentIdentity(event = {}) {
     return "";
 }
 
+function normalizeGithubBugReplayFingerprintText(value = "") {
+    return publicDiagnosticText(value)
+        .replace(/\b(replay|tr|ses|req|srvreq)-[A-Za-z0-9_-]+\b/gi, "$1:<id>")
+        .replace(/\b(err|incident)-[A-Za-z0-9_-]+\b/gi, "$1:<id>")
+        .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, "<timestamp>")
+        .replace(/\b0x[0-9a-f]+\b/gi, "0x<id>")
+        .replace(/[\r\n]+/g, "\n")
+        .trim()
+        .slice(0, 6000);
+}
+
+function diagnosticGithubIncidentIdentity(event = {}) {
+    const kind = String(event.kind || event.type || "").toLowerCase().trim();
+    if (kind === "bug_replay_failure") {
+        const data = event.data && typeof event.data === "object" ? event.data : {};
+        const context = event.context && typeof event.context === "object" ? event.context : {};
+        const testPath = String(data.testPath || context.testPath || event.testPath || "").trim();
+        const exitCode = data.exitCode ?? context.exitCode ?? event.exitCode ?? "";
+        const signal = String(data.signal || context.signal || event.signal || "").trim();
+        const timedOut = !!(data.timedOut ?? context.timedOut ?? event.timedOut);
+        const output = normalizeGithubBugReplayFingerprintText(data.stderr || data.stdout || event.stack || event.message || "");
+        const existingFingerprint = String(event.fingerprint || "").trim();
+        if (!testPath && !output && existingFingerprint) return `bug-replay:${existingFingerprint}`;
+        return `bug-replay:${diagnosticFingerprint(["BUG_REPLAY_FAILED", testPath, exitCode, signal, timedOut ? "timeout" : "", output])}`;
+    }
+    return diagnosticIncidentIdentity(event);
+}
+
 function diagnosticIncidentIndexKey(incidentKey) {
     const digest = crypto.createHash("sha256").update(String(incidentKey || "")).digest("hex").slice(0, 40);
     return `${DIAGNOSTIC_INCIDENT_INDEX_PREFIX}${digest}`;
@@ -4724,6 +6323,15 @@ function diagnosticSharePublicBaseUrl(req) {
     const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
     const host = forwardedHost || req.get("host");
     return `${/^https?$/i.test(forwardedProto) ? forwardedProto : "https"}://${host}`;
+}
+
+function diagnosticShareUrls(baseUrl, token) {
+    const base = String(baseUrl || "").replace(/\/+$/, "");
+    const safeToken = encodeURIComponent(String(token || ""));
+    if (!base || !safeToken) return { html:"", json:"", ai:"" };
+    const html = `${base}/diagnostics/share/${safeToken}`;
+    const json = `${html}.json`;
+    return { html, json, ai:json };
 }
 
 function diagnosticShareEventUrl(bundle, token, eventId, json = false) {
@@ -5010,7 +6618,7 @@ function rememberDiagnosticShare(token, bundle) {
 app.get("/api/admin/bug-replay/scenarios", (req, res) => {
     cleanupBugReplayJobs();
     const requestedMode = String(req.query?.mode || "all");
-    const mode = requestedMode === "phase2" ? "phase2" : "all";
+    const mode = requestedMode === "first" ? "first" : (requestedMode === "phase2" ? "phase2" : "all");
     res.setHeader("Cache-Control", "no-store");
     res.json({ ok:true, mode, scenarios:listBugReplayScenarios(mode) });
 });
@@ -5018,8 +6626,8 @@ app.get("/api/admin/bug-replay/scenarios", (req, res) => {
 app.post("/api/admin/bug-replay/start", async (req, res) => {
     try {
         const requestedMode = String(req.body?.mode || "all");
-        const mode = requestedMode === "deep" ? "deep" : (requestedMode === "phase2" ? "phase2" : "all");
-        const result = await startBugReplayJob(mode);
+        const mode = requestedMode === "first" ? "first" : (requestedMode === "phase2" ? "phase2" : "all");
+        const result = await startBugReplayJob(mode, { publicBaseUrl: diagnosticSharePublicBaseUrl(req) });
         res.setHeader("Cache-Control", "no-store");
         if (!result.ok) return res.status(409).json(result);
         res.json(result);
@@ -5043,6 +6651,62 @@ app.get("/api/admin/bug-replay/audit", (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
     res.json({ ok:true, runId, audit:job.audit ? job.audit.snapshot({ timelineLimit:220, findingLimit:100 }) : null });
+});
+
+
+app.post("/api/admin/bug-replay/share", async (req, res) => {
+    cleanupBugReplayJobs();
+    const runId = String(req.body?.runId || "").slice(0, 120);
+    const job = runId ? bugReplayJobs.get(runId) : null;
+    res.setHeader("Cache-Control", "no-store");
+    if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
+    if (job.status === "running") return res.status(409).json({ ok:false, error:"bug_replay_still_running", code:"BUG_REPLAY_STILL_RUNNING", job:publicBugReplayJob(job) });
+    if (job.report?.status === "generating") return res.status(409).json({ ok:false, error:"bug_replay_report_generating", code:"BUG_REPLAY_REPORT_GENERATING", job:publicBugReplayJob(job) });
+    if (!job.publicBaseUrl) job.publicBaseUrl = diagnosticSharePublicBaseUrl(req);
+    try {
+        await finalizeBugReplayRunReport(job);
+        if (job.report?.status !== "ready") return res.status(503).json({ ok:false, error:"bug_replay_report_unavailable", code:"BUG_REPLAY_REPORT_UNAVAILABLE", report:job.report || null });
+        return res.json({ ok:true, runId, report:job.report, job:publicBugReplayJob(job) });
+    } catch (e) {
+        return res.status(503).json({ ok:false, error:"bug_replay_report_unavailable", code:"BUG_REPLAY_REPORT_UNAVAILABLE", message:publicDiagnosticText(e?.message || String(e)) });
+    }
+});
+
+app.get("/api/admin/bug-replay/export", async (req, res) => {
+    cleanupBugReplayJobs();
+    const runId = String(req.query.runId || bugReplayActiveRunId || "").slice(0, 120);
+    const format = String(req.query.format || "json").toLowerCase() === "text" ? "text" : "json";
+    const eventId = String(req.query.eventId || "").slice(0, 160);
+    const requestedScope = String(req.query.reportScope || "").toLowerCase();
+    const firstScope = requestedScope === 'first_failure' || (!requestedScope && String(req.query.mode || '') === 'first') || (!requestedScope && !eventId && runId && bugReplayJobs.get(runId)?.mode === 'first');
+    const job = runId ? bugReplayJobs.get(runId) : null;
+    res.setHeader("Cache-Control", "no-store, private");
+    if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
+    if (job.status === "running") return res.status(409).json({ ok:false, error:"bug_replay_still_running", code:"BUG_REPLAY_STILL_RUNNING" });
+    try {
+        let bundle = firstScope
+            ? buildBugReplayFirstFailureBundle(job, { token:'', includeShareUrls:false })
+            : buildBugReplayRunBundle(job, { token:'', includeShareUrls:false });
+        if (!bundle) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
+        if (eventId && !firstScope) {
+            const focused = diagnosticShareFocusedBundle(bundle, eventId);
+            if (!focused) return res.status(404).json({ ok:false, error:"bug_replay_event_not_found", code:"BUG_REPLAY_EVENT_NOT_FOUND", eventId });
+            bundle = focused;
+        }
+        if (format === "text") {
+            const body = firstScope ? bugReplayFirstFailureShareText(bundle, '') : (eventId ? diagnosticShareText(bundle, '', eventId) : bugReplayShareText(bundle, ''));
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`werewolf-bug-replay-${runId}${firstScope ? '-first-failure' : (eventId ? '-focused' : '')}.txt`)}`);
+            return res.send(body);
+        }
+        const reportText = firstScope ? bugReplayFirstFailureShareText(bundle, "") : (eventId ? diagnosticShareText(bundle, "", eventId) : bugReplayShareText(bundle, ""));
+        const body = JSON.stringify({ ok:true, ...bundle, reportText }, null, 2);
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`werewolf-bug-replay-${runId}${firstScope ? '-first-failure' : (eventId ? '-focused' : '')}.json`)}`);
+        return res.send(body);
+    } catch (e) {
+        return res.status(500).json({ ok:false, error:"bug_replay_export_failed", code:"BUG_REPLAY_EXPORT_FAILED", message:publicDiagnosticText(e?.message || String(e)) });
+    }
 });
 
 app.post("/api/admin/bug-replay/stop", (req, res) => {
@@ -5076,10 +6740,628 @@ app.get("/api/admin/diagnostics", (req, res) => {
         server: { uptimeSec: Math.round(process.uptime()), node: process.version, serverClosed: !!serverClosed, table: STATS_TABLE_NAME, ebEnvironmentConfigured: !!EB_ENVIRONMENT_NAME },
         summary: { stored: diagnosticEvents.length, shown: events.length, serious: errors.length, accessDenied: events.filter((e) => e.permission?.accessDenied).length },
         permissions: permissionChecklist(),
+        githubBugReports: buildGithubBugReportStatus(),
         events,
     });
 });;
 
+
+
+function buildDiagnosticJsonExportEvent(event) {
+    const primary = event || null;
+    if (!primary) return null;
+    const related = relatedDiagnosticEventsFor(primary);
+    const serverBreadcrumbs = primary.serverBreadcrumbs?.length ? primary.serverBreadcrumbs : relatedServerBreadcrumbs({ traceId:primary.traceId, sessionId:primary.sessionId, limit:160 });
+    const allForAnalysis = related.concat(serverBreadcrumbs.map((b) => ({ source:"server", kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
+    return {
+        event: primary,
+        analysis: buildDiagnosticAnalysis(primary, allForAnalysis),
+        relatedEvents: related,
+        serverBreadcrumbs,
+    };
+}
+
+function diagnosticExportFilename(scope, eventId = "") {
+    const safe = String(eventId || "").replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 60);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return scope === "event"
+        ? `werewolf-bug-report-${safe || "event"}-${stamp}.json`
+        : `werewolf-bug-reports-all-${stamp}.json`;
+}
+
+
+function cleanupDiagnosticGithubReports(now = Date.now()) {
+    for (const [eventId, item] of diagnosticGithubReports) {
+        if (!item || Number(item.createdAtMs || 0) + DIAGNOSTIC_GITHUB_REPORT_TTL_MS <= now) diagnosticGithubReports.delete(eventId);
+    }
+    for (const [incidentKey, item] of diagnosticGithubIncidentReports) {
+        if (!item || Number(item.createdAtMs || 0) + DIAGNOSTIC_GITHUB_INCIDENT_TTL_MS <= now) diagnosticGithubIncidentReports.delete(incidentKey);
+    }
+    while (diagnosticGithubReports.size > 200) {
+        const oldest = [...diagnosticGithubReports.entries()].sort((a, b) => Number(a[1]?.createdAtMs || 0) - Number(b[1]?.createdAtMs || 0))[0];
+        if (!oldest) break;
+        diagnosticGithubReports.delete(oldest[0]);
+    }
+    while (diagnosticGithubIncidentReports.size > 120) {
+        const oldest = [...diagnosticGithubIncidentReports.entries()].sort((a, b) => Number(a[1]?.createdAtMs || 0) - Number(b[1]?.createdAtMs || 0))[0];
+        if (!oldest) break;
+        diagnosticGithubIncidentReports.delete(oldest[0]);
+    }
+}
+
+function diagnosticIncidentKeyHash(incidentKey = "") {
+    return incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "";
+}
+
+function selectDiagnosticIncidentPrimary(event = {}, related = []) {
+    const pool = [event, ...(Array.isArray(related) ? related : [])].filter(Boolean);
+    const operationId = String(event.operationId || event.context?.operationId || event.detail?.operationId || "").trim();
+    const failures = pool.filter(diagnosticIsFailureEvent);
+    const scoped = operationId
+        ? failures.filter((x) => String(x.operationId || x.context?.operationId || x.detail?.operationId || "").trim() === operationId)
+        : failures;
+    const candidates = (scoped.length ? scoped : failures).slice().sort((a,b) => diagnosticTimeMs(a) - diagnosticTimeMs(b));
+    return candidates[0] || event;
+}
+
+async function findExistingGithubIncidentIssue(incidentKey, config, { event = null } = {}) {
+    const hash = diagnosticIncidentKeyHash(incidentKey);
+    if (!config?.configured) return null;
+    // An incident lookup failure must propagate instead of silently falling through to
+    // Issue creation; otherwise a temporary GitHub/rate-limit error can create duplicates.
+    const listed = await listAllGithubIssues({ config });
+    if (hash) {
+        const marker = `incident:${hash.slice(0, 20)}`;
+        const currentMatches = (listed.issues || [])
+            .filter((issue) => String(issue?.state || "").toUpperCase() === "OPEN" && String(issue?.title || "").includes(marker))
+            .sort((a, b) => Number(a?.number || 0) - Number(b?.number || 0));
+        if (currentMatches.length) return currentMatches[0];
+    }
+
+    // Backward-compatible migration guard: older releases used a different incident hash
+    // for the same diagnostic event. Reuse an existing Issue carrying the exact event marker
+    // instead of creating a second historical copy.
+    const eventId = String(event?.id || "").trim();
+    if (eventId) {
+        const legacyMarker = `WEREWOLF-DIAGNOSTIC-ID: ${eventId}`;
+        const legacyMatches = await searchGithubIssuesByText({ queryText: legacyMarker, config });
+        const openLegacy = legacyMatches
+            .filter((issue) => String(issue?.state || "").toUpperCase() === "OPEN" && String(issue?.body || "").includes(legacyMarker))
+            .sort((a, b) => Number(a?.number || 0) - Number(b?.number || 0));
+        if (openLegacy.length) return openLegacy[0];
+    }
+    return null;
+}
+
+function diagnosticGithubPublicError(error) {
+    const code = String(error?.publicCode || error?.code || 'GITHUB_CREATE_ISSUE_FAILED');
+    const map = {
+        GITHUB_TOKEN_MISSING: 'ยังไม่ได้ตั้งค่า GitHub token สำหรับส่งรายงาน',
+        GITHUB_REPOSITORY_INVALID: 'ตั้งค่า GitHub repository ไม่ถูกต้อง',
+        GITHUB_FETCH_UNAVAILABLE: 'เซิร์ฟเวอร์นี้ไม่รองรับการเชื่อมต่อ GitHub',
+        GITHUB_AUTH_FAILED: 'GitHub ปฏิเสธ token',
+        GITHUB_FORBIDDEN_OR_RATE_LIMITED: 'GitHub ไม่อนุญาตคำสั่ง หรือ API ถูกจำกัดอัตราการใช้งาน',
+        GITHUB_REPOSITORY_NOT_FOUND: 'ไม่พบ repository รับรายงานบั๊ก',
+        GITHUB_VALIDATION_FAILED: 'GitHub ปฏิเสธข้อมูลรายงาน',
+        GITHUB_REQUEST_TIMEOUT: 'เชื่อมต่อ GitHub เกินเวลาที่กำหนด',
+        GITHUB_RESPONSE_INVALID: 'GitHub ส่งผลลัพธ์กลับมาไม่ครบ',
+        GITHUB_CREATE_ISSUE_FAILED: 'สร้าง GitHub Issue ไม่สำเร็จ',
+    };
+    return { code, message: map[code] || 'ส่งรายงานเข้า GitHub ไม่สำเร็จ' };
+}
+
+function cleanupAdminGithubScreenshotUploads(now = Date.now()) {
+    for (const [captureId, item] of adminGithubScreenshotUploads) {
+        if (!item || Number(item.createdAtMs || 0) + ADMIN_GITHUB_SCREENSHOT_UPLOAD_TTL_MS <= now) adminGithubScreenshotUploads.delete(captureId);
+    }
+    while (adminGithubScreenshotUploads.size > 120) {
+        const oldest = [...adminGithubScreenshotUploads.entries()].sort((a, b) => Number(a[1]?.createdAtMs || 0) - Number(b[1]?.createdAtMs || 0))[0];
+        if (!oldest) break;
+        adminGithubScreenshotUploads.delete(oldest[0]);
+    }
+}
+
+function githubScreenshotPageSlug(rawPath, rawTitle) {
+    const pathValue = String(rawPath || '').split('?')[0].split('#')[0];
+    const titleValue = String(rawTitle || '').toLowerCase();
+    if (pathValue === '/' || pathValue.endsWith('/index.html') || /game|home|lobby/.test(titleValue)) return 'index';
+    if (pathValue.endsWith('/host.html') || /host/.test(titleValue)) return 'host';
+    if (pathValue.endsWith('/player.html') || /player/.test(titleValue)) return 'player';
+    if (pathValue.endsWith('/admin.html') || /admin/.test(titleValue)) return 'admin';
+    return pathValue.replace(/^\/+|\/+$/g, '').replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 60) || 'page';
+}
+
+function githubIssueClearPublicError(error) {
+    const code = String(error?.publicCode || error?.code || 'GITHUB_ISSUE_CLEAR_FAILED');
+    const map = {
+        GITHUB_TOKEN_MISSING: 'ยังไม่ได้ตั้งค่า GitHub token สำหรับล้าง Issues',
+        GITHUB_REPOSITORY_INVALID: 'ตั้งค่า GitHub repository ไม่ถูกต้อง',
+        GITHUB_FETCH_UNAVAILABLE: 'เซิร์ฟเวอร์นี้ไม่รองรับการเชื่อมต่อ GitHub',
+        GITHUB_AUTH_FAILED: 'GitHub ปฏิเสธ token',
+        GITHUB_FORBIDDEN_OR_RATE_LIMITED: 'GitHub ไม่อนุญาตให้ลบ Issues หรือ API ถูกจำกัดอัตราการใช้งาน',
+        GITHUB_REPOSITORY_NOT_FOUND: 'ไม่พบ repository สำหรับล้าง Issues',
+        GITHUB_GRAPHQL_FAILED: 'คำขอ GitHub GraphQL ล้มเหลว',
+        GITHUB_GRAPHQL_ERROR: 'GitHub GraphQL ปฏิเสธคำสั่ง',
+        GITHUB_PAGINATION_INVALID: 'GitHub ส่งข้อมูลหน้า Issues ไม่ครบ',
+        GITHUB_REQUEST_TIMEOUT: 'เชื่อมต่อ GitHub เกินเวลาที่กำหนด',
+        GITHUB_RESPONSE_INVALID: 'GitHub ส่งผลลัพธ์กลับมาไม่ครบ',
+        GITHUB_ISSUE_ID_REQUIRED: 'ไม่พบรหัส Issue สำหรับลบ',
+        GITHUB_ISSUE_CLEAR_CONFIRMATION_REQUIRED: 'ต้องยืนยันการล้าง Issues',
+        GITHUB_ISSUE_CLEAR_IN_PROGRESS: 'กำลังมีการล้าง GitHub Issues อีกครั้งอยู่',
+        GITHUB_ISSUE_CLEAR_FAILED: 'ล้าง GitHub Issues ไม่สำเร็จ',
+    };
+    return { code, message:map[code] || 'ล้าง GitHub Issues ไม่สำเร็จ' };
+}
+
+function adminGithubScreenshotPublicError(error) {
+    const code = String(error?.publicCode || error?.code || 'GITHUB_CREATE_SCREENSHOT_FAILED');
+    const map = {
+        GITHUB_TOKEN_MISSING: 'ยังไม่ได้ตั้งค่า GitHub token สำหรับบันทึกภาพ',
+        GITHUB_REPOSITORY_INVALID: 'ตั้งค่า GitHub repository ไม่ถูกต้อง',
+        GITHUB_FETCH_UNAVAILABLE: 'เซิร์ฟเวอร์นี้ไม่รองรับการเชื่อมต่อ GitHub',
+        GITHUB_AUTH_FAILED: 'GitHub ปฏิเสธ token',
+        GITHUB_CONTENTS_PERMISSION_REQUIRED: 'GitHub token ยังไม่มีสิทธิ์ Contents: Read and write สำหรับ repository นี้',
+        GITHUB_RATE_LIMITED: 'GitHub จำกัดอัตราการเรียก API ชั่วคราว กรุณาลองใหม่ภายหลัง',
+        GITHUB_FORBIDDEN_OR_RATE_LIMITED: 'GitHub ไม่อนุญาตการเขียนไฟล์ หรือ API ถูกจำกัดอัตราการใช้งาน',
+        GITHUB_REPOSITORY_NOT_FOUND: 'ไม่พบ repository สำหรับเก็บภาพ',
+        GITHUB_CONTENT_CONFLICT: 'GitHub พบ conflict ระหว่างบันทึกไฟล์',
+        GITHUB_VALIDATION_FAILED: 'GitHub ปฏิเสธข้อมูลภาพ',
+        GITHUB_PATH_INVALID: 'เส้นทางไฟล์ภาพไม่ถูกต้อง',
+        GITHUB_FILE_EMPTY: 'ไม่พบไฟล์ภาพที่จะบันทึก',
+        GITHUB_SCREENSHOT_TOO_LARGE: 'ภาพใหญ่เกินขนาดที่ระบบกำหนด (20 MB)',
+        GITHUB_SCREENSHOT_METADATA_TOO_LARGE: 'ข้อมูลภาพใหญ่เกินขนาดที่ระบบกำหนด',
+        GITHUB_REQUEST_TIMEOUT: 'เชื่อมต่อ GitHub เกินเวลาที่กำหนด',
+        GITHUB_RESPONSE_INVALID: 'GitHub ส่งผลลัพธ์กลับมาไม่ครบ',
+        GITHUB_CREATE_FILE_FAILED: 'บันทึกไฟล์ภาพเข้า GitHub ไม่สำเร็จ',
+    };
+    return { code, message: map[code] || 'บันทึกภาพเข้า GitHub ไม่สำเร็จ' };
+}
+
+app.post('/api/admin/internal-browser/screenshots/github', express.raw({ type: 'image/png', limit: `${Math.ceil(MAX_SCREENSHOT_BYTES / (1024 * 1024))}mb` }), async (req, res) => {
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const captureId = String(req.headers['x-ww-screenshot-id'] || '').replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 120);
+    if (!captureId) return res.status(400).json({ ok:false, error:'screenshot_id_required', code:'SCREENSHOT_ID_REQUIRED' });
+    if (!buffer.length) return res.status(400).json({ ok:false, error:'screenshot_png_required', code:'SCREENSHOT_PNG_REQUIRED' });
+    if (buffer.length > MAX_SCREENSHOT_BYTES) return res.status(413).json({ ok:false, error:'screenshot_too_large', code:'GITHUB_SCREENSHOT_TOO_LARGE' });
+    if (buffer.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return res.status(415).json({ ok:false, error:'invalid_png', code:'SCREENSHOT_PNG_INVALID' });
+
+    cleanupAdminGithubScreenshotUploads();
+    const existing = adminGithubScreenshotUploads.get(captureId);
+    if (existing?.imageUrl) return res.json({ ok:true, reused:true, ...existing });
+
+    const config = getGithubBugReportConfig();
+    if (!config.configured) {
+        const detail = adminGithubScreenshotPublicError({ code:config.configurationError });
+        return res.status(503).json({ ok:false, error:'github_screenshot_not_configured', code:detail.code, message:detail.message, repository:config.repository });
+    }
+
+    const capturedAt = String(req.headers['x-ww-screenshot-captured-at'] || new Date().toISOString()).slice(0, 80);
+    const rawMeta = {
+        page: String(req.headers['x-ww-screenshot-page'] || 'unknown').slice(0, 120),
+        path: String(req.headers['x-ww-screenshot-path'] || '/').slice(0, 240),
+        width: Number(req.headers['x-ww-screenshot-width'] || 0),
+        height: Number(req.headers['x-ww-screenshot-height'] || 0),
+        mode: String(req.headers['x-ww-screenshot-viewport-mode'] || 'unknown').slice(0, 30),
+        presetId: String(req.headers['x-ww-screenshot-preset-id'] || '').slice(0, 80),
+        presetLabel: String(req.headers['x-ww-screenshot-preset-label'] || '').slice(0, 120),
+        orientation: String(req.headers['x-ww-screenshot-orientation'] || '').slice(0, 30),
+        zoom: String(req.headers['x-ww-screenshot-zoom'] || '').slice(0, 30),
+        dpr: Number(req.headers['x-ww-screenshot-dpr'] || 1),
+        captureMode: String(req.headers['x-ww-screenshot-capture-mode'] || 'evidence').slice(0, 20),
+        capturedAt,
+        browser: String(req.headers['x-ww-screenshot-browser'] || '').slice(0, 240),
+        userAgent: String(req.headers['user-agent'] || '').slice(0, 600),
+        captureEngine: String(req.headers['x-ww-screenshot-capture-engine'] || 'html2canvas-viewport').slice(0, 60),
+        scrollX: Number(req.headers['x-ww-screenshot-scroll-x'] || 0),
+        scrollY: Number(req.headers['x-ww-screenshot-scroll-y'] || 0),
+        activeScrollContainers: Number(req.headers['x-ww-screenshot-active-scroll-containers'] || 0),
+        visualViewportScale: Number(req.headers['x-ww-screenshot-visual-viewport-scale'] || 1),
+    };
+    const page = githubScreenshotPageSlug(rawMeta.path, rawMeta.page);
+    const width = Math.max(1, Math.min(7680, Math.round(Number(rawMeta.width) || 0)));
+    const height = Math.max(1, Math.min(4320, Math.round(Number(rawMeta.height) || 0)));
+    if (!width || !height) return res.status(400).json({ ok:false, error:'screenshot_viewport_required', code:'SCREENSHOT_VIEWPORT_REQUIRED' });
+    const originalFile = String(req.headers['x-ww-screenshot-file'] || `werewolf-${page}-${width}x${height}.png`).replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 180);
+    const fileBase = originalFile.replace(/\.png$/i, '').slice(0, 150);
+    const safeFileName = `${fileBase}-${captureId.slice(-20)}.png`;
+    const imagePath = screenshotGithubPath({ capturedAt, page, width, height, fileName:safeFileName });
+    const metadataPath = imagePath.replace(/\.png$/i, '.json');
+
+    try {
+        const result = await createGithubScreenshotFiles({
+            imageBuffer:buffer,
+            imagePath,
+            metadataPath,
+            metadata:rawMeta,
+            config,
+        });
+        const record = {
+            createdAtMs:Date.now(),
+            captureId,
+            repository:config.repository,
+            branch:result.image.branch,
+            imagePath:result.image.path,
+            imageUrl:result.image.htmlUrl,
+            imageDownloadUrl:result.image.downloadUrl,
+            metadataPath:result.metadata.path,
+            metadataUrl:result.metadata.htmlUrl,
+            viewport:`${width}x${height}`,
+            page,
+            capturedAt,
+        };
+        adminGithubScreenshotUploads.set(captureId, record);
+        addDiagnosticBreadcrumb({ source:'server', type:'admin', label:'admin.screenshot.github.saved', page:'admin', detail:{ captureId, repository:config.repository, imagePath:record.imagePath, viewport:record.viewport, page } });
+        cleanupAdminGithubScreenshotUploads();
+        return res.json({ ok:true, reused:false, ...record });
+    } catch (error) {
+        const detail = adminGithubScreenshotPublicError(error);
+        recordDiagnostic({
+            source:'server', kind:'admin_screenshot_github_failed', page:'admin', action:'admin.screenshot.github',
+            operation:detail.code, message:detail.message,
+            data:{
+                repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0, viewport:`${width}x${height}`, page,
+                githubMessage:String(error?.githubMessage || error?.message || '').slice(0, 700),
+                acceptedPermissions:String(error?.githubAcceptedPermissions || '').slice(0, 240),
+                rateLimitRemaining:String(error?.githubRateLimitRemaining || '').slice(0, 40),
+                rateLimitReset:String(error?.githubRateLimitReset || '').slice(0, 40),
+            }
+        });
+        const status = detail.code === 'GITHUB_TOKEN_MISSING' ? 503
+            : detail.code === 'GITHUB_SCREENSHOT_TOO_LARGE' ? 413
+            : detail.code === 'GITHUB_AUTH_FAILED' || detail.code === 'GITHUB_CONTENTS_PERMISSION_REQUIRED' ? 403
+            : detail.code === 'GITHUB_RATE_LIMITED' ? 429
+            : 502;
+        return res.status(status).json({
+            ok:false, error:'github_screenshot_failed', code:detail.code, message:detail.message, repository:config.repository,
+            githubStatus:Number(error?.githubStatus || 0) || 0,
+            hint: detail.code === 'GITHUB_CONTENTS_PERMISSION_REQUIRED'
+                ? 'ตั้ง Fine-grained PAT ของ repository นี้ให้ Contents: Read and write แล้วอัปเดต GITHUB_BUG_REPORT_TOKEN ที่เซิร์ฟเวอร์'
+                : detail.code === 'GITHUB_RATE_LIMITED' ? 'รอจน GitHub เปิด rate limit แล้วลองใหม่' : '',
+        });
+    }
+});
+
+app.post('/api/admin/diagnostics/github/screenshots/clear', express.json({ limit:'8kb' }), async (req, res) => {
+    const confirmation = String(req.body?.confirmation || '');
+    if (confirmation !== 'DELETE_ALL_GITHUB_SCREENSHOT_FILES') return res.status(400).json({ ok:false, error:'github_screenshot_clear_confirmation_required', code:'GITHUB_SCREENSHOT_CLEAR_CONFIRMATION_REQUIRED' });
+    const config = getGithubBugReportConfig();
+    if (!config.configured) return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:config.configurationError, repository:config.repository });
+    if (githubScreenshotClearInFlight) return res.status(409).json({ ok:false, error:'github_screenshot_clear_in_progress', code:'GITHUB_SCREENSHOT_CLEAR_IN_PROGRESS', repository:config.repository });
+    githubScreenshotClearInFlight=true;
+    try {
+        const result=await clearAllGithubScreenshotFiles({config});
+        addDiagnosticBreadcrumb({source:'server',type:'github',label:'admin.github.screenshots.cleared',page:'admin',detail:{repository:config.repository,found:result.found,deleted:result.deleted,failed:result.failed.length}});
+        // A full successful cleanup is an intentional maintenance action, not a bug.
+        // Only partial cleanup is diagnosable because it means some requested files remain.
+        if (result.failed.length) {
+            recordDiagnostic({source:'server',kind:'github_screenshot_clear_partial_failure',page:'admin',action:'github.screenshots.clear',operation:'GITHUB_SCREENSHOT_PARTIAL_CLEAR',message:'GitHub Screenshot files ลบบางรายการไม่สำเร็จ',data:{repository:config.repository,found:result.found,deleted:result.deleted,failed:result.failed.length}});
+        }
+        return res.status(result.failed.length?502:200).json(result);
+    } catch(error) {
+        const code=String(error?.publicCode||error?.code||'GITHUB_SCREENSHOT_CLEAR_FAILED');
+        recordDiagnostic({source:'server',kind:'github_screenshot_clear_failed',page:'admin',action:'github.screenshots.clear',message:'GitHub Screenshot clear failed',data:{repository:config.repository,code}});
+        return res.status(code==='GITHUB_AUTH_FAILED'||code==='GITHUB_FORBIDDEN_OR_RATE_LIMITED'?403:502).json({ok:false,error:'github_screenshot_clear_failed',code,message:String(error?.message||code),repository:config.repository});
+    } finally { githubScreenshotClearInFlight=false; }
+});
+
+app.get('/api/admin/diagnostics/github-status', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, private');
+    return res.json({ ok:true, githubBugReports:buildGithubBugReportStatus() });
+});
+
+app.post('/api/admin/diagnostics/github/issues/clear', express.json({ limit:'8kb' }), async (req, res) => {
+    const confirmation = String(req.body?.confirmation || '');
+    if (confirmation !== 'DELETE_ALL_GITHUB_ISSUES') {
+        return res.status(400).json({ ok:false, error:'github_issue_clear_confirmation_required', code:'GITHUB_ISSUE_CLEAR_CONFIRMATION_REQUIRED' });
+    }
+
+    const config = getGithubBugReportConfig();
+    if (!config.configured) {
+        const detail = diagnosticGithubPublicError({ code:config.configurationError });
+        recordDiagnostic({
+            source:'server', kind:'github_issue_clear_not_configured', page:'admin',
+            action:'github.issues.clear', message:detail.message,
+            data:{ repository:config.repository, code:detail.code },
+        });
+        return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:detail.code, message:detail.message, repository:config.repository });
+    }
+
+    if (githubIssueClearInFlight) {
+        return res.status(409).json({
+            ok:false, error:'github_issue_clear_in_progress', code:'GITHUB_ISSUE_CLEAR_IN_PROGRESS',
+            message:'กำลังมีการล้าง GitHub Issues อีกคำขอหนึ่งอยู่ กรุณารอให้คำขอนั้นเสร็จสิ้นก่อน',
+            repository:config.repository,
+        });
+    }
+
+    githubIssueClearInFlight = true;
+    try {
+        const result = await clearAllGithubIssues({ config });
+        // A deleted issue must not remain in the short-lived dedup cache; otherwise
+        // submitting the same diagnostic again could return a URL to a deleted issue.
+        if (result.deleted > 0) { diagnosticGithubReports.clear(); diagnosticGithubIncidentReports.clear(); }
+
+        addDiagnosticBreadcrumb({
+            source:'server', type:'github', label:'admin.github.issues.cleared', page:'admin',
+            detail:{ repository:config.repository, found:result.found, deleted:result.deleted, failed:result.failed.length },
+        });
+        // Full success is an operational breadcrumb, not a diagnostic error.
+        // Recording a successful clear as a diagnostic event makes the GitHub bug-report
+        // button turn normal maintenance activity into a false-positive [BUG] Issue.
+        if (result.failed.length) {
+            recordDiagnostic({
+                source:'server', kind:'github_issue_clear_failed', page:'admin', action:'github.issues.clear',
+                operation:'GITHUB_ISSUE_PARTIAL_CLEAR',
+                message:'GitHub Issues ลบบางรายการไม่สำเร็จ',
+                data:{ repository:config.repository, found:result.found, deleted:result.deleted, failed:result.failed.length },
+            });
+        }
+
+        const status = result.failed.length ? 502 : 200;
+        return res.status(status).json({
+            ok:result.ok, repository:result.repository, found:result.found,
+            deleted:result.deleted, remaining:Math.max(0, result.found - result.deleted),
+            failed:result.failed, deletedIssueNumbers:result.deletedIssueNumbers,
+        });
+    } catch (error) {
+        const detail = githubIssueClearPublicError(error);
+        recordDiagnostic({
+            source:'server', kind:'github_issue_clear_failed', page:'admin', action:'github.issues.clear',
+            operation:detail.code, message:detail.message, data:{ repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0 },
+        });
+        const status = detail.code === 'GITHUB_TOKEN_MISSING' ? 503 : 502;
+        return res.status(status).json({ ok:false, error:'github_issue_clear_failed', code:detail.code, message:detail.message, repository:config.repository });
+    } finally {
+        githubIssueClearInFlight = false;
+    }
+});
+
+async function submitDiagnosticEventToGithub(primary, config) {
+    if (!primary?.id) {
+        const error = new Error('DIAGNOSTIC_EVENT_REQUIRED');
+        error.publicCode = 'DIAGNOSTIC_EVENT_REQUIRED';
+        throw error;
+    }
+    cleanupDiagnosticGithubReports();
+    const eventId = String(primary.id);
+    const previous = diagnosticGithubReports.get(eventId);
+    if (previous && previous.issueUrl) {
+        return { ok:true, reused:true, reportId:eventId, number:previous.number, issueUrl:previous.issueUrl, title:previous.title, repository:previous.repository };
+    }
+
+    const related = relatedDiagnosticEventsFor(primary);
+    const incidentKey = diagnosticGithubIncidentIdentity(primary);
+    const incidentHash = diagnosticIncidentKeyHash(incidentKey);
+    const isBugReplayFailure = String(primary.kind || primary.type || "").toLowerCase() === "bug_replay_failure";
+    const scopedRelated = (() => {
+        const map = new Map();
+        const source = isBugReplayFailure
+            ? [primary, ...related.filter((event) => diagnosticGithubIncidentIdentity(event) === incidentKey)]
+            : [primary, ...related];
+        for (const event of source) if (event?.id) map.set(event.id, event);
+        return [...map.values()].sort((a, b) => diagnosticTimeMs(b) - diagnosticTimeMs(a));
+    })();
+    const incidentPrevious = incidentKey ? diagnosticGithubIncidentReports.get(incidentKey) : null;
+    if (incidentPrevious && incidentPrevious.issueUrl) {
+        const cached = { ok:true, reused:true, reportId:eventId, number:incidentPrevious.number, issueUrl:incidentPrevious.issueUrl, title:incidentPrevious.title, repository:incidentPrevious.repository };
+        diagnosticGithubReports.set(eventId, { ...incidentPrevious, createdAtMs:Date.now() });
+        return cached;
+    }
+
+    const runSubmission = async () => {
+        cleanupDiagnosticGithubReports();
+        const cached = incidentKey ? diagnosticGithubIncidentReports.get(incidentKey) : null;
+        if (cached?.issueUrl) {
+            diagnosticGithubReports.set(eventId, { ...cached, createdAtMs:Date.now() });
+            return { ok:true, reused:true, reportId:eventId, number:cached.number, issueUrl:cached.issueUrl, title:cached.title, repository:cached.repository };
+        }
+
+        const existingIssue = await findExistingGithubIncidentIssue(incidentKey, config, { event:primary });
+        if (existingIssue?.url && Number(existingIssue.number) > 0) {
+            const existing = { createdAtMs:Date.now(), number:Number(existingIssue.number), issueUrl:String(existingIssue.url), title:String(existingIssue.title || ''), repository:config.repository };
+            if (incidentKey) diagnosticGithubIncidentReports.set(incidentKey, existing);
+            diagnosticGithubReports.set(eventId, existing);
+            addDiagnosticBreadcrumb({ source:'server', type:'diagnostic', label:'diagnostic.github.issue_reused', traceId:String(primary.traceId || ''), sessionId:String(primary.sessionId || ''), page:'admin', detail:{ reportId:eventId, incidentKeyHash:incidentHash, repository:config.repository, issueNumber:existing.number } });
+            return { ok:true, reused:true, reportId:eventId, number:existing.number, issueUrl:existing.issueUrl, title:existing.title, repository:existing.repository };
+        }
+
+        const serverBreadcrumbs = primary.serverBreadcrumbs?.length
+            ? primary.serverBreadcrumbs
+            : relatedServerBreadcrumbs({ traceId:primary.traceId, sessionId:primary.sessionId, limit:160 });
+        const allForAnalysis = scopedRelated.concat(serverBreadcrumbs.map((b) => ({ source:'server', kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
+        const analysis = buildDiagnosticAnalysis(primary, allForAnalysis);
+        const rootEvent = isBugReplayFailure ? primary : selectDiagnosticIncidentPrimary(primary, scopedRelated);
+        const safePrimary = publicDiagnosticEvent(rootEvent);
+        const safeRelated = scopedRelated.filter((event) => String(event?.id || '') !== String(rootEvent?.id || '')).map(publicDiagnosticEvent);
+        let reportGameProfile = safePrimary?.gameProfileSnapshot || primary?.gameProfileSnapshot || null;
+        if (!reportGameProfile && typeof getCurrentGameDiagnosticProfile === 'function' && typeof diagnosticGameProfileSnapshot === 'function') {
+            reportGameProfile = diagnosticGameProfileSnapshot(getCurrentGameDiagnosticProfile({ roomId:String(primary.roomId || rootEvent.roomId || '') }));
+        }
+        const issue = buildGithubBugReportIssue({
+            event:{ ...safePrimary, incidentKeyHash:incidentHash },
+            analysis:publicDiagnosticValue(analysis),
+            relatedEvents:safeRelated,
+            serverBreadcrumbs:publicDiagnosticValue(serverBreadcrumbs),
+            incident:{
+                incidentKeyHash:incidentHash,
+                githubBugKeyHash:incidentHash,
+                rootEventId:String(rootEvent?.id || eventId),
+                requestedEventId:eventId,
+                relatedFailureCount:scopedRelated.filter(diagnosticIsFailureEvent).length,
+                replayRunId:String(primary?.operationId || rootEvent?.operationId || '')
+            },
+            gameProfile: reportGameProfile,
+            serverInfo:{
+                appVersion:getCachedAppVersion(),
+                node:process.version,
+                uptimeSec:Math.round(process.uptime()),
+                serverClosed:!!serverClosed,
+            },
+        });
+        const result = await createGithubBugReportIssue({ issue, config });
+        const stored = { createdAtMs:Date.now(), number:result.number, issueUrl:result.issueUrl, title:result.title, repository:result.repository };
+        diagnosticGithubReports.set(eventId, stored);
+        if (incidentKey) diagnosticGithubIncidentReports.set(incidentKey, stored);
+        cleanupDiagnosticGithubReports();
+        addDiagnosticBreadcrumb({ source:'server', type:'diagnostic', label:'diagnostic.github.issue_created', traceId:String(primary.traceId || ''), sessionId:String(primary.sessionId || ''), page:'admin', detail:{ reportId:eventId, rootEventId:String(rootEvent?.id || eventId), incidentKeyHash:incidentHash, repository:config.repository, issueNumber:result.number } });
+        return { ok:true, reused:false, reportId:eventId, rootReportId:String(rootEvent?.id || eventId), number:result.number, issueUrl:result.issueUrl, title:result.title, repository:result.repository };
+    };
+
+    const eventInFlight = diagnosticGithubEventInFlight.get(eventId);
+    if (eventInFlight) {
+        const result = await eventInFlight;
+        return { ...result, reused:true, reportId:eventId };
+    }
+
+    const execute = async () => {
+        if (!incidentKey) return runSubmission();
+        const inFlight = diagnosticGithubIncidentInFlight.get(incidentKey);
+        if (inFlight) {
+            const result = await inFlight;
+            return { ...result, reused:true, reportId:eventId };
+        }
+        const promise = runSubmission();
+        diagnosticGithubIncidentInFlight.set(incidentKey, promise);
+        try {
+            return await promise;
+        } finally {
+            if (diagnosticGithubIncidentInFlight.get(incidentKey) === promise) diagnosticGithubIncidentInFlight.delete(incidentKey);
+        }
+    };
+
+    const eventPromise = execute();
+    diagnosticGithubEventInFlight.set(eventId, eventPromise);
+    try {
+        return await eventPromise;
+    } finally {
+        if (diagnosticGithubEventInFlight.get(eventId) === eventPromise) diagnosticGithubEventInFlight.delete(eventId);
+    }
+}
+
+app.post('/api/admin/diagnostics/github', express.json({ limit:'16kb' }), async (req, res) => {
+    const eventId = String(req.body?.eventId || '').slice(0, 120);
+    if (!eventId) return res.status(400).json({ ok:false, error:'event_id_required', code:'DIAGNOSTIC_EVENT_REQUIRED' });
+    const primary = diagnosticEvents.find((event) => String(event?.id || '') === eventId);
+    if (!primary) return res.status(404).json({ ok:false, error:'diagnostic_event_not_found', code:'DIAGNOSTIC_EVENT_NOT_FOUND' });
+
+    const config = getGithubBugReportConfig();
+    if (!config.configured) {
+        const detail = diagnosticGithubPublicError({ code:config.configurationError });
+        recordDiagnostic({ source:'server', kind:'diagnostic_github_not_configured', page:'admin', action:'diagnostic.github.submit', message:detail.message, data:{ repository:config.repository, code:detail.code } });
+        return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:detail.code, message:detail.message, repository:config.repository });
+    }
+
+    try {
+        const result = await submitDiagnosticEventToGithub(primary, config);
+        return res.json(result);
+    } catch (error) {
+        const detail = diagnosticGithubPublicError(error);
+        recordDiagnostic({ source:'server', kind:'diagnostic_github_submit_failed', page:'admin', action:'diagnostic.github.submit', operation:detail.code, message:detail.message, data:{ repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0 } });
+        return res.status(detail.code === 'GITHUB_TOKEN_MISSING' ? 503 : 502).json({ ok:false, error:'github_bug_report_failed', code:detail.code, message:detail.message, repository:config.repository });
+    }
+});
+
+app.post('/api/admin/diagnostics/github/all', express.json({ limit:'48kb' }), async (req, res) => {
+    const requestedIds = Array.isArray(req.body?.eventIds) ? req.body.eventIds : [];
+    const eventIds = [...new Set(requestedIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 100);
+    if (!eventIds.length) return res.status(400).json({ ok:false, error:'diagnostic_events_required', code:'DIAGNOSTIC_EVENTS_REQUIRED' });
+    if (diagnosticGithubBatchInFlight) return res.status(409).json({ ok:false, error:'github_batch_in_progress', code:'GITHUB_BATCH_IN_PROGRESS' });
+
+    const config = getGithubBugReportConfig();
+    if (!config.configured) {
+        const detail = diagnosticGithubPublicError({ code:config.configurationError });
+        recordDiagnostic({ source:'server', kind:'diagnostic_github_not_configured', page:'admin', action:'diagnostic.github.submit_all', message:detail.message, data:{ repository:config.repository, code:detail.code, requested:eventIds.length } });
+        return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:detail.code, message:detail.message, repository:config.repository });
+    }
+
+    diagnosticGithubBatchInFlight = true;
+    try {
+        const eventsById = new Map(diagnosticEvents.map((event) => [String(event?.id || ''), event]));
+        const results = new Array(eventIds.length);
+        let cursor = 0;
+        const worker = async () => {
+            while (true) {
+                const index = cursor++;
+                if (index >= eventIds.length) return;
+                const eventId = eventIds[index];
+                const primary = eventsById.get(eventId);
+                if (!primary) {
+                    results[index] = { ok:false, reused:false, reportId:eventId, code:'DIAGNOSTIC_EVENT_NOT_FOUND', message:'ไม่พบรายงานนี้ใน instance ปัจจุบัน' };
+                    continue;
+                }
+                try {
+                    results[index] = await submitDiagnosticEventToGithub(primary, config);
+                } catch (error) {
+                    const detail = diagnosticGithubPublicError(error);
+                    results[index] = { ok:false, reused:false, reportId:eventId, code:detail.code, message:detail.message, githubStatus:Number(error?.githubStatus || 0) || 0 };
+                }
+            }
+        };
+        await Promise.all(Array.from({ length:Math.min(4, eventIds.length) }, () => worker()));
+        const created = results.filter((item) => item?.ok && !item.reused).length;
+        const reused = results.filter((item) => item?.ok && item.reused).length;
+        const failed = results.filter((item) => !item?.ok).length;
+        const uniqueIssues = new Set(results.filter((item) => item?.ok && Number(item.number) > 0).map((item) => Number(item.number))).size;
+        if (failed) {
+            recordDiagnostic({ source:'server', kind:'diagnostic_github_batch_partial', page:'admin', action:'diagnostic.github.submit_all', message:'ส่งรายงานบั๊กขึ้น GitHub ได้บางส่วน', data:{ requested:eventIds.length, created, reused, failed, uniqueIssues, repository:config.repository } });
+        }
+        addDiagnosticBreadcrumb({ source:'server', type:'diagnostic', label:'diagnostic.github.batch_completed', page:'admin', detail:{ requested:eventIds.length, created, reused, failed, uniqueIssues, repository:config.repository } });
+        return res.json({ ok:true, requested:eventIds.length, created, reused, failed, uniqueIssues, repository:config.repository, results });
+    } catch (error) {
+        const detail = diagnosticGithubPublicError(error);
+        recordDiagnostic({ source:'server', kind:'diagnostic_github_batch_failed', page:'admin', action:'diagnostic.github.submit_all', operation:detail.code, message:detail.message, data:{ repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0, requested:eventIds.length } });
+        return res.status(502).json({ ok:false, error:'github_bug_report_batch_failed', code:detail.code, message:detail.message, repository:config.repository });
+    } finally {
+        diagnosticGithubBatchInFlight = false;
+    }
+});
+
+// Machine-readable diagnostic exports. These are generated from the current in-memory
+// diagnostics snapshot and intentionally use the same admin session as the Diagnostics UI.
+app.get("/api/admin/diagnostics/export", (req, res) => {
+    try {
+        const scope = String(req.query.scope || "all").toLowerCase();
+        const eventId = String(req.query.eventId || "").slice(0, 120);
+        const generatedAt = new Date().toISOString();
+        const base = {
+            schemaVersion: "WEREWOLF_DIAGNOSTIC_JSON_EXPORT_V1",
+            generatedAt,
+            server: { uptimeSec: Math.round(process.uptime()), node: process.version, serverClosed: !!serverClosed, table: STATS_TABLE_NAME, ebEnvironmentConfigured: !!EB_ENVIRONMENT_NAME },
+        };
+        if (scope === "event") {
+            const event = diagnosticEvents.find((x) => String(x?.id || "") === eventId);
+            if (!event) return res.status(404).json({ ok:false, error:"diagnostic_event_not_found", code:"DIAGNOSTIC_EVENT_NOT_FOUND" });
+            const report = buildDiagnosticJsonExportEvent(event);
+            const payload = { ok:true, ...base, reportKind:"BUG_REPORT", ...report };
+            const body = JSON.stringify(payload, null, 2);
+            res.setHeader("Cache-Control", "no-store, private");
+            res.setHeader("Content-Type", "application/json; charset=utf-8");
+            res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(diagnosticExportFilename("event", eventId))}`);
+            return res.send(body);
+        }
+        if (scope !== "all") return res.status(400).json({ ok:false, error:"invalid_export_scope", code:"DIAGNOSTIC_EXPORT_SCOPE_INVALID" });
+        const events = diagnosticEvents.map((event) => {
+            const report = buildDiagnosticJsonExportEvent(event);
+            return report ? { ...report.event, analysis: report.analysis, serverBreadcrumbs: report.serverBreadcrumbs } : null;
+        }).filter(Boolean);
+        const serious = diagnosticEvents.filter((e) => e.kind !== "http_error" || e.status >= 500).length;
+        const payload = {
+            ok:true,
+            ...base,
+            reportKind:"ALL_BUG_REPORTS",
+            summary:{ stored:diagnosticEvents.length, exported:events.length, serious, accessDenied:diagnosticEvents.filter((e) => e.permission?.accessDenied).length },
+            permissions: permissionChecklist(),
+            events,
+        };
+        const body = JSON.stringify(payload, null, 2);
+        res.setHeader("Cache-Control", "no-store, private");
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(diagnosticExportFilename("all"))}`);
+        return res.send(body);
+    } catch (e) {
+        return res.status(500).json({ ok:false, error:"diagnostic_export_failed", code:"DIAGNOSTIC_EXPORT_FAILED", message:publicDiagnosticText(e?.message || String(e)).slice(0, 500) });
+    }
+});
 
 app.post("/api/admin/diagnostics/share", express.json({ limit: "12kb" }), async (req, res) => {
     try {
@@ -5141,6 +7423,7 @@ app.post("/api/admin/diagnostics/share", express.json({ limit: "12kb" }), async 
                 statement: incidentKey ? (reusedIncident ? "เหตุการณ์นี้อยู่ใน incident เดียวกับลิงก์ที่สร้างก่อนหน้า จึงใช้ลิงก์ incident เดิมเพื่อรวมต้นเหตุและผลกระทบไว้ในรายงานเดียว" : "incident นี้ได้รับลิงก์กลาง เพื่อให้ log หลายตัวจากความพยายามเดียวกันไม่แตกเป็นหลายรายงาน") : "ไม่มี correlation ID ที่ปลอดภัยพอสำหรับ incident grouping"
             },
             server: { node:process.version, appVersion:getCachedAppVersion(), serverClosed:!!serverClosed },
+            gameProfile: publicPrimary?.gameProfileSnapshot || diagnosticGameProfileSnapshot(getCurrentGameDiagnosticProfile({ roomId:String(primary.roomId||'') })),
             generation: {
                 requestedFromEventId: String(primary.id || ""),
                 requestedFromKind: String(primary.kind || primary.type || ""),
@@ -5171,10 +7454,11 @@ app.post("/api/admin/diagnostics/share", express.json({ limit: "12kb" }), async 
         }
         for (let attempt = 0; attempt < 3 && !stored; attempt++) {
             if (!token) token = diagnosticShareToken();
-            const url = `${baseUrl}/diagnostics/share/${encodeURIComponent(token)}`;
-            const jsonUrl = `${baseUrl}/diagnostics/share/${encodeURIComponent(token)}.json`;
+            const shareUrls = diagnosticShareUrls(baseUrl, token);
+            const url = shareUrls.html;
+            const jsonUrl = shareUrls.json;
             // Put recursive links directly into the JSON so an AI does not need to infer URLs from prose.
-            bundle.shareUrls = { html:url, json:jsonUrl, focusedHtml:diagnosticShareEventUrl(bundle, token, primary.id, false), focusedJson:diagnosticShareEventUrl(bundle, token, primary.id, true) };
+            bundle.shareUrls = { ...shareUrls, focusedHtml:diagnosticShareEventUrl(bundle, token, primary.id, false), focusedJson:diagnosticShareEventUrl(bundle, token, primary.id, true) };
             if (bundle.causalGraph?.edges) {
                 bundle.causalGraph.edges = bundle.causalGraph.edges.map((edge) => ({
                     ...edge,
@@ -5227,9 +7511,10 @@ app.post("/api/admin/diagnostics/share", express.json({ limit: "12kb" }), async 
         }
         if (incidentKey) await refreshDiagnosticIncidentShareIndex(incidentKey, token, expiresAt);
         rememberDiagnosticShare(token, bundle);
-        const url = `${baseUrl}/diagnostics/share/${encodeURIComponent(token)}`;
-        const jsonUrl = `${baseUrl}/diagnostics/share/${encodeURIComponent(token)}.json`;
-        bundle.shareUrls = { ...(bundle.shareUrls || {}), html:url, json:jsonUrl, focusedHtml:diagnosticShareEventUrl(bundle, token, primary.id, false), focusedJson:diagnosticShareEventUrl(bundle, token, primary.id, true), incident:url, incidentJson:jsonUrl };
+        const shareUrls = diagnosticShareUrls(baseUrl, token);
+        const url = shareUrls.html;
+        const jsonUrl = shareUrls.json;
+        bundle.shareUrls = { ...(bundle.shareUrls || {}), ...shareUrls, focusedHtml:diagnosticShareEventUrl(bundle, token, primary.id, false), focusedJson:diagnosticShareEventUrl(bundle, token, primary.id, true), incident:url, incidentJson:jsonUrl };
         bundle.incident = {
             incidentKeyHash: incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "",
             reusedExistingShare: reusedIncident,
@@ -5238,7 +7523,7 @@ app.post("/api/admin/diagnostics/share", express.json({ limit: "12kb" }), async 
         };
         addDiagnosticBreadcrumb({ source:"server", type:"diagnostic", label:"diagnostic.share.created", traceId:primary.traceId || "", sessionId:primary.sessionId || "", page:"admin", detail:{ reportId:primary.id, relatedEvents:related.length, graphNodes:causalGraph.nodes?.length || 0, graphEdges:causalGraph.edges?.length || 0, expiresAt, persisted:stored, incidentKeyHash:incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "", reusedIncident } });
         res.setHeader("Cache-Control", "no-store");
-        res.json({ ok:true, reportId:primary.id, token, url, jsonUrl, expiresAt, persisted:stored, reusedIncident, incidentKey:incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "", relatedEvents:related.length, graphNodes:causalGraph.nodes?.length || 0, graphEdges:causalGraph.edges?.length || 0, sizeBytes:Buffer.byteLength(JSON.stringify(bundle), "utf8") });
+        res.json({ ok:true, reportId:primary.id, token, url, jsonUrl, aiUrl:jsonUrl, expiresAt, persisted:stored, reusedIncident, incidentKey:incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "", relatedEvents:related.length, graphNodes:causalGraph.nodes?.length || 0, graphEdges:causalGraph.edges?.length || 0, sizeBytes:Buffer.byteLength(JSON.stringify(bundle), "utf8") });
     } catch (e) {
         const storageError = {
             code: String(e?.code || e?.name || "DIAGNOSTIC_SHARE_CREATE_ERROR").slice(0, 100),
@@ -5280,7 +7565,7 @@ app.get("/diagnostics/share/:token.json", async (req, res) => {
         res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
         res.setHeader("Referrer-Policy", "no-referrer");
         if (!bundle) return res.status(404).json({ ok:false, error:"diagnostic_share_not_found", code:"DIAGNOSTIC_SHARE_NOT_FOUND" });
-        res.json({ ok:true, ...bundle, reportText:diagnosticShareText(bundle) });
+        res.json({ ok:true, ...bundle, reportText:bundle.reportKind === "BUG_REPLAY_RUN" ? bugReplayShareText(bundle, String(req.params.token || "")) : (bundle.reportKind === "BUG_REPLAY_FIRST_FAILURE" ? bugReplayFirstFailureShareText(bundle, String(req.params.token || "")) : diagnosticShareText(bundle)) });
     } catch (e) {
         res.status(503).json({ ok:false, error:"diagnostic_share_unavailable", code:"DIAGNOSTIC_SHARE_UNAVAILABLE" });
     }
@@ -5325,7 +7610,7 @@ app.get("/diagnostics/share/:token", async (req, res) => {
         res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
         res.setHeader("Referrer-Policy", "no-referrer");
         if (!bundle) return res.status(404).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic not found</title><p>Diagnostic report ไม่พบหรือหมดอายุแล้ว</p>");
-        res.type("html").send(diagnosticShareHtml(bundle, String(req.params.token || "")));
+        res.type("html").send(bundle.reportKind === "BUG_REPLAY_RUN" ? bugReplayShareHtml(bundle, String(req.params.token || "")) : (bundle.reportKind === "BUG_REPLAY_FIRST_FAILURE" ? bugReplayFirstFailureShareHtml(bundle, String(req.params.token || "")) : diagnosticShareHtml(bundle, String(req.params.token || ""))));
     } catch (e) {
         res.status(503).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic unavailable</title><p>ยังอ่านรายงานวินิจฉัยไม่ได้ชั่วคราว</p>");
     }
@@ -5337,10 +7622,71 @@ app.post("/api/admin/diagnostics/clear", (req, res) => {
     res.json({ ok: true });
 });
 
+// CloudFront-safe Admin release probe:
+// บาง distribution อาจไม่ใช้ query string เป็น cache key แม้ origin จะส่ง no-store
+// ดังนั้นหน้า Admin จะเรียก GET path ที่เปลี่ยนตามช่วงเวลาแทน /api/config?... เพื่อให้
+// cache key ของ CloudFront เปลี่ยนจริงทุกช่วงตรวจรุ่น และยังอ่าน fingerprint จาก origin ได้
+const ADMIN_RELEASE_PROBE_WINDOW_MS = 30 * 1000;
+function adminReleaseProbeBucket() {
+    return Math.floor(Date.now() / ADMIN_RELEASE_PROBE_WINDOW_MS).toString(36);
+}
+function adminReleaseConfigPayload() {
+    const parts = refreshVersionParts();
+    return {
+        ok: true,
+        adminHash: computeAdminHash(),
+        clientHash: parts.client,
+        assetsHash: parts.assets,
+        serverHash: parts.server,
+        version: computeServerVersion(),
+        serverNow: Date.now(),
+    };
+}
+app.get("/api/admin/release-check/:bucket", (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Surrogate-Control", "no-store");
+    res.setHeader("Vary", "Accept-Encoding, Cookie");
+    res.setHeader("X-WW-Release-Probe", adminReleaseProbeBucket());
+    res.json(adminReleaseConfigPayload());
+});
+
+// /api/server-state — lightweight first-paint gate for the public index page.
+// Keep this endpoint deliberately independent from getAppVersion()/AWS control-plane work so
+// an open server can release the Lobby quickly, while a closed server is confirmed before first paint.
+app.get("/api/server-state", async (req, res) => {
+    const shielded = req.query.real !== "1" && isProtectedRequest(req);
+    const forceAuthorityRead = req.query.boot === "1" || req.query.verify === "1";
+    const persisted = await syncServerStateFromAuthority({ force: forceAuthorityRead });
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Surrogate-Control", "no-store");
+    res.setHeader("Vary", "Cookie, X-WW-Room, X-WW-Token");
+    res.setHeader("X-WW-Server-State-Source", persisted ? "dynamodb" : "local-fallback");
+    res.json({
+        ok: true,
+        serverOpen: !serverClosed || shielded,
+        testerShielded: !!shielded,
+        serverNow: Date.now(),
+        closingInMs: !shielded && closingPlan ? Math.max(1, closingPlan.closeAt - Date.now()) : 0,
+        noticeMessage: shielded ? "" : (closingPlan ? closingPlan.message : closedMessage),
+        reopenAt: shielded ? 0 : (closingPlan ? closingPlan.reopenAt : closedReopenAt),
+        imageBase: IMAGE_BASE_URL,
+        imageVersion: imageEpoch || "",
+        serverIconUrl: imgUrl(SERVER_CLOSED_ICON_PATH),
+    });
+});
+
 app.get("/api/config", async (req, res) => {
     const startedAt = Date.now();
-    const clientRequestId = String(req.headers["x-ww-client-request-id"] || "").slice(0, 120);
-    const requestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex");
+    const clientRequestId = String(req.headers["x-ww-client-request-id"] || req.__wwDiagnostic?.clientRequestId || "").slice(0, 120);
+    // Reuse the request ID allocated by the generic HTTP tracing middleware.
+    // Creating another ID here was the main correlation bug: request.start/request.end
+    // and the ID returned to the browser could refer to the same HTTP request under
+    // different IDs.
+    const requestId = String(req.__wwDiagnostic?.requestId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex"))).slice(0, 120);
+    const configLogicalId = String(req.headers["x-ww-config-logical-id"] || "").slice(0, 120);
+    const configAttempt = Math.max(1, Number(req.headers["x-ww-config-attempt"] || 1) || 1);
     let responseFinished = false;
 
     const traceId = String(req.headers["x-ww-diagnostic-trace-id"] || req.__wwDiagnostic?.traceId || makeDiagnosticId("tr")).slice(0, 120);
@@ -5348,6 +7694,8 @@ app.get("/api/config", async (req, res) => {
     res.setHeader("X-WW-Config-Request-Id", requestId);
     res.setHeader("X-WW-Diagnostic-Trace-Id", traceId);
     res.setHeader("X-WW-Server-Request-Id", requestId);
+    res.setHeader("X-WW-Config-Attempt", String(configAttempt));
+    if (configLogicalId) res.setHeader("X-WW-Config-Logical-Id", configLogicalId);
     if (clientRequestId) res.setHeader("X-WW-Client-Request-Id", clientRequestId);
     res.once("finish", () => {
         responseFinished = true;
@@ -5360,7 +7708,7 @@ app.get("/api/config", async (req, res) => {
                 page: "server",
                 endpoint: "/api/config",
                 message: `/api/config ใช้เวลา ${durationMs}ms`,
-                data: { requestId, clientRequestId, traceId, sessionId, durationMs, statusCode: res.statusCode },
+                data: { requestId, clientRequestId, traceId, sessionId, configLogicalId, configAttempt, durationMs, statusCode: res.statusCode },
                 traceId, sessionId, requestId, clientRequestId, durationMs,
             });
         }
@@ -5378,25 +7726,32 @@ app.get("/api/config", async (req, res) => {
             page: "server",
             endpoint: "/api/config",
             message: `เบราว์เซอร์ตัดการเชื่อมต่อก่อน /api/config ตอบกลับ (${durationMs}ms)`,
-            data: { requestId, clientRequestId, traceId, sessionId, durationMs },
+            data: { requestId, clientRequestId, traceId, sessionId, configLogicalId, configAttempt, durationMs },
             traceId, sessionId, requestId, clientRequestId, durationMs,
         });
     });
 
     try {
-        // ใช้ Running Version เดียวกับ serverInfo แต่มี short timeout เพื่อไม่ให้ /api/config
-        // ค้างเพราะ AWS control-plane; ถ้า AWS ช้าให้ตอบด้วย last-known-good ทันที
-        const versionPromise = getAppVersion();
+        // ใช้ Running Version + Environment Status จาก Elastic Beanstalk source เดียวกัน
+        // แต่ยังมี short timeout เพื่อไม่ให้ /api/config ค้างเพราะ AWS control-plane
+        // `deploymentProbe=1` ใช้เฉพาะตอน client ตรวจพบ version mismatch เพื่อยืนยันสถานะ Updating/Ready แบบสดๆ
+        const deploymentProbe = req.query.deploymentProbe === "1";
+        const versionPromise = getAppEnvironmentState({ force: deploymentProbe }).then((state) => state.versionLabel);
         const versionTimeout = new Promise((resolve) => {
             setTimeout(() => resolve(getCachedAppVersion()), 1_200);
         });
         const appVersion = await Promise.race([versionPromise, versionTimeout]);
+        // getAppEnvironmentState updates the same process-local snapshot used by diagnostics.
+        // If the AWS control-plane call times out, this intentionally stays last-known-good.
+        const environmentState = getCachedAppEnvironmentState();
         // resetEpoch: "รุ่นของการล้างข้อมูล" — เปลี่ยนทุกครั้งที่แอดมินกดล้างข้อมูลเกม (ดู /api/admin/reset)
         ensureResetEpochLoaded();
         // serverOpen / reloadEpoch / reloadKind / imageEpoch: ดูหัวข้อ "เปิด/ปิดเซิร์ฟเวอร์ + บังคับรีโหลด" ด้านบนสุดของไฟล์
         const shielded = req.query.real !== "1" && isProtectedRequest(req);
-        res.setHeader("Cache-Control", "no-store");
-        res.setHeader("Vary", "Cookie, X-WW-Room, X-WW-Token, X-WW-Client-Request-Id");
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Surrogate-Control", "no-store");
+        res.setHeader("Vary", "Cookie, X-WW-Room, X-WW-Token, X-WW-Client-Request-Id, X-WW-Config-Logical-Id, X-WW-Config-Attempt");
         const versionParts = refreshVersionParts();
         res.json({
             version: computeServerVersion(),
@@ -5406,7 +7761,13 @@ app.get("/api/config", async (req, res) => {
             adminHash: computeAdminHash(),
             buildVersion: computeServerVersion(),
             imageBase: IMAGE_BASE_URL,
+            serverIconUrl: imgUrl(SERVER_CLOSED_ICON_PATH),
             appVersion,
+            environmentStatus: environmentState.status,
+            environmentVersionLabel: environmentState.versionLabel,
+            deploymentState: environmentState.deploymentState,
+            deploymentInProgress: environmentState.deploymentState === "updating",
+            deploymentAbortable: !!environmentState.abortableOperationInProgress,
             resetEpoch: resetEpoch || "",
             resetInProgress: !!resetInProgress,
             serverOpen: !serverClosed || shielded,
@@ -5416,6 +7777,16 @@ app.get("/api/config", async (req, res) => {
             testerReloadEpoch: shielded ? testerReloadEpoch : "",
             imageEpoch: currentImageVersion(),
             serverNow: Date.now(),
+            diagnostic: {
+                requestId,
+                clientRequestId,
+                traceId,
+                sessionId,
+                configLogicalId,
+                configAttempt,
+                durationMs: Date.now() - startedAt,
+                cacheControl: "no-store"
+            },
             closingInMs: !shielded && closingPlan ? Math.max(1, closingPlan.closeAt - Date.now()) : 0,
             noticeMessage: shielded ? "" : (closingPlan ? closingPlan.message : closedMessage),
             reopenAt: shielded ? 0 : (closingPlan ? closingPlan.reopenAt : closedReopenAt),
@@ -5428,7 +7799,7 @@ app.get("/api/config", async (req, res) => {
             endpoint: "/api/config",
             message: e?.message || String(e),
             stack: e?.stack || "",
-            data: { requestId, clientRequestId, traceId, sessionId, durationMs: Date.now() - startedAt },
+            data: { requestId, clientRequestId, traceId, sessionId, configLogicalId, configAttempt, durationMs: Date.now() - startedAt },
             traceId, sessionId, requestId, clientRequestId, durationMs: Date.now() - startedAt,
         });
         if (!res.headersSent) {
@@ -5516,6 +7887,19 @@ app.get("/api/roles-data", (req, res) => {
 // ไม่มีการ reload/redirect เกิดขึ้นจากตรงนี้ — แค่เปลี่ยนสิ่งที่หน้าใหม่ที่ "ผู้ใช้เปิดเอง" จะดึง
 // Cache-Control: no-cache (ถามเซิร์ฟเวอร์ทุกครั้งด้วย ETag) — express สร้าง ETag จากเนื้อหาที่ประทับแล้ว จึงได้ 304 เมื่อไม่เปลี่ยน
 const STAMPED_PAGES = { "/": "index.html", "/index.html": "index.html", "/host.html": "host.html", "/player.html": "player.html" };
+
+// Internal Admin Browser pages use a release-scoped pathname so CDN/cache policy for the
+// top-level game pages cannot leave an iframe stuck on a stale/blocked response. The
+// document immediately restores the canonical /index.html|/host.html|/player.html URL
+// before any game script executes, so existing client code still sees its normal pathname.
+const ADMIN_EMBED_PAGE_RE = /^\/__(?:ww_admin_embed)__\/([a-zA-Z0-9_-]{1,80})\/(index|host|player)\.html$/;
+function getAdminEmbeddedHtml(fileName, canonicalPath) {
+    const html = getStampedHtml(fileName);
+    if (html === null) return null;
+    const bootstrap = `<base href="/">` +
+        `<script>(function(){try{history.replaceState(null,document.title,"${canonicalPath}"+location.search+location.hash);}catch(_){}})();</script>`;
+    return html.replace(/<head>/i, `<head>${bootstrap}`);
+}
 const _stampedCache = new Map(); // fileName -> { hash, mtime, html }
 const STAMP_REF_RE = /(\b(?:src|href)=")((?:js|css)\/[^"?#]+\.(?:js|css))(")/g;
 
@@ -5546,6 +7930,22 @@ function getStampedHtml(fileName) {
     _stampedCache.set(fileName, { hash, mtime, html, imageBase: IMAGE_BASE_URL });
     return html;
 }
+app.get("/__ww_admin_embed__/:release/:page.html", (req, res, next) => {
+    const page = String(req.params.page || "");
+    const fileName = page === "index" ? "index.html" : page === "host" ? "host.html" : page === "player" ? "player.html" : "";
+    const canonicalPath = page === "index" ? "/index.html" : page === "host" ? "/host.html" : page === "player" ? "/player.html" : "";
+    if (!fileName || !canonicalPath) return next();
+    const html = getAdminEmbeddedHtml(fileName, canonicalPath);
+    if (html === null) return next();
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Surrogate-Control", "no-store");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+    res.setHeader("Vary", "Accept-Encoding, Cookie");
+    res.type("html").send(html);
+});
+
 app.get(Object.keys(STAMPED_PAGES), (req, res, next) => {
     const html = getStampedHtml(STAMPED_PAGES[req.path]);
     if (html === null) return next(); // อ่านไม่ได้ → ให้ express.static ตอบตามเดิม
@@ -5563,15 +7963,33 @@ function getIconStampedHtml(fileName) {
     let mtime = 0;
     try { mtime = Math.floor(fs.statSync(file).mtimeMs); } catch (e) { return null; }
     const cached = _iconOnlyCache.get(fileName);
-    if (cached && cached.mtime === mtime && cached.imageBase === IMAGE_BASE_URL) return cached.html;
+    const release = fileName === "admin.html" ? computeAdminHash() : "";
+    if (cached && cached.mtime === mtime && cached.imageBase === IMAGE_BASE_URL && cached.release === release) return cached.html;
     let raw;
     try { raw = fs.readFileSync(file, "utf8"); } catch (e) { return null; }
     let html = raw;
-    if (fileName === "admin.html") html = html.replace(/(<meta\s+name="ww-admin-release"\s+content=")__WW_ADMIN_RELEASE__("\s*\/?\s*>)/i, `$1${computeAdminHash()}$2`);
+    if (fileName === "admin.html") html = html.replace(/(<meta\s+name="ww-admin-release"\s+content=")__WW_ADMIN_RELEASE__("\s*\/?\s*>)/i, `$1${release}$2`);
     html = applySiteIconBase(html);
-    _iconOnlyCache.set(fileName, { mtime, html, imageBase: IMAGE_BASE_URL });
+    _iconOnlyCache.set(fileName, { mtime, html, imageBase: IMAGE_BASE_URL, release });
     return html;
 }
+// CloudFront-safe Admin reload endpoint. A unique pathname prevents a cached /admin.html
+// object (or a distribution that ignores query strings) from serving the previous shell again.
+app.get("/admin-refresh/:nonce", (req, res) => {
+    const html = getIconStampedHtml("admin.html");
+    if (html === null) return res.status(503).type("text").send("Admin page unavailable");
+    const nonce = String(req.params.nonce || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80) || "refresh";
+    const freshHtml = html.replace(
+        /<head>/i,
+        `<head><script>(function(){try{history.replaceState(null,document.title,"/admin.html");}catch(_){}})();<\/script>`
+    );
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Surrogate-Control", "no-store");
+    res.setHeader("X-WW-Admin-Reload", nonce);
+    res.type("html").send(freshHtml);
+});
+
 app.get(Object.keys(ICON_ONLY_PAGES), (req, res, next) => {
     const html = getIconStampedHtml(ICON_ONLY_PAGES[req.path]);
     if (html === null) return next();
@@ -5631,11 +8049,15 @@ function trimHistoryArray(arr, max) {
 
 function compactRoomSnapshot(room, aggressive = false) {
     const cloned = JSON.parse(JSON.stringify(room));
-    // Socket IDs are transient connection handles. Keep player.id inside the snapshot because
-    // votes/targets can still reference it; reconnect remaps it using the player's stable token.
+    // Socket IDs are transient connection handles. Keep the legacy player.id inside the snapshot
+    // only because older game-state maps still reference it; membershipId/accountId are the
+    // durable room identity and are now the primary reconnect keys.
     // hostIds/host are only live socket bookkeeping and must never be restored as active sockets.
     cloned.host = "";
     cloned.hostIds = [];
+    if (Array.isArray(cloned.players)) {
+        cloned.players.forEach((p) => { if (p) { delete p.activeDeviceId; delete p.activeTabId; } });
+    }
 
     const normalMax = aggressive ? 40 : 150;
     const globalMax = aggressive ? 80 : 250;
@@ -5693,6 +8115,153 @@ function roomSignature(room) {
     }
 }
 
+function deploymentHandoffInProgress() {
+    return getCachedAppEnvironmentState().deploymentState === "updating";
+}
+
+function roomLeaseKey(roomId) {
+    return { playerName: roomStorageKey(roomId), statKey: ROOM_LEASE_STAT_KEY };
+}
+
+function roomLeaseOwnedLocally(roomId) {
+    return roomLeaseEpochs.has(String(roomId || "").toUpperCase());
+}
+
+async function acquireRoomLease(roomId, { allowDuringDeployment = true } = {}) {
+    if (!ROOM_PERSISTENCE_ENABLED || !roomId) return { ok: false, code: "ROOM_PERSISTENCE_DISABLED" };
+    const id = String(roomId).trim().toUpperCase();
+    if (!id) return { ok: false, code: "ROOM_ID_REQUIRED" };
+    const doc = await getDynamoDocClient();
+    const key = roomLeaseKey(id);
+    const now = Date.now();
+    const until = now + ROOM_LEASE_TTL_MS;
+    const existing = (await doc.send(new GetCommand({
+        TableName: ROOM_PERSISTENCE_TABLE,
+        Key: key,
+        ConsistentRead: true,
+    })) ).Item || null;
+    const currentOwner = String(existing?.ownerInstanceId || "");
+    const currentUntil = Number(existing?.leaseUntil || 0);
+    const currentEpoch = Number(existing?.leaseEpoch || 0);
+    if (!allowDuringDeployment && deploymentHandoffInProgress()) {
+        return { ok: false, code: "ROOM_FAILOVER_WAIT", retryAfterMs: ROOM_FAILOVER_RETRY_MS, ownerInstanceId: currentOwner };
+    }
+
+    const canTake = !existing || currentOwner === INSTANCE_ID || currentUntil <= now;
+    if (!canTake) {
+        return { ok: false, code: "ROOM_LEASE_UNAVAILABLE", retryAfterMs: ROOM_FAILOVER_RETRY_MS, ownerInstanceId: currentOwner, leaseUntil: currentUntil, leaseEpoch: currentEpoch };
+    }
+
+    const nextEpoch = currentOwner === INSTANCE_ID && currentEpoch > 0 ? currentEpoch : Math.max(1, currentEpoch + 1);
+    try {
+        await doc.send(new PutCommand({
+            TableName: ROOM_PERSISTENCE_TABLE,
+            Item: {
+                ...key,
+                roomId: id,
+                ownerInstanceId: INSTANCE_ID,
+                leaseEpoch: nextEpoch,
+                leaseUntil: until,
+                renewedAt: now,
+                draining: false,
+            },
+            ConditionExpression: "attribute_not_exists(#leaseUntil) OR #leaseUntil <= :now OR #owner = :owner",
+            ExpressionAttributeNames: { "#leaseUntil": "leaseUntil", "#owner": "ownerInstanceId" },
+            ExpressionAttributeValues: { ":now": now, ":owner": INSTANCE_ID },
+        }));
+        roomLeaseEpochs.set(id, nextEpoch);
+        return { ok: true, roomId: id, ownerInstanceId: INSTANCE_ID, leaseEpoch: nextEpoch, leaseUntil: until };
+    } catch (e) {
+        if (e?.name === "ConditionalCheckFailedException") {
+            const winner = (await doc.send(new GetCommand({ TableName: ROOM_PERSISTENCE_TABLE, Key: key, ConsistentRead: true }))).Item || null;
+            return {
+                ok: false,
+                code: "ROOM_LEASE_UNAVAILABLE",
+                retryAfterMs: ROOM_FAILOVER_RETRY_MS,
+                ownerInstanceId: String(winner?.ownerInstanceId || ""),
+                leaseUntil: Number(winner?.leaseUntil || 0),
+                leaseEpoch: Number(winner?.leaseEpoch || 0),
+            };
+        }
+        throw e;
+    }
+}
+
+function scheduleRoomLeaseRenewal(roomId) {
+    const id = String(roomId || "").toUpperCase();
+    if (!id || roomLeaseTimers.has(id) || !ROOM_PERSISTENCE_ENABLED) return;
+    const timer = setInterval(() => {
+        renewRoomLease(id).catch((e) => console.error(`[room-lease] renew ${id} failed:`, e?.name || "Error", e?.message || e));
+    }, ROOM_LEASE_RENEW_MS);
+    timer.unref?.();
+    roomLeaseTimers.set(id, timer);
+}
+
+async function renewRoomLease(roomId) {
+    const id = String(roomId || "").toUpperCase();
+    const epoch = Number(roomLeaseEpochs.get(id) || 0);
+    if (!id || !epoch || !ROOM_PERSISTENCE_ENABLED || appDraining) return false;
+    const doc = await getDynamoDocClient();
+    const now = Date.now();
+    const until = now + ROOM_LEASE_TTL_MS;
+    try {
+        await doc.send(new UpdateCommand({
+            TableName: ROOM_PERSISTENCE_TABLE,
+            Key: roomLeaseKey(id),
+            UpdateExpression: "SET #until = :until, #renewed = :now, #draining = :false",
+            ConditionExpression: "#owner = :owner AND #epoch = :epoch",
+            ExpressionAttributeNames: { "#until": "leaseUntil", "#renewed": "renewedAt", "#draining": "draining", "#owner": "ownerInstanceId", "#epoch": "leaseEpoch" },
+            ExpressionAttributeValues: { ":until": until, ":now": now, ":false": false, ":owner": INSTANCE_ID, ":epoch": epoch },
+        }));
+        return true;
+    } catch (e) {
+        if (e?.name === "ConditionalCheckFailedException") {
+            clearRoomLeaseRenewal(id);
+            roomLeaseEpochs.delete(id);
+            return false;
+        }
+        throw e;
+    }
+}
+
+function clearRoomLeaseRenewal(roomId) {
+    const id = String(roomId || "").toUpperCase();
+    const timer = roomLeaseTimers.get(id);
+    if (timer) clearInterval(timer);
+    roomLeaseTimers.delete(id);
+}
+
+async function releaseRoomLease(roomId) {
+    const id = String(roomId || "").toUpperCase();
+    if (!id || !ROOM_PERSISTENCE_ENABLED) return false;
+    const epoch = Number(roomLeaseEpochs.get(id) || 0);
+    clearRoomLeaseRenewal(id);
+    roomLeaseEpochs.delete(id);
+    if (!epoch) return false;
+    const doc = await getDynamoDocClient();
+    try {
+        await doc.send(new DeleteCommand({
+            TableName: ROOM_PERSISTENCE_TABLE,
+            Key: roomLeaseKey(id),
+            ConditionExpression: "#owner = :owner AND #epoch = :epoch",
+            ExpressionAttributeNames: { "#owner": "ownerInstanceId", "#epoch": "leaseEpoch" },
+            ExpressionAttributeValues: { ":owner": INSTANCE_ID, ":epoch": epoch },
+        }));
+        return true;
+    } catch (e) {
+        if (e?.name === "ConditionalCheckFailedException" || e?.name === "ResourceNotFoundException") return false;
+        throw e;
+    }
+}
+
+async function releaseAllLocalRoomLeases(reason = "shutdown") {
+    const ids = [...roomLeaseEpochs.keys()];
+    for (const id of ids) {
+        try { await releaseRoomLease(id); }
+        catch (e) { console.error(`[room-lease] release ${id} failed (${reason}):`, e?.name || "Error", e?.message || e); }
+    }
+}
+
 async function updatePersistedRoomIndex(roomId, { add = false, remove = false, clear = false } = {}) {
     if (!ROOM_PERSISTENCE_ENABLED) return;
     const doc = await getDynamoDocClient();
@@ -5731,23 +8300,78 @@ async function persistRoomSnapshot(room, { register = false } = {}) {
     if (!beginGameDataWrite()) return false;
     try {
     if (!ROOM_PERSISTENCE_ENABLED || !room || !room.id) return false;
+    ensureRoomMemberships(room);
     const { serialized, truncated } = makeRoomSnapshotPayload(room);
     const now = Date.now();
     const doc = await getDynamoDocClient();
-    await doc.send(new PutCommand({
-        TableName: ROOM_PERSISTENCE_TABLE,
-        Item: {
-            playerName: roomStorageKey(room.id),
-            statKey: ROOM_SNAPSHOT_STAT_KEY,
-            roomId: String(room.id).toUpperCase(),
-            isTesterRoom: room.isTesterRoom === true,
-            schema: ROOM_SNAPSHOT_SCHEMA,
-            snapshot: serialized,
-            truncatedChat: truncated,
-            persistedAt: now,
-            expiresAt: now + ROOM_RECOVERY_TTL_MS,
-        },
-    }));
+    const roomId = String(room.id).toUpperCase();
+    const localStateVersion = Math.max(1, Number(room.stateVersion) || 1);
+    const leaseEpoch = Number(roomLeaseEpochs.get(roomId) || room.roomLeaseEpoch || 0);
+    if (room.isTesterRoom !== true && leaseEpoch <= 0) {
+        room.__persistenceConflict = { code: "ROOM_LEASE_UNAVAILABLE", localVersion: localStateVersion, at: Date.now() };
+        return false;
+    }
+    const snapshotHash = crypto.createHash("sha1").update(serialized).digest("hex");
+    try {
+        await doc.send(new PutCommand({
+            TableName: ROOM_PERSISTENCE_TABLE,
+            Item: {
+                playerName: roomStorageKey(room.id),
+                statKey: ROOM_SNAPSHOT_STAT_KEY,
+                roomId,
+                isTesterRoom: room.isTesterRoom === true,
+                schema: ROOM_SNAPSHOT_SCHEMA,
+                snapshot: serialized,
+                stateVersion: localStateVersion,
+                snapshotHash,
+                writerInstanceId: INSTANCE_ID,
+                leaseEpoch,
+                truncatedChat: truncated,
+                persistedAt: now,
+                expiresAt: now + ROOM_RECOVERY_TTL_MS,
+            },
+            // Deployment handoff fencing: normal rooms may only be written by the instance
+            // that currently owns the room lease epoch. Tester rooms intentionally keep the
+            // legacy version/hash guard because they are isolated from normal room persistence.
+            ConditionExpression: room.isTesterRoom === true
+                ? "attribute_not_exists(#stateVersion) OR #stateVersion < :stateVersion OR (#stateVersion = :stateVersion AND #snapshotHash = :snapshotHash)"
+                : "attribute_not_exists(#stateVersion) OR (attribute_not_exists(#leaseEpoch) AND attribute_not_exists(#writer)) OR #leaseEpoch < :leaseEpoch OR (#writer = :writer AND #leaseEpoch = :leaseEpoch AND (#stateVersion < :stateVersion OR (#stateVersion = :stateVersion AND #snapshotHash = :snapshotHash)))",
+            ExpressionAttributeNames: {
+                "#stateVersion": "stateVersion",
+                "#snapshotHash": "snapshotHash",
+                "#writer": "writerInstanceId",
+                "#leaseEpoch": "leaseEpoch",
+            },
+            ExpressionAttributeValues: {
+                ":stateVersion": localStateVersion,
+                ":snapshotHash": snapshotHash,
+                ":writer": INSTANCE_ID,
+                ":leaseEpoch": leaseEpoch,
+            },
+        }));
+    } catch (e) {
+        if (e?.name === "ConditionalCheckFailedException") {
+            // A newer copy already won. Do not turn this into an incident/error storm; mark the
+            // local signature as stale so the next recovery/sync path can reconcile it.
+            const latest = await doc.send(new GetCommand({
+                TableName: ROOM_PERSISTENCE_TABLE,
+                Key: { playerName: roomStorageKey(room.id), statKey: ROOM_SNAPSHOT_STAT_KEY },
+                ConsistentRead: true,
+            })).catch(() => null);
+            const remoteVersion = Number(latest?.Item?.stateVersion || 0);
+            const remoteHash = String(latest?.Item?.snapshotHash || "");
+            if (remoteVersion > localStateVersion) {
+                room.__persistenceConflict = { remoteVersion, localVersion: localStateVersion, at: Date.now() };
+                return false;
+            }
+            if (remoteVersion === localStateVersion && remoteHash === snapshotHash) {
+                roomPersistenceKnownIds.add(roomId);
+                roomPersistenceSignatures.set(roomId, snapshotHash);
+                return true;
+            }
+        }
+        throw e;
+    }
     if (register) await updatePersistedRoomIndex(room.id, { add: true });
     roomPersistenceKnownIds.add(String(room.id).toUpperCase());
     roomPersistenceSignatures.set(String(room.id).toUpperCase(), crypto.createHash("sha1").update(serialized).digest("hex"));
@@ -5761,29 +8385,65 @@ async function deletePersistedRoom(roomId) {
     if (!ROOM_PERSISTENCE_ENABLED || !roomId) return false;
     if (!beginGameDataWrite()) return false;
     try {
-    const id = String(roomId).toUpperCase();
-    const doc = await getDynamoDocClient();
-    try {
-        await doc.send(new DeleteCommand({
-            TableName: ROOM_PERSISTENCE_TABLE,
-            Key: { playerName: roomStorageKey(id), statKey: ROOM_SNAPSHOT_STAT_KEY },
-        }));
-    } finally {
-        try { await updatePersistedRoomIndex(id, { remove: true }); } catch (e) { console.error(`[room-persist] ลบห้อง ${id} จาก ROOM_INDEX ไม่สำเร็จ:`, e.name, e.message); }
-        roomPersistenceKnownIds.delete(id);
-        roomPersistenceSignatures.delete(id);
+        const id = String(roomId).toUpperCase();
+        const doc = await getDynamoDocClient();
+        const room = rooms[id];
+        const isTester = room?.isTesterRoom === true;
+
+        if (!isTester && !roomLeaseOwnedLocally(id)) {
+            const lease = await acquireRoomLease(id, { allowDuringDeployment: true });
+            if (!lease.ok) {
+                const err = new Error(lease.code || "ROOM_LEASE_UNAVAILABLE");
+                err.code = lease.code || "ROOM_LEASE_UNAVAILABLE";
+                err.retryAfterMs = lease.retryAfterMs || ROOM_FAILOVER_RETRY_MS;
+                throw err;
+            }
+            if (room) room.roomLeaseEpoch = lease.leaseEpoch;
+            scheduleRoomLeaseRenewal(id);
+        }
+
+        const leaseEpoch = Number(roomLeaseEpochs.get(id) || room?.roomLeaseEpoch || 0);
+        let deletedSnapshot = false;
+        try {
+            const deleteParams = {
+                TableName: ROOM_PERSISTENCE_TABLE,
+                Key: { playerName: roomStorageKey(id), statKey: ROOM_SNAPSHOT_STAT_KEY },
+            };
+            if (!isTester) {
+                if (leaseEpoch <= 0) {
+                    throw Object.assign(new Error("ROOM_LEASE_UNAVAILABLE"), { code: "ROOM_LEASE_UNAVAILABLE", retryAfterMs: ROOM_FAILOVER_RETRY_MS });
+                }
+                deleteParams.ConditionExpression = "(attribute_not_exists(#leaseEpoch) AND attribute_not_exists(#writer)) OR (#writer = :writer AND #leaseEpoch = :leaseEpoch)";
+                deleteParams.ExpressionAttributeNames = { "#writer": "writerInstanceId", "#leaseEpoch": "leaseEpoch" };
+                deleteParams.ExpressionAttributeValues = { ":writer": INSTANCE_ID, ":leaseEpoch": leaseEpoch };
+            }
+            await doc.send(new DeleteCommand(deleteParams));
+            deletedSnapshot = true;
+        } catch (e) {
+            if (e?.name === "ConditionalCheckFailedException") {
+                // Another instance owns a newer room lease. Never delete its snapshot or index.
+                throw Object.assign(new Error("ROOM_LEASE_UNAVAILABLE"), { code: "ROOM_LEASE_UNAVAILABLE", retryAfterMs: ROOM_FAILOVER_RETRY_MS });
+            }
+            throw e;
+        }
+
+        if (deletedSnapshot) {
+            try { await updatePersistedRoomIndex(id, { remove: true }); } catch (e) { console.error(`[room-persist] ลบห้อง ${id} จาก ROOM_INDEX ไม่สำเร็จ:`, e.name, e.message); }
+            roomPersistenceKnownIds.delete(id);
+            roomPersistenceSignatures.delete(id);
+        }
+        await releaseRoomLease(id).catch((e) => console.error(`[room-lease] ลบ lease ห้อง ${id} ไม่สำเร็จ:`, e?.message || e));
         const timer = roomPersistenceTimers.get(id);
         if (timer) clearTimeout(timer);
         roomPersistenceTimers.delete(id);
-    }
-    return true;
+        return true;
     } finally {
         endGameDataWrite();
     }
 }
 
 function schedulePersistRoom(roomId, immediate = false) {
-    if (resetInProgress) return;
+    if (resetInProgress || appDraining) return;
     if (!ROOM_PERSISTENCE_ENABLED || !roomId) return;
     const id = String(roomId).toUpperCase();
     const oldTimer = roomPersistenceTimers.get(id);
@@ -5804,7 +8464,7 @@ function schedulePersistRoom(roomId, immediate = false) {
 }
 
 async function scanAndPersistChangedRooms() {
-    if (resetInProgress) return;
+    if (resetInProgress || appDraining) return;
     if (!ROOM_PERSISTENCE_ENABLED) return;
     for (const id of Object.keys(rooms)) {
         const room = rooms[id];
@@ -5838,7 +8498,7 @@ async function clearAllPersistedRoomSnapshots() {
         for (const it of (page.Items || [])) {
             const pk = String(it.playerName || "");
             const sk = String(it.statKey || "");
-            if (sk === ROOM_SNAPSHOT_STAT_KEY && pk.startsWith(ROOM_KEY_PREFIX)) {
+            if ((sk === ROOM_SNAPSHOT_STAT_KEY || sk === ROOM_LEASE_STAT_KEY) && pk.startsWith(ROOM_KEY_PREFIX)) {
                 keys.push({ playerName: pk, statKey: sk });
             }
         }
@@ -5862,7 +8522,7 @@ const roomRecoveryInflight = new Map();
 // แต่ snapshot ของห้องยังอยู่ใน DynamoDB (เช่น Elastic Beanstalk มีหลาย instance, instance เพิ่งขึ้น,
 // หรือหน้า host ค้างอยู่ก่อน deploy แล้วกลับมา login ใหม่) — ป้องกันอาการ "host เห็นห้อง แต่ host_login
 // บอก ROOM_NOT_FOUND" ทั้งที่ผู้เล่นที่ต่ออีก instance ยังเข้าได้จริง
-async function recoverPersistedRoomById(roomId, { reason = "on-demand" } = {}) {
+async function recoverPersistedRoomById(roomId, { reason = "on-demand", requireLease = deploymentRoomRecoveryCompleted } = {}) {
     if (!ROOM_PERSISTENCE_ENABLED) return null;
     const id = String(roomId || "").trim().toUpperCase();
     if (!id) return null;
@@ -5880,6 +8540,12 @@ async function recoverPersistedRoomById(roomId, { reason = "on-demand" } = {}) {
         const activeIds = roomIdsFromDynamoSet(indexOut.Item && indexOut.Item.activeRoomIds)
             .map((x) => String(x).toUpperCase());
         if (!activeIds.includes(id)) return null;
+
+        // During Immutable deployment the old instance remains authoritative until its drain
+        // completes. Never resurrect the room on a new instance while the environment is still
+        // updating; callers receive a transient failover code and retry against the next ready
+        // instance instead of being told the room was deleted.
+        if (deploymentHandoffInProgress()) return null;
 
         const out = await doc.send(new GetCommand({
             TableName: ROOM_PERSISTENCE_TABLE,
@@ -5902,11 +8568,30 @@ async function recoverPersistedRoomById(roomId, { reason = "on-demand" } = {}) {
             return null;
         }
         if (!room || String(room.id || "").toUpperCase() !== id || !Array.isArray(room.players)) return null;
+        ensureRoomRuntimeState(room);
+        ensureRoomMemberships(room);
         // `isTesterRoom` is duplicated at the top level of the durable record so recovery on a
         // different instance can restore the security-critical room classification even if an
         // older/partial snapshot omitted the field. The metadata is written only by server code.
         if (item.isTesterRoom === true) room.isTesterRoom = true;
         if (serverClosed && room.isTesterRoom !== true) return null;
+        if (room.isTesterRoom !== true && !roomLeaseOwnedLocally(id)) {
+            try {
+                const lease = await acquireRoomLease(id);
+                if (lease.ok) {
+                    room.roomLeaseEpoch = lease.leaseEpoch;
+                    scheduleRoomLeaseRenewal(id);
+                } else if (requireLease) {
+                    throw Object.assign(new Error(lease.code || "ROOM_LEASE_UNAVAILABLE"), {
+                        code: lease.code || "ROOM_LEASE_UNAVAILABLE",
+                        retryAfterMs: lease.retryAfterMs || ROOM_FAILOVER_RETRY_MS,
+                    });
+                }
+            } catch (e) {
+                if (requireLease) throw e;
+                console.error(`[room-lease] on-demand ${id} coordination failed:`, e?.name || "Error", e?.message || e);
+            }
+        }
 
         room.host = "";
         room.hostIds = [];
@@ -5929,8 +8614,8 @@ async function recoverPersistedRoomById(roomId, { reason = "on-demand" } = {}) {
     }
 }
 
-async function recoverPersistedRooms() {
-    if (!ROOM_PERSISTENCE_ENABLED) return { recovered: 0, skipped: 0 };
+async function recoverPersistedRooms({ requireLease = false } = {}) {
+    if (!ROOM_PERSISTENCE_ENABLED) return { recovered: 0, skipped: 0, deferred: false };
     const doc = await getDynamoDocClient();
     const indexOut = await doc.send(new GetCommand({
         TableName: ROOM_PERSISTENCE_TABLE,
@@ -5939,10 +8624,15 @@ async function recoverPersistedRooms() {
     const ids = roomIdsFromDynamoSet(indexOut.Item && indexOut.Item.activeRoomIds)
         .map((id) => id.toUpperCase())
         .filter(Boolean);
-    if (!ids.length) return { recovered: 0, skipped: 0 };
+    if (!ids.length) return { recovered: 0, skipped: 0, deferred: false };
+    if (deploymentHandoffInProgress()) {
+        roomRecoveryDeferred = true;
+        return { recovered: 0, skipped: ids.length, deferred: true };
+    }
 
     let recovered = 0;
     let skipped = 0;
+    let leaseDeferred = 0;
     const requests = ids.map((id) => ({
         playerName: roomStorageKey(id),
         statKey: ROOM_SNAPSHOT_STAT_KEY,
@@ -5979,9 +8669,30 @@ async function recoverPersistedRooms() {
                 if (Number(item.expiresAt) > 0 && Number(item.expiresAt) <= Date.now()) { skipped++; continue; }
                 const room = JSON.parse(String(item.snapshot));
                 if (!room || room.id !== id || !Array.isArray(room.players)) { skipped++; continue; }
+                ensureRoomRuntimeState(room);
                 if (item.isTesterRoom === true) room.isTesterRoom = true;
                 // Normal rooms must never resurrect while the server is intentionally closed.
                 if (serverClosed && room.isTesterRoom !== true) { skipped++; continue; }
+                if (room.isTesterRoom !== true && !roomLeaseOwnedLocally(id)) {
+                    try {
+                        const lease = await acquireRoomLease(id);
+                        if (lease.ok) {
+                            room.roomLeaseEpoch = lease.leaseEpoch;
+                            scheduleRoomLeaseRenewal(id);
+                        } else if (requireLease) {
+                            leaseDeferred++;
+                            skipped++;
+                            continue;
+                        }
+                    } catch (e) {
+                        if (requireLease) {
+                            leaseDeferred++;
+                            skipped++;
+                            continue;
+                        }
+                        console.error(`[room-lease] recovery ${id} coordination failed:`, e?.name || "Error", e?.message || e);
+                    }
+                }
                 // หลัง admin ปิด/force-reload แล้วเริ่ม session ใหม่ ห้องปกติจาก session ก่อนหน้า
                 // ถือว่าจบไปแล้ว แม้ snapshot เดิมยังค้างเพราะ DB ลบไม่สำเร็จตอนคำสั่งปิด
                 if (room.isTesterRoom !== true && roomResetAt > 0 && Number(item.persistedAt) > 0 && Number(item.persistedAt) <= roomResetAt) {
@@ -6004,16 +8715,35 @@ async function recoverPersistedRooms() {
             }
         }
     }
-    // Recreate only server-side timers that are safe to resume after a restart.
+    // Recreate server-side timers from durable deadlines. The deadline is authoritative; timer
+    // handles themselves are deliberately never persisted.
     for (const id of Object.keys(rooms)) {
         const room = rooms[id];
-        if (room.gameOver) scheduleAutoContinue(room, id);
-        if (room.voteMode && room.voteTimerEnabled !== false) {
-            // Do not invent remaining vote time; the game client/host can request the latest sync and close the vote manually.
-            room.voteModeRecoveredAfterRestart = true;
-        }
+        scheduleRecoveredRoomTimers(room);
     }
-    return { recovered, skipped };
+    roomRecoveryDeferred = leaseDeferred > 0;
+    return { recovered, skipped, deferred: leaseDeferred > 0 };
+}
+
+async function maybeCompleteDeferredRoomRecovery() {
+    if (!roomRecoveryDeferred || appDraining || !ROOM_PERSISTENCE_ENABLED) return false;
+    try {
+        await getAppEnvironmentState({ force: false });
+        if (deploymentHandoffInProgress()) return false;
+        roomRecoveryDeferred = false;
+        const out = await recoverPersistedRooms({ requireLease: true });
+        roomRecoveryDeferred = !!out.deferred;
+        if (roomRecoveryDeferred) {
+            console.log(`[room-recovery] handoff still waiting for room leases: recovered=${out.recovered}, skipped=${out.skipped}`);
+            return false;
+        }
+        deploymentRoomRecoveryCompleted = true;
+        console.log(`[room-recovery] handoff complete: recovered=${out.recovered}, skipped=${out.skipped}`);
+        return true;
+    } catch (e) {
+        console.error("[room-recovery] deferred handoff recovery failed:", e?.name || "Error", e?.message || e);
+        return false;
+    }
 }
 
 function startRoomPersistence() {
@@ -6033,9 +8763,12 @@ function startRoomPersistence() {
         }, ROOM_RECOVERY_TIMEOUT_MS);
         try {
             await serverStateReady;
+            try { await getAppEnvironmentState({ force: false }); } catch (_) {}
             const out = await recoverPersistedRooms();
             roomRecoveryHealthy = true;
-            console.log(`[room-recovery] กู้คืนห้องจาก DynamoDB สำเร็จ ${out.recovered} ห้อง, ข้าม ${out.skipped} รายการ`);
+            roomRecoveryDeferred = !!out.deferred;
+            deploymentRoomRecoveryCompleted = !roomRecoveryDeferred && !deploymentHandoffInProgress();
+            console.log(`[room-recovery] กู้คืนห้องจาก DynamoDB สำเร็จ ${out.recovered} ห้อง, ข้าม ${out.skipped} รายการ${out.deferred ? " (deferred during deployment)" : ""}`);
             release();
         } catch (e) {
             roomRecoveryHealthy = false;
@@ -6048,8 +8781,15 @@ function startRoomPersistence() {
         }
         roomPersistenceScanTimer = setInterval(() => {
             scanAndPersistChangedRooms().catch((e) => console.error("[room-persist] รอบสแกน snapshot ล้มเหลว:", e.name, e.message));
+            if (roomRecoveryDeferred) maybeCompleteDeferredRoomRecovery().catch((e) => console.error("[room-recovery] deferred check failed:", e?.message || e));
         }, ROOM_PERSISTENCE_SCAN_MS);
         roomPersistenceScanTimer.unref?.();
+        if (roomRecoveryDeferred) {
+            roomRecoveryDeferredTimer = setInterval(() => {
+                maybeCompleteDeferredRoomRecovery().catch((e) => console.error("[room-recovery] handoff watcher failed:", e?.message || e));
+            }, Math.max(750, ROOM_PERSISTENCE_SCAN_MS));
+            roomRecoveryDeferredTimer.unref?.();
+        }
     })();
 }
 
@@ -6136,6 +8876,142 @@ function isProtectedHandshake(socket) {
 // ประวัติแชทถูกส่งแยกอยู่แล้วผ่าน event "wolf_chat_history" / "global_chat_history"
 // (ตอน join/reconnect) และข้อความใหม่ส่งทีละข้อความผ่าน "chat_message"
 // จึงตัด field เหล่านี้ออกจาก payload ของ room_update ทุกจุดเพื่อประหยัดเน็ตของผู้เล่น
+
+// ============================================================
+// RUNTIME ROOM STATE / SNAPSHOT CONTRACT
+// ============================================================
+const ROOM_TIMELINE_MAX = Math.max(40, Math.min(300, Number(process.env.ROOM_TIMELINE_MAX) || 120));
+
+function ensureRoomMemberships(room) {
+    if (!room || !Array.isArray(room.players)) return room;
+    room.hostMembershipId = room.hostMembershipId || "";
+    room.players.forEach((p) => {
+        if (!p || p.isTester) return;
+        if (!p.membershipId) p.membershipId = generateMembershipId();
+        p.roomId = String(room.id || room.roomId || "").trim().toUpperCase();
+        if (p.isHost && !room.hostMembershipId) room.hostMembershipId = p.membershipId;
+        if (p.isHost && !room.ownerAccountId && !p.isBot && !p.isTester) {
+            const owner = normalizeAccountId(p.accountId || "");
+            if (owner) room.ownerAccountId = owner;
+        }
+    });
+    return room;
+}
+
+function ensureRoomRuntimeState(room) {
+    if (!room || typeof room !== "object") return room;
+    const version = Number(room.stateVersion);
+    room.stateVersion = Number.isSafeInteger(version) && version > 0 ? version : 1;
+    room.stateChangedAt = Number(room.stateChangedAt) > 0 ? Number(room.stateChangedAt) : Date.now();
+    room.timeline = Array.isArray(room.timeline) ? room.timeline.filter(Boolean).slice(-ROOM_TIMELINE_MAX) : [];
+    const seq = Number(room.timelineSeq);
+    room.timelineSeq = Number.isSafeInteger(seq) && seq >= 0
+        ? seq
+        : room.timeline.reduce((max, e) => Math.max(max, Number(e?.seq) || 0), 0);
+    room.voteDeadline = Number(room.voteDeadline) > 0 ? Number(room.voteDeadline) : null;
+    room.gameOverDeadlineAt = Number(room.gameOverDeadlineAt) > 0 ? Number(room.gameOverDeadlineAt) : null;
+    room.roomLeaseEpoch = Number(room.roomLeaseEpoch) > 0 ? Number(room.roomLeaseEpoch) : 0;
+    return room;
+}
+
+function roomRuntimePhase(room) {
+    if (!room) return "unknown";
+    if (room.gameOver) return "game_over";
+    if (!room.started) return "waiting";
+    if (room.isNight) return "night";
+    if (room.voteMode) return "day_vote";
+    return "day";
+}
+
+function recordRoomTimeline(room, type = "state_changed", detail = {}) {
+    if (!room) return null;
+    ensureRoomRuntimeState(room);
+    const event = {
+        seq: ++room.timelineSeq,
+        at: Date.now(),
+        stateVersion: room.stateVersion,
+        type: String(type || "state_changed").slice(0, 80),
+        phase: roomRuntimePhase(room),
+        playerCount: Array.isArray(room.players) ? room.players.filter((p) => !p?.isHost).length : 0,
+        aliveCount: Array.isArray(room.players) ? room.players.filter((p) => !p?.isHost && p?.alive !== false).length : 0,
+    };
+    if (detail && typeof detail === "object") {
+        if (typeof detail.reason === "string" && detail.reason) event.reason = detail.reason.slice(0, 120);
+        if (typeof detail.source === "string" && detail.source) event.source = detail.source.slice(0, 80);
+        if (typeof detail.label === "string" && detail.label) event.label = detail.label.slice(0, 120);
+        if (Number.isFinite(Number(detail.count))) event.count = Number(detail.count);
+    }
+    room.timeline.push(event);
+    if (room.timeline.length > ROOM_TIMELINE_MAX) room.timeline = room.timeline.slice(-ROOM_TIMELINE_MAX);
+    return event;
+}
+
+function bumpRoomState(room, type = "state_changed", detail = {}) {
+    if (!room) return 0;
+    ensureRoomRuntimeState(room);
+    room.stateVersion += 1;
+    room.stateChangedAt = Date.now();
+    recordRoomTimeline(room, type, detail);
+    return room.stateVersion;
+}
+
+function broadcastRoomUpdate(roomId, room, { timelineType = "state_changed", reason = "", source = "server" } = {}) {
+    if (!room) return null;
+    const stateVersion = bumpRoomState(room, timelineType, { reason, source });
+    broadcastRoomUpdate(roomId, room);
+    return stateVersion;
+}
+
+function publicTimeline(room, limit = 24) {
+    ensureRoomRuntimeState(room);
+    const max = Math.max(1, Math.min(60, Number(limit) || 24));
+    return room.timeline.slice(-max).map((e) => ({
+        seq: Number(e?.seq) || 0,
+        at: Number(e?.at) || 0,
+        stateVersion: Number(e?.stateVersion) || 0,
+        type: String(e?.type || "state_changed"),
+        phase: String(e?.phase || "unknown"),
+        playerCount: Number(e?.playerCount) || 0,
+        aliveCount: Number(e?.aliveCount) || 0,
+        ...(e?.reason ? { reason: String(e.reason).slice(0, 120) } : {}),
+        ...(e?.source ? { source: String(e.source).slice(0, 80) } : {}),
+        ...(e?.label ? { label: String(e.label).slice(0, 120) } : {}),
+        ...(Number.isFinite(Number(e?.count)) ? { count: Number(e.count) } : {}),
+    }));
+}
+
+function roomActionError(code, extra = {}) {
+    return { ok: false, code: String(code || "ACTION_REJECTED"), ...extra };
+}
+
+// Generic server-side preflight. Existing role-specific handlers remain authoritative for
+// nuanced rules; this layer only covers identity, membership, lifecycle and stale-state checks.
+function validateRoomAction(socket, room, opts = {}) {
+    if (!room) return roomActionError("ROOM_NOT_FOUND");
+    ensureRoomRuntimeState(room);
+    if (opts.host && !isHostSocket(room, socket?.id)) return roomActionError("NOT_HOST");
+    if (opts.member !== false && !isHostSocket(room, socket?.id)) {
+        const player = getRoomPlayerForSocket(room, socket);
+        if (!player) return roomActionError("NOT_IN_ROOM");
+        if (opts.alive && player.alive === false) return roomActionError("NOT_ALIVE");
+    }
+    if (opts.started === true && !room.started) return roomActionError("GAME_NOT_STARTED");
+    if (opts.notStarted === true && room.started) return roomActionError("ROOM_STARTED");
+    if (Array.isArray(opts.phases) && opts.phases.length > 0) {
+        const phase = roomRuntimePhase(room);
+        if (!opts.phases.includes(phase)) return roomActionError("INVALID_PHASE", { phase });
+    }
+    const expectedVersion = Number(opts.stateVersion);
+    if (Number.isSafeInteger(expectedVersion) && expectedVersion > 0 && expectedVersion !== room.stateVersion) {
+        return roomActionError("STALE_STATE", {
+            stateVersion: room.stateVersion,
+            stateChangedAt: room.stateChangedAt,
+            roomId: String(room.id || "").toUpperCase(),
+        });
+    }
+    return { ok: true, stateVersion: room.stateVersion };
+}
+
 function publicRoomView(room) {
     if (!room) return room;
     // hostPassword ต้องไม่หลุดออกไปกับ room_update เด็ดขาด (broadcast ไปถึงผู้เล่นทุกคนในห้อง
@@ -6146,6 +9022,10 @@ function publicRoomView(room) {
     // joinCode (รหัสห้องฝั่งผู้เล่น) ก็ไม่ควรหลุดออกไปกับ room_update เหมือนกัน (คนในห้องที่เข้ามาแล้ว
     // ไม่จำเป็นต้องเห็นค่าจริง) ส่งแค่ hasJoinCode ให้ client เช็คได้ว่าห้องนี้ตั้งรหัสไว้หรือยัง
     publicRoom.hasJoinCode = !!joinCode;
+    ensureRoomRuntimeState(room);
+    publicRoom.stateVersion = room.stateVersion;
+    publicRoom.stateChangedAt = room.stateChangedAt;
+    publicRoom.timeline = publicTimeline(room, 24);
     // ส่งสถานะการเปิดบทผู้ตายให้ client ใช้ควบคุม UI/การแสดงผลเท่านั้น; ถ้าห้องเก่าขาดฟิลด์นี้ให้ถือว่าเปิด
     // เพื่อคงพฤติกรรมเดิม และไม่แก้ข้อมูลห้องเก่าทันทีเพียงเพราะส่ง room_update
     publicRoom.revealDeadRole = room.revealDeadRole !== false;
@@ -6272,7 +9152,7 @@ function armPendingBrowserExit(kind, roomId, token, apply, meta = {}, graceMs) {
     const pending = {
         key, kind, roomId: id, token: tok, page: meta.page || kind,
         traceId: String(meta.traceId || ''), sessionId: String(meta.sessionId || ''),
-        startedAt, socketId: String(meta.socketId || ''), source: String(meta.source || 'pagehide'),
+        startedAt, socketId: String(meta.socketId || ''), accountId: normalizeAccountId(meta.accountId || ''), membershipId: String(meta.membershipId || '').slice(0,160), sessionHash: String(meta.sessionHash || '').slice(0,128), deviceId: normalizeDeviceId(meta.deviceId || ''), source: String(meta.source || 'pagehide'),
         timer: null, armDiagnosticId: "", signalDiagnosticId: String(meta.signalDiagnosticId || ""),
     };
     const armEvent = recordDiagnostic({
@@ -6309,13 +9189,29 @@ function armPendingBrowserExit(kind, roomId, token, apply, meta = {}, graceMs) {
     return true;
 }
 
-function closeRoomNow(roomId, reason) {
+async function closeRoomNow(roomId, reason) {
     const room = rooms[roomId];
-    if (!room || room.isClosing) return Promise.resolve(false);
+    if (!room || room.isClosing) return false;
     // กัน allocator แจก tester slot เดิมซ้ำระหว่างที่การลบ snapshot กำลัง await อยู่
     room.isClosing = true;
+    bumpRoomState(room, "room_closed", { reason, source: "room" });
 
-    io.to(roomId).emit('room_closed', { reason });
+    // Room close is an authoritative activity transition. Release every real account tied to this
+    // room before deleting the in-memory/persisted room, otherwise index.html could immediately
+    // route the account back into a room that no longer exists.
+    const closingAccountIds = new Set(
+        (room.players || [])
+            .filter((p) => p && !p.isTester && !p.isBot && p.accountId)
+            .map((p) => normalizeAccountId(p.accountId || ""))
+            .filter(Boolean)
+    );
+    await Promise.all([...closingAccountIds].map((accountId) =>
+        clearAccountActivity(accountId, { roomId }).catch((e) => {
+            console.error(`[account-activity] ล้าง activity ${accountId}/${roomId} ตอนปิดห้องไม่สำเร็จ:`, e?.name || "Error", e?.message || e);
+        })
+    ));
+
+    io.to(roomId).emit('room_closed', { reason, stateVersion: room.stateVersion });
 
     room.players.forEach((p) => {
         io.sockets.sockets.get(p.id)?.leave(roomId);
@@ -6346,7 +9242,8 @@ function closeRoomNow(roomId, reason) {
             .catch((e) => {
                 console.error(`[room-persist] ลบ snapshot ห้อง ${roomId} ตอนปิดห้องไม่สำเร็จ:`, e.name, e.message);
             })
-            .then(() => {
+            .then(async () => {
+                await releaseRoomLease(roomId).catch((e) => console.error(`[room-lease] release ${roomId} on close failed:`, e?.message || e));
                 delete rooms[roomId];
                 clearGameOverTimer(roomId);
                 clearVoteTimer(roomId);
@@ -6355,11 +9252,15 @@ function closeRoomNow(roomId, reason) {
             });
     }
 
-    delete rooms[roomId];
-    clearGameOverTimer(roomId);
-    clearVoteTimer(roomId);
-    broadcastSuggestedRoom();
-    return Promise.resolve(true);
+    return releaseRoomLease(roomId)
+        .catch((e) => console.error(`[room-lease] release ${roomId} on close failed:`, e?.message || e))
+        .then(() => {
+            delete rooms[roomId];
+            clearGameOverTimer(roomId);
+            clearVoteTimer(roomId);
+            broadcastSuggestedRoom();
+            return true;
+        });
 }
 
 // ============================================================
@@ -6411,8 +9312,56 @@ function clearFailedLoginAttempts(key) {
 // เช็คว่า player คนนี้ยัง "เชื่อมต่ออยู่จริง" ในตอนนี้หรือไม่ (เทียบจาก socket ที่ผูกกับ id ปัจจุบัน)
 // ใช้แทนการเช็ค player.disconnected เดิม เพราะ id ของ player จะถูกอัปเดตเป็น socket.id
 // ใหม่ทันทีที่ reconnect สำเร็จ (ดู join_room / host_login) ทำให้เช็คจาก socket จริงแม่นกว่า
+function getRoomPlayerForSocket(room, socket, { includeHost = false } = {}) {
+    if (!room || !socket) return null;
+    const socketRoomId = String(socket.data?.roomId || "").trim().toUpperCase();
+    const socketMembershipId = String(socket.data?.membershipId || "").trim();
+    const accountId = normalizeAccountId(socket.data?.accountId || "");
+    if (accountId && socketRoomId === String(room.id || "").trim().toUpperCase() && socketMembershipId) {
+        const member = (room.players || []).find((p) => {
+            if (!p || p.isBot || p.isTester) return false;
+            if (!includeHost && p.isHost) return false;
+            if (includeHost && p.isHost && normalizeAccountId(p.accountId || "") !== accountId) return false;
+            if (normalizeAccountId(p.accountId || "") !== accountId) return false;
+            return String(p.membershipId || "").trim() === socketMembershipId;
+        });
+        if (member) return member;
+    }
+    // Legacy/stale sockets from before membership metadata existed can still be resolved by
+    // their canonical socket id, but an account id by itself is never enough to authorize an
+    // action in an unrelated room.
+    return (room.players || []).find((p) => p && p.id === socket.id && (includeHost || !p.isHost)) || null;
+}
+
+function getRoomPlayerIdForSocket(room, socket) {
+    const player = getRoomPlayerForSocket(room, socket);
+    return player?.id || socket?.id || "";
+}
+
+function getConnectedSocketsForAccount(accountId) {
+    const id = normalizeAccountId(accountId);
+    if (!id || !io?.sockets?.sockets) return [];
+    const out = [];
+    for (const sock of io.sockets.sockets.values()) {
+        if (!sock?.connected) continue;
+        // A full reset invalidates every pre-reset game socket immediately.
+        // The browser can take a short moment to process force_reset, so the stale socket
+        // must not be counted as a live Admin session during that transition.
+        if (sock.data?.resetInvalidated) continue;
+        if (normalizeAccountId(sock.data?.accountId || "") !== id) continue;
+        out.push(sock);
+    }
+    return out;
+}
+
 function isPlayerCurrentlyConnected(player) {
     if (!player) return false;
+    const accountId = normalizeAccountId(player.accountId || "");
+    const membershipId = String(player.membershipId || "").trim();
+    if (accountId && membershipId) {
+        return getConnectedSocketsForAccount(accountId).some((sock) => String(sock.data?.membershipId || "").trim() === membershipId);
+    }
+    if (accountId) return getConnectedSocketsForAccount(accountId).some((sock) => String(sock.data?.roomId || "").trim().toUpperCase() === String(player.roomId || "").trim().toUpperCase());
     const sock = io.sockets.sockets.get(player.id);
     return !!sock && sock.connected;
 }
@@ -6525,6 +9474,8 @@ function clearGameOverTimer(roomId) {
         clearTimeout(gameOverTimers[roomId]);
         delete gameOverTimers[roomId];
     }
+    const room = rooms[String(roomId || "").toUpperCase()];
+    if (room) room.gameOverDeadlineAt = null;
 }
 
 // ----------------------------------------------------------------------
@@ -6541,20 +9492,80 @@ function clearVoteTimer(roomId) {
         clearTimeout(voteTimers[roomId]);
         delete voteTimers[roomId];
     }
+    const room = rooms[String(roomId || "").toUpperCase()];
+    if (room) room.voteDeadline = null;
 }
 
-function scheduleAutoContinue(room, roomId) {
+function scheduleAutoContinue(room, roomId, delayMs = 5_000) {
     clearGameOverTimer(roomId);
+    const delay = Math.max(0, Number(delayMs) || 0);
+    room.gameOverDeadlineAt = Date.now() + delay;
     gameOverTimers[roomId] = setTimeout(() => {
         delete gameOverTimers[roomId];
         const r = rooms[roomId];
         if (!r || !r.gameOver) return;
+        r.gameOverDeadlineAt = null;
         r.continueReady = r.continueReady || {};
         r.players.filter((p) => !p.isHost).forEach((p) => {
             r.continueReady[p.id] = true;
         });
-        io.to(roomId).emit("room_update", publicRoomView(r));
-    }, 5_000);
+        broadcastRoomUpdate(roomId, r);
+    }, delay);
+}
+
+function scheduleRecoveredRoomTimers(room) {
+    if (!room || !room.id) return;
+    const id = String(room.id).toUpperCase();
+
+    // Capture durable deadlines BEFORE clearing local timer handles. clear*Timer() also clears
+    // the durable deadline fields, so reading them afterwards would silently lose recovery data.
+    const recoveredGameOverDeadlineAt = Number(room.gameOverDeadlineAt) > 0 ? Number(room.gameOverDeadlineAt) : 0;
+    const recoveredVoteDeadline = Number(room.voteDeadline) > 0 ? Number(room.voteDeadline) : 0;
+
+    clearGameOverTimer(id);
+    clearVoteTimer(id);
+
+    if (room.gameOver) {
+        const delay = recoveredGameOverDeadlineAt > 0
+            ? Math.max(0, recoveredGameOverDeadlineAt - Date.now())
+            : 5_000;
+        scheduleAutoContinue(room, id, delay);
+    }
+
+    if (room.voteMode && room.voteTimerEnabled !== false && recoveredVoteDeadline > 0) {
+        const delay = Math.max(0, recoveredVoteDeadline - Date.now());
+        const markVoteResolutionPending = () => {
+            const current = rooms[id];
+            if (!current || !current.voteMode || current.voteTimerEnabled === false) return;
+            current.voteDeadline = null;
+            current.__recoveredVoteResolutionPending = true;
+            schedulePersistRoom(id, true);
+        };
+        if (delay === 0) {
+            markVoteResolutionPending();
+        } else {
+            const timer = setTimeout(() => {
+                delete voteTimers[id];
+                markVoteResolutionPending();
+            }, delay);
+            timer.unref?.();
+            voteTimers[id] = timer;
+        }
+    } else if (room.voteMode && room.voteTimerEnabled !== false && recoveredVoteDeadline <= 0) {
+        // Older snapshots may predate the durable vote deadline. Do not invent a fresh full round;
+        // mark it for immediate resolution when a live game socket reconnects.
+        room.__recoveredVoteResolutionPending = true;
+    }
+}
+
+function resumeRecoveredRoomRuntimeTransitions(room, roomId, deps) {
+    if (!room || !room.id || room.gameOver || !deps) return false;
+    const id = String(roomId || room.id).toUpperCase();
+    if (!room.__recoveredVoteResolutionPending || !room.voteMode) return false;
+    room.__recoveredVoteResolutionPending = false;
+    closeVoteRound(room, id, deps);
+    schedulePersistRoom(id, true);
+    return true;
 }
 
 // ============================================================
@@ -6767,6 +9778,11 @@ const roles = {
     "โจร":              { team: "bandit",   score: 4, messages: [] }, // ทีมพิเศษ "โจร" ของตัวเอง — คืนที่ยังไม่มีผู้สมรู้ร่วมคิด เปลี่ยนบทบาทผู้เล่นคนอื่นให้เป็นผู้สมรู้ร่วมคิดได้ (หมาป่าจะถูกฆ่าทันทีแทน) คืนที่มีผู้สมรู้ร่วมคิดแล้ว ร่วมกันเลือกฆ่าได้คืนละ 1 คน ผ่าน bandit_action/cast_bandit_kill — ดู resolve_night
     "ผู้สมรู้ร่วมคิด":  { team: "bandit",   score: 3, messages: [] }, // เกิดจากถูกโจรเปลี่ยนบทบาท (role เปลี่ยนจริง ไม่ใช่แค่เปลี่ยนทีมแบบลัทธิ) ร่วมมือกับหัวโจรเลือกฆ่าได้คืนละ 1 คน อ่านแชททีมโจรได้แต่พิมพ์ไม่ได้
 };
+
+// Internal diagnostics profile source-of-truth. These refs stay server-only and are never sent directly to clients.
+globalThis.__WEREWOLF_ROLES__ = roles;
+globalThis.__WEREWOLF_TEAM_LABELS__ = teamLabels;
+globalThis.__WEREWOLF_WIN_CONDITIONS__ = WIN_CONDITIONS;
 
 const roleDescription = {
     "หมาป่า": {
@@ -7020,10 +10036,36 @@ function genId() {
 // เอาค่านี้ไปแปะใน innerHTML/onclick ตรงๆ โดยไม่ escape เลย จึงเป็นช่องโหว่ XSS/JS-injection ได้
 // (ดูการแก้ escapeHtml ในฝั่ง client ประกอบ) ฟังก์ชันนี้เป็นด่านป้องกันฝั่ง server เพิ่มเติม:
 // บังคับให้เป็น string เสมอ, ตัดช่องว่างหัวท้าย, จำกัดความยาวกันชื่อยาวเกินไปจนล้น UI/DB
+const PLAYER_NAME_MAX_LENGTH = 24;
+// ชื่อชุดนี้สงวนไว้ให้ Player Tester เท่านั้น ทั้งไทยและอังกฤษ:
+//   ผู้เล่น / ผู้เล่น1 / ผู้เล่น2 ...
+//   Player / Player1 / Player2 ...
+// เปรียบเทียบแบบ case-insensitive สำหรับภาษาอังกฤษ และตรวจหลังตัด whitespace แล้ว
+// เพื่อกันการเลี่ยงด้วย "Player 1", "P l a y e r1" หรือการ paste ช่องว่างเข้ามา
+const RESERVED_TESTER_NAME_RE = /^(?:player|ผู้เล่น)(?:[0-9]+)?$/iu;
+
+function normalizeNameWhitespace(name) {
+    if (typeof name !== "string") return "";
+    return name.replace(/\s+/gu, "").slice(0, PLAYER_NAME_MAX_LENGTH);
+}
+
+function isReservedTesterName(name) {
+    return RESERVED_TESTER_NAME_RE.test(normalizeNameWhitespace(name));
+}
+
+function assertUserDisplayNameAllowed(name) {
+    const normalized = normalizeNameWhitespace(name);
+    if (!normalized) throw Object.assign(new Error("ชื่อไม่ถูกต้อง"), { code: "BAD_NAME" });
+    if (isReservedTesterName(normalized)) {
+        throw Object.assign(new Error("ชื่อนี้สงวนไว้สำหรับ Player Tester"), { code: "NAME_RESERVED" });
+    }
+    return normalized;
+}
+
 function sanitizeName(name, fallback = "ผู้เล่น") {
     if (typeof name !== "string") return fallback;
-    const trimmed = name.trim().slice(0, 24);
-    return trimmed.length ? trimmed : fallback;
+    const normalized = normalizeNameWhitespace(name);
+    return normalized.length ? normalized : fallback;
 }
 
 // ตั้งค่าห้องที่โฮสต์กรอกไว้ "ก่อนสร้างห้อง" (หน้า "🛠️ ตั้งค่าห้องก่อนสร้าง" ใน host.html) — ส่งมากับ create_room
@@ -7568,6 +10610,9 @@ function cleanupAfterVoluntaryLeaveDeath(room, player) {
 
 function cleanupAfterDeath(room, player, freshLoverPairs) {
     const cascadeDeaths = [];
+    if (player && !player.isHost) {
+        recordRoomTimeline(room, "player_died", { source: "game", label: String(player.name || "ผู้เล่น").slice(0, 80) });
+    }
     const protectRoles = ["หมอ", "บอดี้การ์ด", "แม่มด"];
 
     // การตายทุกชนิดที่เข้าผ่าน cleanup นี้ใช้กฎเดียวกัน: ถ้าโฮสต์เปิดการตั้งค่าไว้ ให้เปิดบท
@@ -7885,7 +10930,7 @@ function endGame(room, roomId, resultTeam) {
     room.globalChatHistory = room.globalChatHistory || [];
     pushGlobalChat(room, msg);
     io.to(roomId).emit("chat_message", msg);
-    io.to(roomId).emit("room_update", publicRoomView(room));
+    broadcastRoomUpdate(roomId, room, { timelineType: "game_ended", source: "game" });
     return true;
 }
 
@@ -8321,6 +11366,7 @@ function closeVoteRound(room, roomId, deps) {
 
     // ปิดโหวตแล้ว เข้าคืนถัดไปให้อัตโนมัติเลย (ยกเว้นเกมจบไปแล้วระหว่างนับคะแนน)
     if (!room.gameOver) {
+        broadcastRoomUpdate(roomId, room, { timelineType: "vote_resolved", source: "game", reason: executed ? "executed" : "no_execution" });
         beginNight(room, roomId); // เรียก room_update ให้เองในตัว
 
         // แก้บั๊กบอทไม่ทำงานคืน 1-2 เป็นต้นไป (ดูคอมเมนต์ด้านบนหัวฟังก์ชัน): ยิง runBotsFor เอง
@@ -8331,7 +11377,7 @@ function closeVoteRound(room, roomId, deps) {
             runBotsFor(room, roomId, "nightSkill", deps);
         }
     } else {
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
 }
 
@@ -8367,7 +11413,7 @@ function beginNight(room, roomId) {
         announceCascadeDeaths(room, roomId, musclemanCascade);
         checkGameEndGeneral(room, roomId);
         if (room.gameOver) {
-            io.to(roomId).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(roomId, room);
             return;
         }
     }
@@ -8449,7 +11495,7 @@ function beginNight(room, roomId) {
     });
     io.to(hostRoomName(roomId)).emit("chat_message", nightMsg); // ส่งให้ทุกจอโฮสต์
 
-    io.to(roomId).emit("room_update", publicRoomView(room));
+    broadcastRoomUpdate(roomId, room, { timelineType: "phase_started", source: "game", reason: `night_${room.nightCount}` });
 }
 
 // ============================================================
@@ -8600,6 +11646,12 @@ function wipeAllRoomsInMemory({ keepTesterRooms = false } = {}) {
         delete pendingIndicators[t];
     });
     Object.keys(hostSocketRooms).forEach((k) => { if (!keepIds.has(hostSocketRooms[k])) delete hostSocketRooms[k]; });
+    for (const id of [...roomLeaseEpochs.keys()]) {
+        if (!keepIds.has(id)) {
+            clearRoomLeaseRenewal(id);
+            roomLeaseEpochs.delete(id);
+        }
+    }
     Object.keys(loginAttemptTracker).forEach((k) => {
         // คีย์รูปแบบ "host:<roomId>" / "join:<roomId>" (ดู isLoginAttemptAllowed) — เก็บของห้องที่รอดไว้
         const roomPart = String(k).split(":").slice(1).join(":");
@@ -8637,6 +11689,16 @@ function countTesterRooms() {
 // คืนจำนวน "ห้องที่ถูกปิดจริง" (ไม่นับห้องผู้ทดสอบที่รอด — ดู countTesterRooms)
 async function closeAllRoomsSilently({ fast = false } = {}) {
     const ids = Object.keys(rooms).filter((id) => !isTesterRoom(rooms[id]));
+    const activeAccountIds = new Set();
+    ids.forEach((id) => {
+        (rooms[id]?.players || []).forEach((p) => {
+            const accountId = normalizeAccountId(p?.accountId || "");
+            if (accountId && !p?.isTester && !p?.isBot) activeAccountIds.add(accountId);
+        });
+    });
+    const releaseActivities = () => Promise.all([...activeAccountIds].map((accountId) => clearAccountActivity(accountId, { force: true }).catch((e) => {
+        console.error(`[account-activity] ล้าง activity ของ ${accountId} ตอนปิดห้องไม่สำเร็จ:`, e?.name || "Error", e?.message || e);
+    })));
     ids.forEach((id) => {
         // ให้ socket ที่ยังต่ออยู่ออกจากห้อง socket.io ของห้องนี้ด้วย — กัน socket เก่าค้างในห้องแล้วไปรับ broadcast
         // ของห้องใหม่ที่บังเอิญได้รหัสเดิมทีหลัง (เฉพาะห้องที่ถูกปิดจริง ห้องผู้ทดสอบไม่ถูกแตะ)
@@ -8650,6 +11712,7 @@ async function closeAllRoomsSilently({ fast = false } = {}) {
     // startNewSessionEpoch() เปลี่ยน roomResetAt ก่อนหน้านี้แล้ว จึงกัน snapshot รุ่นเก่าฟื้นกลับได้
     // แม้การลบ DynamoDB จะกำลังทำงานอยู่เบื้องหลัง.
     if (fast) {
+        releaseActivities().catch(() => {});
         wipeAllRoomsInMemory({ keepTesterRooms: true });
         if (ROOM_PERSISTENCE_ENABLED && ids.length) {
             Promise.all(ids.map((id) => deletePersistedRoom(id).catch((e) => {
@@ -8661,6 +11724,7 @@ async function closeAllRoomsSilently({ fast = false } = {}) {
 
     // เส้นทางปกติยังรอ cleanup ให้เสร็จจริง เพื่อคง semantics เดิมของ server shutdown
     // และ call site อื่นที่ต้องการรอการลบ snapshot ก่อนดำเนินการต่อ.
+    await releaseActivities();
     if (ROOM_PERSISTENCE_ENABLED) {
         await Promise.all(ids.map((id) => deletePersistedRoom(id).catch((e) => {
             console.error(`[room-persist] ลบ snapshot ห้อง ${id} ตอนปิดเซิร์ฟเวอร์ไม่สำเร็จ:`, e.name, e.message);
@@ -8851,6 +11915,14 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
     }
     await serverStateReady;
     resetInProgress = true;
+    // Admin must invalidate any live-account snapshot immediately. A reset can run while
+    // background polling/room screens are still open, so waiting for the final epoch event
+    // would leave a short window where old names can reappear.
+    io.sockets.sockets.forEach((s) => {
+        if (s.data && s.data.isAdmin) {
+            try { s.emit("admin_reset_started", { resetEpoch: resetEpoch || "" }); } catch (_) {}
+        }
+    });
     const writesDrained = await waitForGameDataWritesDrain(15000);
     if (!writesDrained) {
         console.error(`[reset] ยังมีงานเขียนข้อมูลเกมค้าง ${activeGameDataWrites} งานเกินเวลารอ — ยกเลิก reset เพื่อไม่ให้ล้างครึ่งเดียว`);
@@ -8922,9 +11994,16 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
             statePersisted = false;
             console.error("[reset] บันทึกสถานะหลังล้างข้อมูลไม่สำเร็จ:", e.name, e.message);
         }
-        // Admin ไม่ต้องถูก reset แต่ทุก socket เกม/ทดสอบต้องรับคำสั่งล้างพร้อมกัน
+        // Admin ไม่ต้องถูก reset แต่ต้องถูกแจ้งให้ทิ้ง state/requests รุ่นเก่า
+        // ส่วน socket เกม/ทดสอบทั้งหมดถูก mark เป็น pre-reset ก่อนส่ง force_reset
         io.sockets.sockets.forEach((s) => {
-            if (s.data && s.data.isAdmin) return;
+            if (s.data && s.data.isAdmin) {
+                try { s.emit("admin_reset_completed", { epoch: newEpoch }); } catch (_) {}
+                return;
+            }
+            s.data = s.data || {};
+            s.data.resetInvalidated = true;
+            s.data.resetEpoch = newEpoch;
             try { s.emit("force_reset", { epoch: newEpoch }); } catch (_) {}
         });
 
@@ -8953,6 +12032,100 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
 //   4) POST /api/admin/force-reload { kind: "files" | "images" | "both" }
 // ป้องกันด้วยรหัสเดียวกับปุ่มล้างข้อมูล: ถ้าตั้ง env var ADMIN_RESET_PASSWORD ไว้ ต้องส่ง password มาด้วย
 const SERVER_STATE_STAT_KEY = "SERVER_STATE";
+const SERVER_STATE_AUTHORITY_CACHE_MS = 1500;
+const serverStateAuthorityCache = {
+    at: 0,
+    state: null,
+    inFlight: null,
+};
+
+async function readAuthoritativeServerState({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && serverStateAuthorityCache.state && now - serverStateAuthorityCache.at < SERVER_STATE_AUTHORITY_CACHE_MS) {
+        return serverStateAuthorityCache.state;
+    }
+    if (serverStateAuthorityCache.inFlight) return serverStateAuthorityCache.inFlight;
+
+    serverStateAuthorityCache.inFlight = loadServerState()
+        .then((state) => {
+            serverStateAuthorityCache.at = Date.now();
+            serverStateAuthorityCache.state = state;
+            return state;
+        })
+        .catch((e) => {
+            console.error("[server-control] อ่าน SERVER_STATE แบบ authoritative ไม่สำเร็จ:", e.name, e.message);
+            return null;
+        })
+        .finally(() => {
+            serverStateAuthorityCache.inFlight = null;
+        });
+
+    return serverStateAuthorityCache.inFlight;
+}
+
+function cacheCurrentServerState() {
+    serverStateAuthorityCache.at = Date.now();
+    serverStateAuthorityCache.state = {
+        closed: serverClosed === true,
+        imageEpoch: imageEpoch || "",
+        reloadEpoch: reloadEpoch || "",
+        reloadKind: reloadKind || "",
+        testerReloadEpoch: testerReloadEpoch || "",
+        message: serverClosed ? (closedMessage || "") : "",
+        reopenAt: serverClosed ? (closedReopenAt || 0) : 0,
+        planCloseAt: !serverClosed && closingPlan ? closingPlan.closeAt : 0,
+        planMessage: !serverClosed && closingPlan ? (closingPlan.message || "") : "",
+        planReopenAt: !serverClosed && closingPlan ? (closingPlan.reopenAt || 0) : 0,
+        roomResetAt: roomResetAt || 0,
+        testerPassSecret: "",
+    };
+}
+
+async function syncServerStateFromAuthority(options = {}) {
+    const persisted = await readAuthoritativeServerState(options);
+    if (!persisted) return null;
+
+    // คำสั่งจาก Admin บน instance นี้ต้องมีสิทธิ์ชนะค่าที่อ่านมาจาก DB จนกว่าจะบันทึกเสร็จ
+    // instance อื่นที่ไม่มี local admin mutation จะค่อย ๆ sync ตาม row เดียวกันเอง
+    if (!serverOpenTouchedByAdmin) {
+        const persistedClosed = persisted.closed === true;
+        if (persistedClosed && !serverClosed) {
+            closedMessage = persisted.message || "";
+            closedReopenAt = persisted.reopenAt || 0;
+            closeServerNow();
+            await closeAllRoomsSilently({ fast: true });
+        } else if (!persistedClosed && serverClosed) {
+            // Instance นี้รู้ตัวช้า หลังอีก instance เปิดคืนแล้ว: จบ session เดิมให้ตรงกับ
+            // roomResetAt/reloadEpoch ใน DB ก่อนเปิดรับ public traffic ต่อ เพื่อไม่ให้ห้องเก่าฟื้นกลับมา
+            await closeAllRoomsSilently({ fast: true });
+            serverClosed = false;
+            closedMessage = "";
+            closedReopenAt = 0;
+            clearClosingPlan();
+        }
+    }
+
+    if (!reloadEpochTouchedByAdmin) {
+        reloadEpoch = persisted.reloadEpoch || "";
+        reloadKind = persisted.reloadKind || "";
+    }
+    testerReloadEpoch = persisted.testerReloadEpoch || testerReloadEpoch;
+    if (!imageEpochTouchedByAdmin && persisted.imageEpoch) imageEpoch = persisted.imageEpoch;
+    if (persisted.roomResetAt > roomResetAt) roomResetAt = persisted.roomResetAt;
+
+    if (!serverClosed && persisted.planCloseAt > 0) {
+        if (persisted.planCloseAt <= Date.now()) {
+            // กำหนดการเก่าหมดเวลาแล้ว → ให้ state machine ปิดจริงผ่าน path เดียวกับตอนบูต
+            await performServerClose({ message: persisted.planMessage, reopenAt: persisted.planReopenAt });
+        } else if (!closingPlan) {
+            armClosingPlan(persisted.planCloseAt, persisted.planMessage, persisted.planReopenAt);
+        }
+    } else if (serverClosed || persisted.planCloseAt <= 0) {
+        if (closingPlan) clearClosingPlan();
+    }
+
+    return persisted;
+}
 
 async function loadServerState() {
     const doc = await getDynamoDocClient();
@@ -9108,6 +12281,7 @@ async function saveServerState() {
             ":at": new Date().toISOString(),
         },
     }));
+    cacheCurrentServerState();
 }
 
 function playerSockets() {
@@ -9311,6 +12485,7 @@ async function performServerClose({ message, reopenAt }) {
         persisted = false;
         console.error("[server-control] บันทึกสถานะเปิด/ปิดลง DynamoDB ไม่สำเร็จ:", e.name, e.message);
     }
+    if (persisted) serverOpenTouchedByAdmin = false;
     return { kicked, closedRooms, persisted };
 }
 
@@ -9347,6 +12522,7 @@ app.post("/api/admin/server-open", express.json({ limit: "4kb" }), async (req, r
             persisted = false;
             console.error("[server-control] บันทึกสถานะเปิด/ปิดลง DynamoDB ไม่สำเร็จ:", e.name, e.message);
         }
+        if (persisted) serverOpenTouchedByAdmin = false;
         console.log(`[server-control] เปิดเซิร์ฟเวอร์ (เปลี่ยนสถานะ ${stateChanged}, ยกเลิกนับถอยหลัง ${cancelledClosing}, ปิดห้อง ${closedRooms} ห้อง, บันทึก DB ${persisted ? "สำเร็จ" : "ไม่สำเร็จ"})`);
         return res.json({ ok: true, open: !serverClosed, kicked: 0, closedRooms, keptTesterRooms: countTesterRooms(), changed: stateChanged, cancelledClosing, persisted });
     }
@@ -9362,6 +12538,7 @@ app.post("/api/admin/server-open", express.json({ limit: "4kb" }), async (req, r
             persisted = false;
             console.error("[server-control] บันทึกข้อความประกาศลง DynamoDB ไม่สำเร็จ:", e.name, e.message);
         }
+        if (persisted) serverOpenTouchedByAdmin = false;
         console.log(`[server-control] แก้ข้อความ/เวลาที่คาดว่าจะเปิด (ปิดอยู่แล้ว) บันทึก DB ${persisted ? "สำเร็จ" : "ไม่สำเร็จ"}`);
         return res.json({ ok: true, open: false, kicked: 0, closedRooms: 0, changed: false, noticeUpdated: true, reopenAt: closedReopenAt, persisted });
     }
@@ -9378,6 +12555,7 @@ app.post("/api/admin/server-open", express.json({ limit: "4kb" }), async (req, r
             persisted = false;
             console.error("[server-control] บันทึกกำหนดการปิดลง DynamoDB ไม่สำเร็จ:", e.name, e.message);
         }
+        if (persisted) serverOpenTouchedByAdmin = false;
         console.log(`[server-control] ตั้งเวลาปิดเซิร์ฟเวอร์ไว้ ${new Date(plan.closeAt).toISOString()} (แจ้ง ${notified} เครื่อง)`);
         return res.json({
             ok: true, open: true, scheduled: true,
@@ -9584,14 +12762,25 @@ function stripBrowserExitPlayerMaps(room, playerId) {
 async function applyVoluntaryPlayerExit(roomId, tok, reason, pendingMeta = {}) {
     const room = rooms[roomId];
     if (!room) return { ok:true, code:'ROOM_NOT_FOUND' };
-    const player = room.players.find((p) => p && !p.isHost && p.token === tok);
+    const pendingAccountId = normalizeAccountId(pendingMeta.accountId || "");
+    const pendingMembershipId = String(pendingMeta.membershipId || "").trim();
+    const player = (pendingAccountId && pendingMembershipId
+        ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === pendingAccountId && String(p.membershipId || "").trim() === pendingMembershipId)
+        : null)
+        || (pendingAccountId ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === pendingAccountId) : null)
+        || room.players.find((p) => p && !p.isHost && p.token === tok);
     if (!player) return { ok:true, code:'PLAYER_NOT_FOUND' };
+    const pendingSocketId = String(pendingMeta.socketId || "");
+    if (pendingAccountId && player.membershipId && getConnectedSocketsForAccount(pendingAccountId).some((sock) => sock.id !== pendingSocketId && String(sock.data?.membershipId || "") === String(player.membershipId || ""))) {
+        return { ok:true, code:'SECONDARY_TAB_RETAINED', retained:true };
+    }
 
     if (!room.started || room.gameOver) {
         if (!room.started && !room.gameOver) {
             if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
             if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token].timer); delete pendingIndicators[player.token]; }
             stripBrowserExitPlayerMaps(room, player.id);
+            if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: pendingMeta.sessionHash || "", deviceId: pendingMeta.deviceId || "" }).catch(() => {});
             room.players = room.players.filter((p) => p.token !== tok);
             io.to(roomId).emit('room_update', publicRoomView(room));
             schedulePersistRoom(roomId, true);
@@ -9612,6 +12801,7 @@ async function applyVoluntaryPlayerExit(roomId, tok, reason, pendingMeta = {}) {
 
     player.disconnected = true;
     player.offline = true;
+    if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: pendingMeta.sessionHash || "", deviceId: pendingMeta.deviceId || "" }).catch(() => {});
     let announced = false;
     if (player.alive) {
         player.alive = false;
@@ -9730,17 +12920,37 @@ app.post('/api/room/browser-exit-player', express.json({ limit:'4kb', type:['app
     const sessionId = bodySessionId || String(ctx.sessionId || '');
     const id = String(req.body?.roomId || '').trim().toUpperCase();
     const tok = String(req.body?.token || '');
+    const requestAccountId = normalizeAccountId(req.body?.accountId || '');
+    const requestMembershipId = String(req.body?.membershipId || '').trim();
+    const requestSocketId = String(req.body?.socketId || '');
+    const requestDeviceId = normalizeDeviceId(req.body?.deviceId || '');
+    const requestSocket = requestSocketId ? io.sockets.sockets.get(requestSocketId) : null;
+    const requestSessionHash = String(requestSocket?.data?.accountSessionHash || '');
     const signalEvent = recordDiagnostic({
         source:'client', kind:'browser_exit_signal', page:'player', message:'Player pagehide exit signal reached the server',
         traceId, sessionId, requestId:String(ctx.requestId || ''), roomId:id, endpoint:'/api/room/browser-exit-player',
         context:{ source:String(req.body?.source || 'pagehide'), socketIdPresent:!!String(req.body?.socketId || ''), viewport:req.body?.viewport || null, pendingOperations:req.body?.pendingOperations || [], started:!!req.body?.started },
         causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_SIGNAL', confidence:'high' },
     });
-    if (!id || !tok) return res.status(400).json({ ok:false, code:'BROWSER_EXIT_INVALID_PAYLOAD' });
-    const room = rooms[id];
+    if (!id || (!tok && !requestAccountId)) return res.status(400).json({ ok:false, code:'BROWSER_EXIT_INVALID_PAYLOAD' });
+    let room = rooms[id];
+    if (!room) {
+        try { room = await recoverPersistedRoomById(id, { reason: 'browser_exit_player' }); } catch (_) { return res.json({ ok:false, code:'SERVER_ERROR' }); }
+    }
     if (!room) return res.json({ ok:true, code:'ROOM_NOT_FOUND' });
-    const player = room.players.find((p) => p && !p.isHost && p.token === tok);
+    const player = (requestAccountId && requestMembershipId
+        ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === requestAccountId && String(p.membershipId || '').trim() === requestMembershipId)
+        : null)
+        || (requestAccountId ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === requestAccountId) : null)
+        || room.players.find((p) => p && !p.isHost && p.token === tok);
     if (!player) return res.json({ ok:true, code:'PLAYER_NOT_FOUND' });
+
+    if (requestAccountId && player.membershipId) {
+        const otherSocket = getConnectedSocketsForAccount(requestAccountId).some((sock) =>
+            sock.id !== requestSocketId && String(sock.data?.membershipId || "") === String(player.membershipId || "")
+        );
+        if (otherSocket) return res.json({ ok:true, code:'BROWSER_EXIT_SECONDARY_TAB_IGNORED', retained:true });
+    }
 
     // If Socket.IO has already reported this exact socket as disconnected, the pagehide
     // beacon is a late duplicate lifecycle signal. The normal disconnect/reconnect-grace
@@ -9759,10 +12969,25 @@ app.post('/api/room/browser-exit-player', express.json({ limit:'4kb', type:['app
         return res.json({ ok:true, code:'BROWSER_EXIT_DUPLICATE_IGNORED', recorded:true, diagnosticId:duplicateEvent?.id || '' });
     }
 
-    armPendingBrowserExit('player', id, tok, async (pending) => {
+    armPendingBrowserExit('player', id, tok || player.token, async (pending) => {
+        // A delayed pagehide from an older session must never clear the activity acquired by a newer
+        // login on the same account. Re-read the durable active session before applying the exit.
+        if (pending.accountId && pending.sessionHash) {
+            try {
+                const profile = await getAccountProfile(pending.accountId, { forceFresh: true });
+                const activeHash = String(profile?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || '');
+                if (activeHash && activeHash !== pending.sessionHash) {
+                    return;
+                }
+            } catch (_) {}
+        }
         const liveRoom = rooms[id];
         if (!liveRoom) return;
-        const livePlayer = liveRoom.players.find((p) => p && !p.isHost && p.token === tok);
+        const livePlayer = (pending.accountId && pending.membershipId
+            ? liveRoom.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === pending.accountId && String(p.membershipId || '').trim() === pending.membershipId)
+            : null)
+            || (pending.accountId ? liveRoom.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === pending.accountId) : null)
+            || liveRoom.players.find((p) => p && !p.isHost && p.token === pending.token);
         if (!livePlayer) return;
         if (isPlayerCurrentlyConnected(livePlayer)) {
             const reconnectedEvent = recordDiagnostic({ source:'server', kind:'browser_exit_cancelled', page:'player', message:'Player reconnected during browser-exit grace; no leave/death was applied', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ outcome:'reconnected', source:pending.source }, causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_RECONNECTED', confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] } });
@@ -9770,10 +12995,12 @@ app.post('/api/room/browser-exit-player', express.json({ limit:'4kb', type:['app
             addDiagnosticBreadcrumb({ source:'server', type:'browser_exit', label:'browser_exit.player_reconnected', traceId:pending.traceId, sessionId:pending.sessionId, page:'player', detail:{ roomId:id, diagnosticId:reconnectedEvent?.id || '' } });
             return;
         }
-        const result = await applyVoluntaryPlayerExit(id, tok, 'browser_tab_closed', pending);
+        pending.accountId = pending.accountId || requestAccountId || normalizeAccountId(livePlayer.accountId || '');
+        pending.membershipId = pending.membershipId || requestMembershipId || String(livePlayer.membershipId || '');
+        const result = await applyVoluntaryPlayerExit(id, pending.token, 'browser_tab_closed', pending);
         const appliedEvent = recordDiagnostic({ source:'server', kind:'browser_exit_applied', page:'player', message:'Player browser exit passed reconnect grace and was applied to room/game state', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ result:result || {}, source:pending.source }, causalHint:{ failureStage:'room.lifecycle', causeCode:String(result?.code || 'BROWSER_EXIT_APPLIED'), confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] } });
         if (pending.armDiagnosticId && appliedEvent?.id) linkDiagnosticEvents(pending.armDiagnosticId, appliedEvent.id, 'causes');
-    }, { page:'player', traceId, sessionId, source:String(req.body?.source || 'pagehide'), signalDiagnosticId:String(signalEvent?.id || '') }, BROWSER_EXIT_PLAYER_GRACE_MS);
+    }, { page:'player', traceId, sessionId, source:String(req.body?.source || 'pagehide'), socketId:requestSocketId, accountId:requestAccountId || normalizeAccountId(player.accountId || ''), membershipId:requestMembershipId || String(player.membershipId || ''), sessionHash:requestSessionHash, deviceId:requestDeviceId, signalDiagnosticId:String(signalEvent?.id || '') }, BROWSER_EXIT_PLAYER_GRACE_MS);
 
     res.setHeader('Cache-Control','no-store');
     return res.json({ ok:true, code:'BROWSER_EXIT_ARMED' });
@@ -9782,6 +13009,8 @@ app.post('/api/room/browser-exit-player', express.json({ limit:'4kb', type:['app
 // ============================================================
 // SOCKET EVENTS
 // ============================================================
+ensureAccountSessionWatchdog();
+
 io.on("connection", (socket) => {
 
     // ============================================================
@@ -9923,10 +13152,10 @@ io.on("connection", (socket) => {
     // ส่ง Running version จริงของ Elastic Beanstalk ให้ client ทันทีหลังเชื่อมต่อ
     // client ใช้ค่าจาก event นี้เป็นแหล่งแสดงผลหลัก; ถ้า AWS ยังตอบไม่ทันจะได้ fallback จาก /api/config
     getAppVersion().then((version) => {
-        try { socket.emit("serverInfo", { version, buildVersion: computeServerVersion(), clientHash: computeClientHash(), adminHash: computeAdminHash() }); } catch (_) {}
+        try { socket.emit("serverInfo", { version, buildVersion: computeServerVersion(), clientHash: computeClientHash(), adminHash: computeAdminHash(), deploymentState: getCachedAppEnvironmentState().deploymentState, environmentStatus: getCachedAppEnvironmentState().status }); } catch (_) {}
     }).catch((err) => {
         console.error("[serverInfo] failed to get app version:", err);
-        try { socket.emit("serverInfo", { version: "unknown", buildVersion: computeServerVersion(), clientHash: computeClientHash(), adminHash: computeAdminHash() }); } catch (_) {}
+        try { socket.emit("serverInfo", { version: "unknown", buildVersion: computeServerVersion(), clientHash: computeClientHash(), adminHash: computeAdminHash(), deploymentState: getCachedAppEnvironmentState().deploymentState, environmentStatus: getCachedAppEnvironmentState().status }); } catch (_) {}
     });
 
     // ส่งข้อมูล roles และห้องแนะนำทันทีที่ client เชื่อมต่อ
@@ -9987,9 +13216,13 @@ io.on("connection", (socket) => {
         const requestedAccountId = testerGranted ? "" : normalizeAccountId(accountId || "");
         const accountIdentity = testerGranted
             ? { ok: true, accountId: "", name: sanitizeName(name, "โฮสต์"), profile: null }
-            : await ensureNormalAccountIdentity(requestedAccountId, name, { accountToken, roomId: "", isHost: true, join: true });
+            : await ensureNormalAccountIdentity(requestedAccountId, name, { accountToken, roomId: "", isHost: true, join: true, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
         if (!accountIdentity.ok) return cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code });
         name = accountIdentity.name;
+        if (!testerGranted) {
+            const activityCheck = getAccountActiveActivity(accountIdentity.profile);
+            if (activityCheck && activityCheck.type !== "HOST_ROOM") return cb({ error: "account activity already active", code: "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activityCheck });
+        }
         // บั๊ก: เดิม genId() เรียกครั้งเดียวแล้วใช้เลย ไม่เช็คว่าห้องรหัสนี้มีอยู่แล้วหรือไม่
         // genId() สุ่ม 5 ตัวอักษรจาก [0-9a-z] มีค่าที่เป็นไปได้ ~36^5 ≈ 60 ล้านแบบ แต่ถ้าเกิดชนกัน
         // พอดี (แม้โอกาสต่ำ) โค้ดเดิมจะ "rooms[id] = {...}" ทับห้องเดิมที่มีคนเล่นอยู่ทันที
@@ -10002,17 +13235,25 @@ io.on("connection", (socket) => {
         socket.data.diagnosticRoomId = String(id).toUpperCase().slice(0, 12);
         const hostToken = normalizeAccountId(token || "") || (genId() + genId());
         const testerHostSlot = testerGranted ? nextTesterHostSlot() : 0;
+        const hostMembershipId = generateMembershipId();
         if (testerGranted) name = `โฮสต์${testerHostSlot}`;
         else name = sanitizeName(name, "โฮสต์");
 
         rooms[id] = {
             id,
+            stateVersion: 1,
+            stateChangedAt: Date.now(),
+            timelineSeq: 0,
+            timeline: [],
             // ห้องผู้ทดสอบ: server ตัดสินตอนสร้างห้องเท่านั้น (client แก้ทีหลังไม่ได้ — ไม่มี event ไหนรับค่านี้จาก client) → ไม่ถูกปิดโดยการปิดเซิร์ฟเวอร์/บังคับรีโหลด
             isTesterRoom: testerGranted,
             testerHostSlot,
             testerSessionId: testerGranted ? String(testerSessionId || "").slice(0, 128) : "",
             host: socket.id,
             hostIds: [socket.id],
+            ownerAccountId: testerGranted ? "" : (accountIdentity.accountId || ""),
+            hostMembershipId,
+            roomLeaseEpoch: 0,
             // รหัสผ่านห้อง (แยกจาก HOST_PASSWORD ทั่วไปฝั่ง index.html ที่กันแค่คนเข้าโหมดโฮสต์ได้)
             // ค่าว่าง "" = ไม่ได้ตั้งรหัส ใครมีสิทธิ์เข้าโหมดโฮสต์อยู่แล้วก็เลือกคุมห้องนี้ได้เลย
             // จากกริด "ห้องที่ยังเปิดอยู่" — ตั้งรหัสนี้ไว้ (ผ่านปุ่ม "⚙️ ตั้งค่าห้อง") เพื่อกันจอ/แอดมิน
@@ -10059,8 +13300,12 @@ io.on("connection", (socket) => {
             botAI: { enabled: st.botAIEnabled, perBot: {}, llmBots: {} },
             players: [{
                 id: socket.id,
+                roomId: id,
                 token: hostToken,
-                accountId: testerGranted ? "" : (accountIdentity.accountId || hostToken),
+                accountId: testerGranted ? "" : (accountIdentity.accountId || ""),
+                membershipId: hostMembershipId,
+                activeDeviceId: testerGranted ? "" : normalizeDeviceId(socket.data?.deviceId || ""),
+                activeTabId: testerGranted ? "" : normalizeTabId(socket.data?.tabId || ""),
                 name,
                 isHost: true,
                 role: null,
@@ -10074,6 +13319,33 @@ io.on("connection", (socket) => {
             }],
         };
 
+        if (!testerGranted && ROOM_PERSISTENCE_ENABLED) {
+            try {
+                const lease = await acquireRoomLease(id);
+                if (!lease.ok) {
+                    delete rooms[id];
+                    return cb({ error: "room failover is still settling", code: lease.code || "ROOM_FAILOVER_WAIT", retryAfterMs: lease.retryAfterMs || ROOM_FAILOVER_RETRY_MS });
+                }
+                rooms[id].roomLeaseEpoch = lease.leaseEpoch;
+                scheduleRoomLeaseRenewal(id);
+            } catch (e) {
+                delete rooms[id];
+                console.error(`[room-lease] create ${id} failed:`, e?.name || "Error", e?.message || e);
+                return cb({ error: "room coordination temporarily unavailable", code: "SERVER_ERROR" });
+            }
+        }
+
+        if (!testerGranted) {
+            const activity = await acquireAccountActivity(accountIdentity.accountId, { type: "HOST_ROOM", roomId: id, membershipId: hostMembershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: true });
+            if (!activity.ok) { await releaseRoomLease(id).catch(() => {}); delete rooms[id]; return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null }); }
+        }
+        socket.data.accountId = testerGranted ? "" : accountIdentity.accountId;
+        socket.data.accountSessionHash = testerGranted ? "" : hashAccountToken(accountToken);
+        socket.data.deviceId = testerGranted ? "" : normalizeDeviceId(socket.data.deviceId || "");
+        socket.data.tabId = testerGranted ? "" : normalizeTabId(socket.data.tabId || "");
+        socket.data.roomId = id;
+        socket.data.membershipId = testerGranted ? "" : hostMembershipId;
+        socket.data.isHost = true;
         socket.join(id);
         socket.join(hostRoomName(id));
         hostSocketRooms[socket.id] = id;
@@ -10081,7 +13353,7 @@ io.on("connection", (socket) => {
         // หมายถึงห้องมีสำเนาถาวรอยู่แล้ว (ถ้า DynamoDB ชั่วคราวล่มยัง fail-open ต่อเกมได้)
         try { await persistRoomSnapshot(rooms[id], { register: true }); }
         catch (e) { console.error(`[room-persist] สร้าง snapshot ห้อง ${id} ไม่สำเร็จ:`, e.name, e.message); }
-        io.to(id).emit("room_update", publicRoomView(rooms[id]));
+        broadcastRoomUpdate(id, rooms[id], { timelineType: "room_created", source: "room" });
         broadcastSuggestedRoom();
         // ลงทะเบียนชื่อ legacy เฉพาะผู้เล่นจริง; tester ไม่มีบัญชีจริงเด็ดขาด
         if (!testerGranted) {
@@ -10091,7 +13363,7 @@ io.on("connection", (socket) => {
         }
         // ส่งรหัสที่ตั้งไว้กลับไปด้วย (เฉพาะ ack ให้โฮสต์ที่สร้างห้อง ไม่ผ่าน room_update ที่ broadcast ให้ทุกคน) —
         // client จำไว้ในเครื่องเหมือนตอนตั้งผ่าน "⚙️ ตั้งค่าห้อง" จะได้ host_login ซ้ำ/โชว์ในช่องตั้งค่าได้
-        cb({ ok: true, roomId: id, token: hostToken, hostPassword: st.hostPassword, joinCode: st.joinCode, testerHostSlot });
+        cb({ ok: true, roomId: id, token: hostToken, hostPassword: st.hostPassword, joinCode: st.joinCode, testerHostSlot, membershipId: hostMembershipId });
     });
 
     // ----------------------------------------------------------------
@@ -10120,12 +13392,18 @@ io.on("connection", (socket) => {
         roomId = String(roomId).trim().toUpperCase();
         let room = rooms[roomId];
         if (!room) {
+            if (deploymentHandoffInProgress()) {
+                return cb({ error: "room handoff is in progress", code: "ROOM_FAILOVER_WAIT", retryAfterMs: ROOM_FAILOVER_RETRY_MS });
+            }
             // Multi-instance / cold-start fallback: the room may exist in DynamoDB even though this
             // particular EB instance has not loaded it into RAM yet. Do not treat that as a closed room.
             try {
                 room = await recoverPersistedRoomById(roomId, { reason: "host_login" });
             } catch (e) {
                 console.error(`[room-recovery] host_login กู้คืนห้อง ${roomId} ไม่สำเร็จ:`, e.name || "Error", e.message || e);
+                if (["ROOM_FAILOVER_WAIT", "ROOM_LEASE_UNAVAILABLE"].includes(String(e?.code || ""))) {
+                    return cb({ error: "room handoff is still settling", code: String(e.code), retryAfterMs: Number(e.retryAfterMs) || ROOM_FAILOVER_RETRY_MS });
+                }
                 return cb({ error: "room recovery temporarily unavailable", code: "SERVER_ERROR" });
             }
         }
@@ -10148,22 +13426,39 @@ io.on("connection", (socket) => {
 
         const hostPlayer = room.players.find((p) => p.isHost);
         if (!hostPlayer) return cb({ error: "host slot missing", code: "ROOM_NOT_FOUND" });
+        if (!isTesterRoom(room)) {
+            const ownerId = normalizeAccountId(room.ownerAccountId || hostPlayer.accountId || "");
+            const requestedId = normalizeAccountId(accountId || socket.data?.accountId || "");
+            if (ownerId && requestedId && ownerId !== requestedId) return cb({ error: "host ownership required", code: "HOST_OWNERSHIP_REQUIRED" });
+        }
 
-        if (token) hostPlayer.token = token;
+        if (isTesterRoom(room) && token) hostPlayer.token = token;
         if (isTesterRoom(room)) {
             hostPlayer.isTester = true;
             hostPlayer.accountId = "";
             if (!room.testerHostSlot) room.testerHostSlot = nextTesterHostSlot();
             hostPlayer.name = `โฮสต์${room.testerHostSlot}`;
         } else {
-            const accountIdentity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || hostPlayer.accountId || ""), hostPlayer.name, { accountToken, roomId, isHost: true, join: false });
+            const accountIdentity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || hostPlayer.accountId || ""), hostPlayer.name, { accountToken, roomId, isHost: true, join: false, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
             if (!accountIdentity.ok) return cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code });
             hostPlayer.accountId = accountIdentity.accountId;
             hostPlayer.name = accountIdentity.name;
+            if (!hostPlayer.membershipId) hostPlayer.membershipId = room.hostMembershipId || generateMembershipId();
+            room.ownerAccountId = accountIdentity.accountId;
+            room.hostMembershipId = hostPlayer.membershipId;
+            const activity = await acquireAccountActivity(accountIdentity.accountId, { type: "HOST_ROOM", roomId, membershipId: hostPlayer.membershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: true });
+            if (!activity.ok) return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null });
+            socket.data.accountId = accountIdentity.accountId;
+            socket.data.accountSessionHash = hashAccountToken(accountToken);
             touchAccountPresence(hostPlayer.accountId, { roomId, name: hostPlayer.name, isHost: true });
         }
         hostPlayer.disconnected = false;
-        hostPlayer.id = socket.id; // เก็บ id ของจอที่ login ล่าสุดไว้เผื่อโค้ดเก่าอ้างอิง
+        hostPlayer.id = socket.id; // transient connection handle; membershipId/accountId remain stable
+        socket.data.roomId = roomId;
+        socket.data.membershipId = hostPlayer.membershipId || room.hostMembershipId || "";
+        socket.data.isHost = true;
+        hostPlayer.activeDeviceId = normalizeDeviceId(socket.data?.deviceId || hostPlayer.activeDeviceId || "");
+        hostPlayer.activeTabId = normalizeTabId(socket.data?.tabId || hostPlayer.activeTabId || "");
         clearPendingBrowserExit('host', roomId, hostPlayer.token, { source:'host_login', traceId:socket.data?.diagnosticTraceId || '', sessionId:socket.data?.diagnosticSessionId || '' });
 
         // เคลียร์ timer รอลบ + timer รอโชว์สถานะหลุดของ token นี้
@@ -10182,7 +13477,7 @@ io.on("connection", (socket) => {
         //  ต้องกดล็อกอินซ้ำสองจอ อัปเดตไม่พร้อมกัน)
         addHostSocket(room, roomId, socket);
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
         if (!hostPlayer.isTester) socket.emit("name_updated_by_host", { name: hostPlayer.name, accountId: hostPlayer.accountId || "" });
         broadcastSuggestedRoom();
 
@@ -10206,11 +13501,11 @@ io.on("connection", (socket) => {
     // ตั้ง/เปลี่ยน/ลบ รหัสห้อง (กันแอดมินคนอื่นแย่งคุมห้อง), รหัสห้องฝั่งผู้เล่น, จำนวนผู้เล่นสูงสุด
     // และ "แสดงบทคนตาย" เฉพาะตอนที่เกมยังไม่เริ่ม
     // hostPassword/joinCode/maxPlayers คงพฤติกรรมเดิม เพื่อไม่ทำลายระบบห้องเดิม
-    socket.on("update_room_settings", ({ roomId, hostPassword, joinCode, maxPlayers, revealDeadRole } = {}, cb) => {
+    socket.on("update_room_settings", ({ roomId, hostPassword, joinCode, maxPlayers, revealDeadRole, stateVersion } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         const room = rooms[roomId];
-        if (!room) return cb({ error: "room not found" });
-        if (!isHostSocket(room, socket.id)) return cb({ error: "not host" });
+        const validation = validateRoomAction(socket, room, { host: true, member: false, stateVersion });
+        if (!validation.ok) return cb({ ...validation, error: validation.code === "NOT_HOST" ? "not host" : validation.code === "ROOM_NOT_FOUND" ? "room not found" : validation.code });
 
         // กฎความปลอดภัย: "แสดงบทคนตาย" เปลี่ยนได้เฉพาะตอนห้องยังไม่เริ่มเกมเท่านั้น
         // ต้องเช็คจาก server เพราะ client ปิดปุ่มอย่างเดียวไม่พอ และกันการยิง Socket event ตรงหลังเริ่มเกม
@@ -10236,20 +13531,22 @@ io.on("connection", (socket) => {
             room.maxPlayers = (Number.isFinite(n) && n > 0) ? Math.min(n, 999) : 0;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
         schedulePersistRoom(roomId, true);
         broadcastSuggestedRoom();
-        cb({ ok: true, hostPassword: room.hostPassword, joinCode: room.joinCode, maxPlayers: room.maxPlayers, revealDeadRole: room.revealDeadRole !== false });
+        cb({ ok: true, hostPassword: room.hostPassword, joinCode: room.joinCode, maxPlayers: room.maxPlayers, revealDeadRole: room.revealDeadRole !== false, stateVersion: room.stateVersion });
     });
 
     // ----------------------------------------------------------------
     // PREVIOUS ROOM STATUS — ตรวจห้องเดิมของผู้เล่นก่อน auto-join ตอนเปิดหน้าใหม่
     // ----------------------------------------------------------------
-    socket.on("player_resume_status", async ({ roomId, token } = {}, cb) => {
+    socket.on("player_resume_status", async ({ roomId, token, accountId, accountToken, deviceId } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         const id = String(roomId || "").trim().toUpperCase();
         const tok = String(token || "");
-        if (!id || !tok) return cb({ ok: true, roomExists: false, playerFound: false });
+        const requestedAccountId = normalizeAccountId(accountId || socket.data?.accountId || "");
+        const requestedDeviceId = normalizeDeviceId(deviceId || socket.data?.deviceId || "");
+        if (!id || (!tok && !accountToken && !requestedAccountId)) return cb({ ok: true, roomExists: false, playerFound: false });
         let room = rooms[id];
         if (!room) {
             try { room = await recoverPersistedRoomById(id, { reason: "player_resume_status" }); }
@@ -10259,7 +13556,20 @@ io.on("connection", (socket) => {
             }
         }
         if (!room) return cb({ ok: true, roomExists: false, playerFound: false });
-        const player = room.players.find((p) => p && !p.isHost && p.token === tok);
+        let resolvedAccountId = requestedAccountId;
+        if (accountToken) {
+            const verified = await verifyAccountLogin(requestedAccountId, accountToken, { deviceId: requestedDeviceId });
+            if (verified.ok === false) return cb({ ok: false, code: verified.code, error: verified.code.toLowerCase() });
+            if (!verified.profile) return cb({ ok: true, roomExists: true, playerFound: false, roomId: id });
+            resolvedAccountId = normalizeAccountId(verified.accountId || requestedAccountId);
+            socket.data.accountId = resolvedAccountId;
+            socket.data.accountSessionHash = hashAccountToken(accountToken);
+        }
+        const player = resolvedAccountId
+            ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId
+                && (!socket.data?.membershipId || String(p.membershipId || "").trim() === String(socket.data.membershipId || "").trim()))
+                || room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId)
+            : room.players.find((p) => p && !p.isHost && p.token === tok);
         if (!player) return cb({ ok: true, roomExists: true, playerFound: false, roomId: id });
         const hostPlayer = room.players.find((p) => p.isHost);
         const roundId = getRoomGameRoundId(room);
@@ -10284,11 +13594,12 @@ io.on("connection", (socket) => {
     // ABANDON GAME — ผู้เล่นเลือก "หาห้องใหม่" ระหว่างเกมที่ยังไม่จบ
     // บันทึก leave ทันที และล็อก token ไม่ให้ join กลับเข้ารอบเดิมอีก
     // ----------------------------------------------------------------
-    socket.on("abandon_game", async ({ roomId, token, reason } = {}, cb) => {
+    socket.on("abandon_game", async ({ roomId, token, accountId, accountToken, reason } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         const id = String(roomId || "").trim().toUpperCase();
         const tok = String(token || "");
-        if (!id || !tok) return cb({ ok: false, code: "ROOM_NOT_FOUND" });
+        const requestedAccountId = normalizeAccountId(accountId || socket.data?.accountId || "");
+        if (!id || (!tok && !accountToken && !requestedAccountId)) return cb({ ok: false, code: "ROOM_NOT_FOUND" });
         let room = rooms[id];
         if (!room) {
             try { room = await recoverPersistedRoomById(id, { reason: "abandon_game" }); }
@@ -10298,9 +13609,22 @@ io.on("connection", (socket) => {
             }
         }
         if (!room) return cb({ ok: true, code: "ROOM_NOT_FOUND" });
-        const player = room.players.find((p) => p && !p.isHost && p.token === tok);
+        let resolvedAccountId = requestedAccountId;
+        if (accountToken) {
+            const verified = await verifyAccountLogin(requestedAccountId, accountToken, { deviceId: socket.data?.deviceId || "" });
+            if (verified.ok === false) return cb({ ok: false, code: verified.code });
+            if (!verified.profile) return cb({ ok: true, code: "ROOM_NOT_FOUND" });
+            resolvedAccountId = normalizeAccountId(verified.accountId || requestedAccountId);
+            socket.data.accountId = resolvedAccountId;
+            socket.data.accountSessionHash = hashAccountToken(accountToken);
+        }
+        const player = resolvedAccountId
+            ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId
+                && (!socket.data?.membershipId || String(p.membershipId || "").trim() === String(socket.data.membershipId || "").trim()))
+                || room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId)
+            : room.players.find((p) => p && !p.isHost && p.token === tok);
         if (!player) return cb({ ok: true, code: "ROOM_NOT_FOUND" });
-        clearPendingBrowserExit('player', id, tok, { source:'abandon_game' });
+        clearPendingBrowserExit('player', id, player.token, { source:'abandon_game' });
         if (!room.started || room.gameOver) {
             // หน้าใหม่อาจยังไม่ได้ join socket เข้าห้องเดิม จึงต้องลบสมาชิกด้วย token ได้ด้วย
             // ไม่ใช่พึ่ง socket.id อย่างเดียวเหมือน leave_room ซึ่งตั้งใจใช้กับ back navigation
@@ -10320,8 +13644,13 @@ io.on("connection", (socket) => {
                 cleanMap(room.votes);
                 cleanMap(room.wolfKillVotes);
                 cleanMap(room.banditKillVotes);
-                room.players = room.players.filter((p) => p.token !== tok);
-                io.to(id).emit("room_update", publicRoomView(room));
+                if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: socket.data?.accountSessionHash || "", deviceId: socket.data?.deviceId || "" }).catch(() => {});
+                room.players = room.players.filter((p) => {
+                    if (!p) return false;
+                    if (player.accountId && normalizeAccountId(p.accountId || "") === normalizeAccountId(player.accountId || "") && String(p.membershipId || "") === String(player.membershipId || "")) return false;
+                    return p !== player && p.token !== tok;
+                });
+                broadcastRoomUpdate(id, room);
                 schedulePersistRoom(id, true);
                 broadcastSuggestedRoom();
             }
@@ -10352,7 +13681,7 @@ io.on("connection", (socket) => {
                 checkGameEndGeneral(room, id);
             }
             socket.leave(id);
-            io.to(id).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(id, room);
             schedulePersistRoom(id, true);
             return cb({ ok: true, alreadyRecorded: true, recorded: true });
         }
@@ -10391,7 +13720,7 @@ io.on("connection", (socket) => {
         if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
         if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token].timer); delete pendingIndicators[player.token]; }
         socket.leave(id);
-        io.to(id).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(id, room);
         checkGameEndGeneral(room, id);
         schedulePersistRoom(id, true);
         broadcastSuggestedRoom();
@@ -10415,19 +13744,45 @@ io.on("connection", (socket) => {
         roomId = String(roomId).trim().toUpperCase();
         let room = rooms[roomId];
         if (!room) {
+            if (deploymentHandoffInProgress()) {
+                return cb && cb({ error: "room handoff is in progress", code: "ROOM_FAILOVER_WAIT", retryAfterMs: ROOM_FAILOVER_RETRY_MS });
+            }
             try {
                 room = await recoverPersistedRoomById(roomId, { reason: "join_room" });
             } catch (e) {
                 console.error(`[room-recovery] join_room กู้คืนห้อง ${roomId} ไม่สำเร็จ:`, e.name || "Error", e.message || e);
+                if (["ROOM_FAILOVER_WAIT", "ROOM_LEASE_UNAVAILABLE"].includes(String(e?.code || ""))) {
+                    return cb({ error: "room handoff is still settling", code: String(e.code), retryAfterMs: Number(e.retryAfterMs) || ROOM_FAILOVER_RETRY_MS });
+                }
                 return cb({ error: "room recovery temporarily unavailable", code: "SERVER_ERROR" });
             }
         }
         if (!room) return cb({ error: "room not found", code: "ROOM_NOT_FOUND" });
         if (name !== undefined) name = sanitizeName(name);
-        // ตรวจว่าเป็นการ reconnect (token ตรงกับผู้เล่นในห้อง)
-        let player = token ? room.players.find((p) => p.token === token) : null;
-        const isReconnect = !!player;
         const testerGranted = resolveTesterFlag(socket, isTester); // ดู create_room — client ขอได้แต่ server ตัดสิน
+        let accountIdentity = null;
+        if (!testerGranted && !room.isTesterRoom) {
+            accountIdentity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || socket.data?.accountId || ""), name, { accountToken, roomId, isHost: false, join: true, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
+            if (!accountIdentity.ok) return cb && cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code, activeActivity: getAccountActiveActivity(accountIdentity.profile) });
+            socket.data.accountId = accountIdentity.accountId;
+            socket.data.accountSessionHash = hashAccountToken(accountToken);
+            socket.data.deviceId = normalizeDeviceId(socket.data?.deviceId || "");
+            socket.data.tabId = normalizeTabId(socket.data?.tabId || "");
+        }
+        // Real players are re-identified by durable accountId. The room token remains only as a
+        // legacy fallback for snapshots created before membership/account identity was introduced.
+        let player = (!testerGranted && accountIdentity?.accountId)
+            ? room.players.find((p) => !p?.isHost && !p?.isBot && normalizeAccountId(p.accountId || "") === accountIdentity.accountId)
+            : null;
+        const legacyTokenPlayer = token ? room.players.find((p) => p.token === token) : null;
+        if (!player && legacyTokenPlayer && !legacyTokenPlayer.accountId && !legacyTokenPlayer.isBot && !legacyTokenPlayer.isTester) player = legacyTokenPlayer;
+        if (!player && legacyTokenPlayer && legacyTokenPlayer.accountId && accountIdentity?.accountId &&
+            normalizeAccountId(legacyTokenPlayer.accountId) !== normalizeAccountId(accountIdentity.accountId) &&
+            !legacyTokenPlayer.isBot && !legacyTokenPlayer.isTester) {
+            return cb({ error: "room identity mismatch", code: "ROOM_ACCOUNT_MISMATCH" });
+        }
+        if (!player && (testerGranted || room.isTesterRoom)) player = legacyTokenPlayer;
+        const isReconnect = !!player;
         const existingPlayerIsBot = !!(player && player.isBot);
         // Bot possession is a tester-only reconnect path. A bot has no Game Account identity, so
         // its stable room token must never fall through to ensureNormalAccountIdentity().
@@ -10487,17 +13842,25 @@ io.on("connection", (socket) => {
         if (testerGranted && !room.isTesterRoom && !isReconnect) {
             return cb({ error: "tester room required", code: "TESTER_ROOM_REQUIRED" });
         }
-        let accountIdentity = null;
-        if (!room.isTesterRoom && !isReconnect && !existingPlayerIsBot) {
-            accountIdentity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || ""), name, { accountToken, roomId, isHost: false, join: true });
-            if (!accountIdentity.ok) return cb && cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code });
-        }
-
         if (player) {
-            clearPendingBrowserExit('player', roomId, token, { source:'join_room_reconnect', traceId:socket.data?.diagnosticTraceId || '', sessionId:socket.data?.diagnosticSessionId || '' });
+            if (!player.membershipId) player.membershipId = generateMembershipId();
+            // Same-account tabs/frames share this room membership; Account Activity prevents a second room/activity.
+            clearPendingBrowserExit('player', roomId, token || player.token, { source:'join_room_reconnect', traceId:socket.data?.diagnosticTraceId || '', sessionId:socket.data?.diagnosticSessionId || '' });
             const oldId = player.id;
-            remapPlayerId(room, oldId, socket.id);
-            player.id = socket.id;
+            const sameAccountSockets = player.isBot || player.isTester
+                ? []
+                : getConnectedSocketsForAccount(player.accountId || "").filter((sock) => sock.id !== socket.id);
+            // Keep one canonical room-player id while multiple tabs of the same account are open.
+            // Only a true reconnect after all previous sockets are gone gets a fresh canonical id.
+            if (!sameAccountSockets.length || !oldId || !io.sockets.sockets.get(oldId)?.connected) {
+                remapPlayerId(room, oldId, socket.id);
+                player.id = socket.id;
+            }
+            player.activeDeviceId = socket.data?.deviceId || player.activeDeviceId || "";
+            player.activeTabId = player.activeTabId || socket.data?.tabId || "";
+            socket.data.roomId = roomId;
+            socket.data.membershipId = player.membershipId || "";
+            socket.data.isHost = false;
             if (player.isBot || player.isTester) {
                 player.accountId = "";
                 // Bots are synthetic tester players; never mutate their bot identity into an account-backed player.
@@ -10509,11 +13872,13 @@ io.on("connection", (socket) => {
                     if (!player.isHost && player.testerPlayerSlot) player.name = `ผู้เล่น${player.testerPlayerSlot}`;
                 }
             } else {
-                const reconnectAccountId = normalizeAccountId(player.accountId || "");
-                const ensured = await ensureNormalAccountIdentity(reconnectAccountId, player.name, { accountToken, roomId, isHost: !!player.isHost, join: false });
+                const reconnectAccountId = normalizeAccountId(player.accountId || accountIdentity?.accountId || "");
+                const ensured = accountIdentity?.ok ? accountIdentity : await ensureNormalAccountIdentity(reconnectAccountId, player.name, { accountToken, roomId, isHost: !!player.isHost, join: false, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
                 if (!ensured.ok) return cb && cb({ error: ensured.code.toLowerCase(), code: ensured.code });
                 player.accountId = ensured.accountId;
                 player.name = ensured.name;
+                const activity = await acquireAccountActivity(player.accountId, { type: "PLAYER_ROOM", roomId, membershipId: player.membershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: false });
+                if (!activity.ok) return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null });
                 touchAccountPresence(player.accountId, { roomId, name: player.name, isHost: !!player.isHost });
             }
             // ชื่อตั้งได้ครั้งเดียวตอน "เข้าห้องครั้งแรก" เท่านั้น (ดู branch ผู้เล่นใหม่ด้านล่าง)
@@ -10572,15 +13937,20 @@ io.on("connection", (socket) => {
                     }
                 }
 
-                const finalToken = token || genId();
+                const finalToken = testerGranted ? (token || genId()) : genId();
+                const membershipId = generateMembershipId();
                 // reload/reconnect ภายใน browser-exit grace ต้องยกเลิก pending exit ก่อนผูก player กลับเข้าห้อง
                 clearPendingBrowserExit('player', roomId, finalToken, { source:'join_room' });
                 const testerPlayerSlot = (testerGranted && !room.isTesterRoom) || testerGranted ? nextTesterPlayerSlot() : 0;
                 const finalName = testerGranted ? `ผู้เล่น${testerPlayerSlot}` : (accountIdentity?.name || sanitizeName(name, "ผู้เล่น"));
                 player = {
                     id: socket.id,
+                    roomId,
                     token: finalToken,
                     accountId: testerGranted ? "" : (accountIdentity?.accountId || ""),
+                    membershipId,
+                    activeDeviceId: testerGranted ? "" : normalizeDeviceId(socket.data?.deviceId || ""),
+                    activeTabId: testerGranted ? "" : normalizeTabId(socket.data?.tabId || ""),
                     name: finalName,
                     isHost: false,
                     role: null,
@@ -10594,6 +13964,13 @@ io.on("connection", (socket) => {
                     testerPlayerSlot: testerGranted ? testerPlayerSlot : 0,
                     testerSessionId: testerGranted ? String(testerSessionId || "").slice(0, 128) : "",
                 };
+                if (!testerGranted) {
+                    const activity = await acquireAccountActivity(accountIdentity.accountId, { type: "PLAYER_ROOM", roomId, membershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: false });
+                    if (!activity.ok) return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null });
+                    socket.data.roomId = roomId;
+                    socket.data.membershipId = membershipId;
+                    socket.data.isHost = false;
+                }
                 room.players.push(player);
                 // Tester ไม่บันทึกบัญชีจริง; ผู้เล่นจริงใช้ accountId/profile เป็นตัวตนเดียว
                 if (!testerGranted) {
@@ -10603,7 +13980,10 @@ io.on("connection", (socket) => {
         }
 
         socket.join(roomId);
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        resumeRecoveredRoomRuntimeTransitions(room, roomId, nightBotDeps());
+        broadcastRoomUpdate(roomId, room, isReconnect
+            ? { timelineType: "state_changed", source: "reconnect", reason: "player_reconnected" }
+            : { timelineType: "player_joined", source: "player" });
 
         // ส่งประวัติแชทรวม + private เฉพาะคนนี้ กลับไปให้จอนี้เสมอ (คนเข้าใหม่/หลุดแล้วกลับมา)
         // รวมเป็นไทม์ไลน์เดียวเรียงตาม seq จริง (ดู mergedGlobalAndPrivateHistory) แทนที่จะส่งแยก 2
@@ -10638,7 +14018,7 @@ io.on("connection", (socket) => {
         }
 
         schedulePersistRoom(roomId, true);
-        cb({ ok: true, roomData: room, token: player.token, accountId: player.accountId || "", testerPlayerSlot: player.testerPlayerSlot || 0 });
+        cb({ ok: true, roomData: room, token: player.token, accountId: player.accountId || "", membershipId: player.membershipId || "", testerPlayerSlot: player.testerPlayerSlot || 0 });
     });
 
     // ----------------------------------------------------------------
@@ -10655,6 +14035,7 @@ io.on("connection", (socket) => {
         roomId = String(roomId).toUpperCase();
         const room = rooms[roomId];
         if (!room) return;
+        resumeRecoveredRoomRuntimeTransitions(room, roomId, nightBotDeps());
 
         // หา player จาก socket.id ปัจจุบันก่อน (กรณีปกติ ไม่หลุดการเชื่อมต่อ) แล้วค่อย fallback
         // ไปหาโดย token (เผื่อ id เพิ่งเปลี่ยนจาก reconnect แต่ยังไม่ทัน sync กับ client ฝั่งนี้)
@@ -10669,9 +14050,16 @@ io.on("connection", (socket) => {
             return;
         }
 
-        let player = room.players.find((p) => p.id === socket.id);
-        if (!player && token) player = room.players.find((p) => p.token === token);
-        if (!player) return; // ไม่ใช่สมาชิกห้องนี้ (ยังไม่เคย join) — ปล่อยให้ join_room จัดการแทน
+        let player = null;
+        const socketAccountId = normalizeAccountId(socket.data?.accountId || "");
+        const socketMembershipId = String(socket.data?.membershipId || "").trim();
+        if (socketAccountId && socketMembershipId) {
+            player = room.players.find((p) => !p.isHost && !p.isBot && !p.isTester
+                && normalizeAccountId(p.accountId || "") === socketAccountId
+                && String(p.membershipId || "").trim() === socketMembershipId) || null;
+        }
+        if (!player && !socketAccountId) player = room.players.find((p) => p.id === socket.id) || null;
+        if (!player) return; // สมาชิกจริงต้องตรงกับ durable account + membership; token ไม่ใช่ตัวตนหลักอีกต่อไป
 
         socket.emit("room_update", publicRoomView(room));
 
@@ -10707,20 +14095,36 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     // UPDATE CONFIG
     // ----------------------------------------------------------------
-    socket.on("update_config", ({ roomId, config }) => {
+    socket.on("update_config", ({ roomId, config, stateVersion } = {}, cb) => {
+        if (typeof cb !== "function") cb = () => {};
         const room = rooms[roomId];
-        if (!room) return;
-        room.config = config;
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        const validation = validateRoomAction(socket, room, { host: true, member: false, notStarted: true, stateVersion });
+        if (!validation.ok) return cb(validation);
+        if (!config || typeof config !== "object" || Array.isArray(config)) {
+            return cb(roomActionError("INVALID_CONFIG"));
+        }
+        const nextConfig = {};
+        Object.entries(config).forEach(([role, count]) => {
+            const n = Math.max(0, Math.min(999, parseInt(count, 10) || 0));
+            if (n > 0) nextConfig[String(role).slice(0, 80)] = n;
+        });
+        NON_SELECTABLE_ROLES.forEach((role) => { delete nextConfig[role]; });
+        room.config = nextConfig;
+        broadcastRoomUpdate(roomId, room, { timelineType: "settings_changed", source: "host" });
+        cb({ ok: true, stateVersion: room.stateVersion });
     });
 
     // ----------------------------------------------------------------
     // START GAME
     // ----------------------------------------------------------------
-    socket.on("start_game", (roomId) => {
+    socket.on("start_game", (payload, cb) => {
+        if (typeof cb !== "function") cb = () => {};
+        const roomId = typeof payload === "object" ? payload?.roomId : payload;
+        const requestedStateVersion = typeof payload === "object" ? payload?.stateVersion : undefined;
         const room = rooms[roomId];
-        if (!room) return;
-        if (!isHostSocket(room, socket.id)) return;
+        if (!room) return cb(roomActionError("ROOM_NOT_FOUND"));
+        const validation = validateRoomAction(socket, room, { host: true, member: false, notStarted: false, stateVersion: requestedStateVersion });
+        if (!validation.ok) return cb(validation);
 
         const realPlayers = room.players.filter((p) => !p.isHost);
 
@@ -10733,11 +14137,12 @@ io.on("connection", (socket) => {
         if (room.gameOver) {
             const ready = room.continueReady || {};
             if (!realPlayers.every((p) => ready[p.id])) {
+                const error = roomActionError("PLAYERS_NOT_READY");
                 io.to(hostRoomName(roomId)).emit(
                     "host_error",
                     "ต้องรอให้ผู้เล่นกด \"ดำเนินการต่อ\" ให้ครบทุกคนก่อน ถึงจะเริ่มเกมใหม่ได้"
                 );
-                return;
+                return cb(error);
             }
         }
 
@@ -10952,7 +14357,7 @@ io.on("connection", (socket) => {
         // จุดเริ่มนับเวลาทั้งตา — ใช้เทียบสัดส่วนเวลาออฟไลน์สะสมของแต่ละคนตอนจบเกม (ดู didLeaveGame)
         // (ตัวนับออฟไลน์ของผู้เล่นแต่ละคนถูกรีเซ็ตเป็น 0 ไปแล้วโดย resetPlayerRoundState ด้านบน)
         room.startedAt = Date.now();
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room, { timelineType: "game_started", source: "game" });
         room.justStarted = false; // ล้างทันทีหลังส่ง ไม่ให้ update ถัดไปล้างแชทซ้ำ
 
         // เริ่มคืนแรกอัตโนมัติทันทีหลังแจกบทเสร็จ — โฮสต์ไม่ต้องกด "เริ่มคืน" เองอีกครั้ง
@@ -10965,6 +14370,7 @@ io.on("connection", (socket) => {
             runBotsFor(room, roomId, "wolfKill", nightBotDeps());
             runBotsFor(room, roomId, "nightSkill", nightBotDeps());
         }
+        cb({ ok: true, stateVersion: room.stateVersion, gameRoundId: room.gameRoundId || null });
     });
 
     // ----------------------------------------------------------------
@@ -10984,7 +14390,7 @@ io.on("connection", (socket) => {
             checkGameEndGeneral(room, roomId);
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11019,7 +14425,7 @@ io.on("connection", (socket) => {
             target.killed = true;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11042,7 +14448,7 @@ io.on("connection", (socket) => {
         const target = room.players.find((p) => p.id === targetId);
         if (target) target.killed = false;
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11083,7 +14489,7 @@ io.on("connection", (socket) => {
                 }, VOTE_ROUND_MS);
             }
 
-            io.to(roomId).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(roomId, room, { timelineType: "vote_started", source: "host" });
 
             // เฟส 2 (bot-autonomous-ai-phases.md): ให้บอทที่ไม่มีคนเข้าสิงโหวตเองอัตโนมัติ
             // (deps ส่ง performCastVote/isPlayerCurrentlyConnected เข้าไปเพราะ botEngine.js
@@ -11127,7 +14533,7 @@ io.on("connection", (socket) => {
             }
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11155,12 +14561,16 @@ io.on("connection", (socket) => {
             room.votes[voterId] = targetId;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
-    socket.on("cast_vote", ({ roomId, targetId }) => {
+    socket.on("cast_vote", ({ roomId, targetId, stateVersion } = {}, cb) => {
+        if (typeof cb !== "function") cb = () => {};
         const room = rooms[roomId];
-        if (!room) return;
-        performCastVote(room, roomId, socket.id, targetId);
+        const validation = validateRoomAction(socket, room, { member: true, alive: true, started: true, phases: ["day_vote"], stateVersion });
+        if (!validation.ok) return cb(validation);
+        const before = room.stateVersion;
+        performCastVote(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
+        return cb(room.stateVersion !== before ? { ok: true, stateVersion: room.stateVersion } : roomActionError("ACTION_REJECTED", { stateVersion: room.stateVersion }));
     });
 
     // ----------------------------------------------------------------
@@ -11189,7 +14599,7 @@ io.on("connection", (socket) => {
             room.votes[p.id] = targetId;
         });
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11224,12 +14634,16 @@ io.on("connection", (socket) => {
             room.wolfKillVotes[voterId] = targetId;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
-    socket.on("cast_wolf_kill", ({ roomId, targetId }) => {
+    socket.on("cast_wolf_kill", ({ roomId, targetId, stateVersion } = {}, cb) => {
+        if (typeof cb !== "function") cb = () => {};
         const room = rooms[roomId];
-        if (!room) return;
-        performWolfKill(room, roomId, socket.id, targetId);
+        const validation = validateRoomAction(socket, room, { member: true, alive: true, started: true, phases: ["night"], stateVersion });
+        if (!validation.ok) return cb(validation);
+        const before = room.stateVersion;
+        performWolfKill(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
+        return cb(room.stateVersion !== before ? { ok: true, stateVersion: room.stateVersion } : roomActionError("ACTION_REJECTED", { stateVersion: room.stateVersion }));
     });
 
     // ----------------------------------------------------------------
@@ -11240,21 +14654,21 @@ io.on("connection", (socket) => {
         const room = rooms[roomId];
         if (!room || !room.isNight) return;
 
-        const voter = room.players.find((p) => p.id === socket.id);
+        const voter = getRoomPlayerForSocket(room, socket);
         if (!voter || !voter.alive || voter.isHost) return;
         if (voter.role !== "ฆาตกรต่อเนื่อง") return;
 
         if (!targetId) {
             room.murdererKillVote = null;
         } else {
-            if (targetId === socket.id) return;
+            if (targetId && voter && targetId === voter.id) return;
             const target = room.players.find((p) => p.id === targetId);
             // แก้บั๊กเดียวกับ performCastVote/performWolfKill ด้านบน: เดิมไม่เช็ค target.isHost
             if (!target || target.isHost || !target.alive) return;
-            room.murdererKillVote = { voterId: socket.id, targetId };
+            room.murdererKillVote = { voterId: voter.id, targetId };
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11266,7 +14680,7 @@ io.on("connection", (socket) => {
         const room = rooms[roomId];
         if (!room || !room.isNight) return;
 
-        const voter = room.players.find((p) => p.id === socket.id);
+        const voter = getRoomPlayerForSocket(room, socket);
         if (!voter || !voter.alive || voter.isHost) return;
         if (voter.role !== "ผู้ยุยง") return;
         if (!instigatorBelieversBothDead(room, voter)) return; // ยังไม่ปลดล็อกสิทธิ์นี้
@@ -11274,13 +14688,13 @@ io.on("connection", (socket) => {
         if (!targetId) {
             room.instigatorKillVote = null;
         } else {
-            if (targetId === socket.id) return;
+            if (targetId && voter && targetId === voter.id) return;
             const target = room.players.find((p) => p.id === targetId);
             if (!target || target.isHost || !target.alive) return;
-            room.instigatorKillVote = { voterId: socket.id, targetId };
+            room.instigatorKillVote = { voterId: voter.id, targetId };
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -11315,12 +14729,12 @@ io.on("connection", (socket) => {
             room.banditKillVotes[voterId] = targetId;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("cast_bandit_kill", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performBanditKill(room, roomId, socket.id, targetId);
+        performBanditKill(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -12375,7 +15789,7 @@ io.on("connection", (socket) => {
         room.wolfMemory = room.wolfMemory || {};
         room.wolfMemory.recentlyProtectedIds = recentlyProtectedIdsThisResolve;
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
 
         // เฟส 3 (bot-autonomous-ai-phases.md): ให้บอทบทบาทพิเศษที่ใช้สกิล "ตอนกลางวัน"
         // (หมาป่าผู้พิทักษ์วางโล่ / หมาป่านักเวทเลือกเป้าร่ายเวท) ทำงานเองอัตโนมัติทันทีที่เข้าสู่วันใหม่
@@ -12499,12 +15913,16 @@ io.on("connection", (socket) => {
             room.selectedTargets[playerId] = targetId;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
-    socket.on("select_target", ({ roomId, targetId }) => {
+    socket.on("select_target", ({ roomId, targetId, stateVersion } = {}, cb) => {
+        if (typeof cb !== "function") cb = () => {};
         const room = rooms[roomId];
-        if (!room) return;
-        performSelectTarget(room, roomId, socket.id, targetId);
+        const validation = validateRoomAction(socket, room, { member: true, alive: true, started: true, stateVersion });
+        if (!validation.ok) return cb(validation);
+        const before = room.stateVersion;
+        performSelectTarget(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
+        return cb(room.stateVersion !== before ? { ok: true, stateVersion: room.stateVersion } : roomActionError("ACTION_REJECTED", { stateVersion: room.stateVersion }));
     });
 
     // ----------------------------------------------------------------
@@ -12536,12 +15954,12 @@ io.on("connection", (socket) => {
         target.witchPoisonPending = true;
         target.witchPoisonCasterId = witch.id; // เก็บ id แม่มดตัวจริงที่ปาไว้ — กันเคสห้องเดียวมีแม่มดได้มากกว่า 1 คน
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("cast_witch_poison", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performWitchPoison(room, roomId, socket.id, targetId);
+        performWitchPoison(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -12635,12 +16053,12 @@ io.on("connection", (socket) => {
             });
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("scout_target", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performScoutTarget(room, roomId, socket.id, targetId);
+        performScoutTarget(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -12732,12 +16150,12 @@ io.on("connection", (socket) => {
             isSystem: true,
         });
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("detective_scout", ({ roomId, targetAId, targetBId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performDetectiveScout(room, roomId, socket.id, targetAId, targetBId);
+        performDetectiveScout(room, roomId, getRoomPlayerIdForSocket(room, socket), targetAId, targetBId);
     });
 
     // ----------------------------------------------------------------
@@ -12782,12 +16200,12 @@ io.on("connection", (socket) => {
             room.pendingLoverPair = null;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("cupid_pair", ({ roomId, targetAId, targetBId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performCupidPair(room, roomId, socket.id, targetAId, targetBId);
+        performCupidPair(room, roomId, getRoomPlayerIdForSocket(room, socket), targetAId, targetBId);
     });
 
     // ----------------------------------------------------------------
@@ -12836,12 +16254,12 @@ io.on("connection", (socket) => {
             room.pendingInstigatorPair = null;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("instigator_pair", ({ roomId, targetAId, targetBId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performInstigatorPair(room, roomId, socket.id, targetAId, targetBId);
+        performInstigatorPair(room, roomId, getRoomPlayerIdForSocket(room, socket), targetAId, targetBId);
     });
 
     // ----------------------------------------------------------------
@@ -12853,13 +16271,13 @@ io.on("connection", (socket) => {
         if (!room) return;
         // เดิมใช้ได้เฉพาะตอนกลางคืนเท่านั้น ตอนนี้เปิดให้กดได้ทั้งวันทั้งคืนแล้ว (สละพลังล้วน ๆ ไม่ใช่การกระทำต่อเป้าหมาย)
 
-        const p = room.players.find((pl) => pl.id === socket.id);
+        const p = getRoomPlayerForSocket(room, socket);
         if (!p || !p.alive || p.isHost) return;
         if (p.role !== "หมาป่าหยั่งรู้") return;
 
         transformOracleWolfToNormal(room, roomId, p, "manual");
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -12878,7 +16296,7 @@ io.on("connection", (socket) => {
         const room = rooms[roomId];
         if (!room || room.gameOver) return;
 
-        const player = room.players.find((p) => p.id === socket.id);
+        const player = getRoomPlayerForSocket(room, socket);
         if (!player || !player.alive || player.isHost) return;
         if (player.role !== "นายก") return;
         if (player.mayorRevealed || !(player.mayorAvailable > 0)) return; // ใช้ไปแล้ว/ไม่มีสิทธิ์
@@ -12899,7 +16317,7 @@ io.on("connection", (socket) => {
         pushGlobalChat(room, msg);
         io.to(roomId).emit("chat_message", msg);
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -12935,12 +16353,12 @@ io.on("connection", (socket) => {
             }
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("select_shield", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performSelectShield(room, roomId, socket.id, targetId);
+        performSelectShield(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -12960,7 +16378,7 @@ io.on("connection", (socket) => {
 
         if (!mode) {
             delete room.cultActions[playerId];
-            io.to(roomId).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(roomId, room);
             return;
         }
 
@@ -12986,12 +16404,12 @@ io.on("connection", (socket) => {
             return;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("cult_action", ({ roomId, mode, targetId, sacrificeId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performCultAction(room, roomId, socket.id, { mode, targetId, sacrificeId });
+        performCultAction(room, roomId, getRoomPlayerIdForSocket(room, socket), { mode, targetId, sacrificeId });
     });
 
     // ----------------------------------------------------------------
@@ -13012,7 +16430,7 @@ io.on("connection", (socket) => {
 
         if (!targetId) {
             delete room.banditActions[playerId];
-            io.to(roomId).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(roomId, room);
             return;
         }
 
@@ -13023,12 +16441,12 @@ io.on("connection", (socket) => {
         // บทจริงของเป้าหมายที่แตะเลือก) ให้แตะเลือกติดค้างไว้ได้ปกติก่อน แล้วค่อยเช็คจริงตอน resolve_night
         room.banditActions[playerId] = { targetId };
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("bandit_action", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performBanditAction(room, roomId, socket.id, { targetId });
+        performBanditAction(room, roomId, getRoomPlayerIdForSocket(room, socket), { targetId });
     });
 
     // ----------------------------------------------------------------
@@ -13067,12 +16485,12 @@ io.on("connection", (socket) => {
 
         // ยังไม่คำนวณ wizardCursed ที่นี่ — เก็บแค่ "เป้าที่เลือกไว้" (room.curseTargets)
         // ตอนกลางวัน คำสาปจะยังไม่มีผลจนกว่าจะเข้าสู่กลางคืน (ดู beginNight)
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("select_curse_target", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performSelectCurseTarget(room, roomId, socket.id, targetId);
+        performSelectCurseTarget(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -13088,14 +16506,14 @@ io.on("connection", (socket) => {
         if (room.isNight) return; // ใช้ได้เฉพาะตอนกลางวัน
         if (room.gameOver) return;
 
-        const shooter = room.players.find((p) => p.id === socket.id);
+        const shooter = getRoomPlayerForSocket(room, socket);
         if (!shooter || shooter.isHost) return;
         if (!shooter.alive) return;
         if (shooter.role !== "ศาลเตี้ย") return;
         if (!(shooter.sheriffBullets > 0)) return;
         if (shooter.sheriffUsedToday) return; // ใช้ความสามารถวันนี้ไปแล้ว (ยิงหรือดูบท อย่างใดอย่างหนึ่งต่อวัน)
 
-        if (!targetId || targetId === socket.id) return;
+        if (!targetId || (shooter && targetId === shooter.id)) return;
         const target = room.players.find((p) => p.id === targetId);
         if (!target || target.isHost || !target.alive) return;
 
@@ -13192,7 +16610,7 @@ io.on("connection", (socket) => {
         }
 
         checkGameEndGeneral(room, roomId);
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -13250,12 +16668,12 @@ io.on("connection", (socket) => {
             isSystem: true,
         });
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("sheriff_peek_target", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performSheriffPeek(room, roomId, socket.id, targetId);
+        performSheriffPeek(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -13340,12 +16758,12 @@ io.on("connection", (socket) => {
         }
 
         checkGameEndGeneral(room, roomId);
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("cast_priest_holy_water", ({ roomId, targetId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performPriestHolyWater(room, roomId, socket.id, targetId);
+        performPriestHolyWater(room, roomId, getRoomPlayerIdForSocket(room, socket), targetId);
     });
 
     // ----------------------------------------------------------------
@@ -13495,12 +16913,12 @@ io.on("connection", (socket) => {
 
         announceCascadeDeaths(room, roomId, allCascadeDeaths);
         checkGameEndGeneral(room, roomId);
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     }
     socket.on("illusion_kill_disguised", ({ roomId }) => {
         const room = rooms[roomId];
         if (!room) return;
-        performIllusionKillDisguised(room, roomId, socket.id);
+        performIllusionKillDisguised(room, roomId, getRoomPlayerIdForSocket(room, socket));
     });
 
     // ----------------------------------------------------------------
@@ -13529,7 +16947,7 @@ io.on("connection", (socket) => {
         const room = rooms[roomId];
         if (!room) return;
 
-        const player = room.players.find((p) => p.id === socket.id);
+        const player = getRoomPlayerForSocket(room, socket);
         if (!player || !player.alive) return;
         if (typeof text !== "string") return;
 
@@ -13682,7 +17100,7 @@ io.on("connection", (socket) => {
         room.testerConditions = room.testerConditions ||
             Object.fromEntries(WIN_CONDITIONS.map((k) => [k, true]));
         room.testerConditions[condition] = !room.testerConditions[condition];
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -13694,28 +17112,32 @@ io.on("connection", (socket) => {
         if (!room || !isHostSocket(room, socket.id)) return;
 
         room.testerConditions = Object.fromEntries(WIN_CONDITIONS.map((k) => [k, !!enabled]));
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
     // CONFIRM CONTINUE — ผู้เล่นกด "ดำเนินการต่อ" หลังเกมจบ
     // ----------------------------------------------------------------
-    socket.on("confirm_continue", ({ roomId }) => {
+    socket.on("confirm_continue", ({ roomId, stateVersion } = {}, cb) => {
+        if (typeof cb !== "function") cb = () => {};
         const room = rooms[roomId];
-        if (!room || !room.gameOver) return;
+        const validation = validateRoomAction(socket, room, { member: true, alive: false, stateVersion });
+        if (!validation.ok) return cb(validation);
+        if (!room.gameOver) return cb(roomActionError("GAME_NOT_OVER"));
 
-        const player = room.players.find((p) => p.id === socket.id);
-        if (!player || player.isHost) return;
+        const player = getRoomPlayerForSocket(room, socket);
+        if (!player || player.isHost) return cb(roomActionError("NOT_IN_ROOM"));
 
         room.continueReady = room.continueReady || {};
         room.continueReady[socket.id] = true;
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room, { timelineType: "continue_confirmed", source: "player" });
+        cb({ ok: true, stateVersion: room.stateVersion, membershipId: String(player.membershipId || "") });
     });
 
     // ----------------------------------------------------------------
     // ACCOUNT BOOTSTRAP — สร้าง/ตรวจ Game Account ตั้งแต่เปิดเกมครั้งแรก
     // ----------------------------------------------------------------
-    socket.on("account_bootstrap", async ({ accountId, accountToken, name, page } = {}, cb) => {
+    socket.on("account_bootstrap", async ({ accountId, accountToken, name, page, deviceId, tabId } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
         if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
@@ -13725,9 +17147,18 @@ io.on("connection", (socket) => {
                 roomId: "",
                 isHost: page === "host",
                 join: false,
+                deviceId,
+                tabId,
             });
-            if (!identity.ok) return cb({ ok: false, code: identity.code, account: accountPublicProfile(identity.profile) });
-            cb({ ok: true, account: accountPublicProfile(identity.profile), accountId: identity.accountId, name: identity.name });
+            if (!identity.ok) return cb({ ok: false, code: identity.code, account: accountPublicProfile(identity.profile), activeActivity: getAccountActiveActivity(identity.profile), deviceId: normalizeDeviceId(identity.profile?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "") });
+            socket.data.accountId = identity.accountId;
+            socket.data.accountSessionHash = hashAccountToken(accountToken);
+            socket.data.deviceId = normalizeDeviceId(deviceId || socket.data.deviceId || "");
+            socket.data.tabId = normalizeTabId(tabId || socket.data.tabId || "");
+            socket.data.accountSessionRevoked = false;
+            socket.data.page = String(page || "unknown").slice(0, 24);
+            socket.data.isHost = page === "host";
+            cb({ ok: true, account: accountPublicProfile(identity.profile), accountId: identity.accountId, name: identity.name, activeActivity: getAccountActiveActivity(identity.profile) });
         } catch (e) {
             const code = e?.code === "ACCOUNT_TOKEN_REQUIRED" ? "ACCOUNT_TOKEN_REQUIRED" : "ACCOUNT_BOOTSTRAP_FAILED";
             recordDiagnostic({ source:"server", kind:"account_bootstrap_failed", page:"server", message:e?.message || String(e), stack:e?.stack || "", detail:{ code, page: String(page || "index"), hasAccountId: !!normalizeAccountId(accountId || "") } });
@@ -13743,7 +17174,7 @@ io.on("connection", (socket) => {
         if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
         if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
         try {
-            const result = await renameOwnAccount(accountId, accountToken, newName);
+            const result = await renameOwnAccount(accountId, accountToken, newName, socket.data?.deviceId || "");
             cb({ ok: true, accountId: result.accountId, name: result.name, changed: result.changed, account: accountPublicProfile(result.profile) });
         } catch (e) {
             cb({ ok: false, code: e.code || "RENAME_FAILED", error: e.message || "rename failed", retryAfterMs: e.retryAfterMs || 0 });
@@ -13760,7 +17191,7 @@ io.on("connection", (socket) => {
         const id = normalizeAccountId(accountId || "");
         if (!id || !accountToken) return cb({ ok: false, code: "BAD_IDENTITY" });
         try {
-            const verified = await verifyAccountLogin(id, accountToken);
+            const verified = await verifyAccountLogin(id, accountToken, { deviceId: socket.data?.deviceId || "" });
             if (!verified.profile) return cb({ ok: false, code: "ACCOUNT_NOT_FOUND" });
             if (verified.ok === false) return cb({ ok: false, code: verified.code, account: accountPublicProfile(verified.profile) });
             const profile = verified.profile;
@@ -13795,7 +17226,7 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     // GLOBAL PAGE PRESENCE — นับผู้เล่นออนไลน์ตั้งแต่หน้า index แม้ยังไม่เข้าห้อง
     // ----------------------------------------------------------------
-    socket.on("presence_hello", async ({ token, name, page, visible, roomId, isHost, accountId, accountToken } = {}, cb) => {
+    socket.on("presence_hello", async ({ token, name, page, visible, roomId, isHost, accountId, accountToken, deviceId, tabId } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
         if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
@@ -13805,12 +17236,12 @@ io.on("connection", (socket) => {
         try {
             // Presence heartbeat ไม่ถือเป็น activity: แค่เปิดแท็บค้างไว้จะไม่ต่ออายุ Temporary Account
             // ต้องมี action ที่ server ยืนยันจริง เช่น bootstrap / เข้า-กลับห้อง / เปลี่ยนชื่อ / จบเกม
-            const verified = await verifyAccountLogin(id, accountToken);
+            const verified = await verifyAccountLogin(id, accountToken, { deviceId: socket.data?.deviceId || normalizeDeviceId(deviceId || "") });
             if (!verified.profile) return cb({ ok: false, code: "ACCOUNT_NOT_FOUND" });
             if (verified.ok === false) return cb({ ok: false, code: verified.code, account: accountPublicProfile(verified.profile) });
             const profile = verified.profile;
             const resolvedName = sanitizeName(profile.currentName || safeName, "ผู้เล่น");
-            setAccountPresenceSocket(id, socket.id, { page, name: resolvedName, visible, roomId, isHost });
+            setAccountPresenceSocket(id, socket.id, { page, name: resolvedName, visible, roomId, isHost, deviceId: socket.data?.deviceId || normalizeDeviceId(deviceId || ""), tabId: socket.data?.tabId || normalizeTabId(tabId || "") });
             cb({ ok: true, accountId: id, name: resolvedName, account: accountPublicProfile(profile) });
         } catch (e) {
             cb({ ok: false, code: "PRESENCE_FAILED" });
@@ -13827,11 +17258,136 @@ io.on("connection", (socket) => {
     // (เดิมแก้ชื่อได้จากหน้าโฮสต์ — ย้ายมารวมไว้ที่นี่แทนทั้งหมด ดูคอมเมนต์ที่ลบไปด้านบน)
     // ----------------------------------------------------------------
 
+    // ADMIN ROOM INSPECTOR — snapshot สำหรับแอดมินเท่านั้น
+    // รายการห้องใช้ข้อมูล summary สำหรับการ์ด/ตัวกรอง แต่ Inspector ต้องเห็นบริบทเกมจริง
+    // โดยไม่ใช้ room object ตรง ๆ เพราะข้างในมี password, token, socket id และ private state
+    // ที่ไม่ควรส่งออกทั้งหมด แม้ผู้เรียกจะเป็นแอดมินก็ตาม
+    function buildAdminRoomDetail(room) {
+        const roomPlayers = Array.isArray(room?.players) ? room.players : [];
+        const host = roomPlayers.find((p) => p?.isHost) || null;
+        const slotBySocketId = new Map(roomPlayers.map((p, index) => [String(p?.id || ""), index + 1]));
+        const resolveTarget = (targetId) => {
+            const id = String(targetId || "");
+            if (!id) return null;
+            const player = roomPlayers.find((p) => String(p?.id || "") === id);
+            if (!player) return null;
+            return { slot: slotBySocketId.get(id) || 0, name: String(player.name || "-"), isBot: !!player.isBot, isHost: !!player.isHost };
+        };
+        const selectedTargets = room.selectedTargets && typeof room.selectedTargets === "object" ? room.selectedTargets : {};
+        const votes = room.votes && typeof room.votes === "object" ? room.votes : {};
+        const shieldTargets = room.shieldTargets && typeof room.shieldTargets === "object" ? room.shieldTargets : {};
+        const wolfKillVotes = room.wolfKillVotes && typeof room.wolfKillVotes === "object" ? room.wolfKillVotes : {};
+        const banditKillVotes = room.banditKillVotes && typeof room.banditKillVotes === "object" ? room.banditKillVotes : {};
+        const safePlayers = roomPlayers.map((p, index) => ({
+            slot: index + 1,
+            name: String(p?.name || "-"),
+            isHost: !!p?.isHost,
+            isBot: !!p?.isBot,
+            isTester: !!p?.isTester,
+            accountId: p?.isBot || p?.isTester ? "" : String(p?.accountId || ""),
+            alive: p?.alive !== false,
+            killed: !!p?.killed,
+            protected: !!p?.protected,
+            connected: !!p?.isHost ? (Array.isArray(room.hostIds) && room.hostIds.some((id) => !!io.sockets.sockets.get(id)?.connected)) : isPlayerCurrentlyConnected(p),
+            disconnected: !!p?.disconnected,
+            role: room.started && !p?.isHost ? String(p?.role || "") : "",
+            displayRole: room.started && !p?.isHost ? String(p?.displayRole || p?.role || "") : "",
+            originalRole: room.started && !p?.isHost ? String(p?.originalRole || p?.role || "") : "",
+            selectedTarget: resolveTarget(selectedTargets[String(p?.id || "")]),
+            voteTarget: resolveTarget(votes[String(p?.id || "")]),
+            shieldTarget: resolveTarget(shieldTargets[String(p?.id || "")]),
+            wolfKillTarget: resolveTarget(wolfKillVotes[String(p?.id || "")]),
+            banditKillTarget: resolveTarget(banditKillVotes[String(p?.id || "")]),
+        }));
+
+        const alivePlayers = safePlayers.filter((p) => !p.isHost && p.alive);
+        const realPlayers = safePlayers.filter((p) => !p.isHost && !p.isBot);
+        const bots = safePlayers.filter((p) => p.isBot);
+        const phase = room.gameOver ? "game_over" : !room.started ? "waiting" : room.isNight ? "night" : (room.voteMode ? "day_vote" : "day");
+        const rawResult = room.gameResult && typeof room.gameResult === "object" ? room.gameResult : null;
+        const winnerIds = Array.isArray(rawResult?.winners) ? rawResult.winners.map((x) => String(x?.id || "")) : [];
+        const result = rawResult ? {
+            team: rawResult.team ? String(rawResult.team) : "",
+            label: rawResult.label ? String(rawResult.label) : "",
+            title: rawResult.title ? String(rawResult.title) : "",
+            winners: winnerIds.map((id) => resolveTarget(id)).filter(Boolean),
+        } : null;
+
+        ensureRoomRuntimeState(room);
+        return {
+            roomId: String(room.id || "").toUpperCase(),
+            stateVersion: room.stateVersion,
+            stateChangedAt: room.stateChangedAt,
+            timeline: publicTimeline(room, 60),
+            isTesterRoom: !!room.isTesterRoom,
+            testerHostSlot: Number(room.testerHostSlot || 0),
+            isClosing: !!room.isClosing,
+            createdAt: room.createdAt || null,
+            startedAt: room.startedAt || null,
+            gameRoundId: room.gameRoundId || null,
+            started: !!room.started,
+            gameOver: !!room.gameOver,
+            phase,
+            nightCount: Number(room.nightCount || 0),
+            dayCount: Number(room.dayCount || 0),
+            isNight: !!room.isNight,
+            voteMode: !!room.voteMode,
+            voteDeadline: room.voteDeadline || null,
+            host: host ? { slot: slotBySocketId.get(String(host.id || "")) || 1, name: String(host.name || "-"), connected: Array.isArray(room.hostIds) && room.hostIds.some((id) => !!io.sockets.sockets.get(id)?.connected) } : null,
+            counts: { players: realPlayers.length, totalPlayers: alivePlayers.length, bots: bots.length, connected: safePlayers.filter((p) => !p.isHost && p.connected).length, alive: alivePlayers.length, maxPlayers: Number(room.maxPlayers || 0) },
+            settings: {
+                hasHostPassword: !!room.hostPassword,
+                hasJoinCode: !!room.joinCode,
+                maxPlayers: Number(room.maxPlayers || 0),
+                revealDeadRole: room.revealDeadRole !== false,
+                voteTimerEnabled: room.voteTimerEnabled !== false,
+                botAIEnabled: room.botAI?.enabled === true,
+                testerConditions: room.isTesterRoom && room.testerConditions && typeof room.testerConditions === "object" ? { ...room.testerConditions } : {},
+                roleConfig: room.config && typeof room.config === "object" ? { ...room.config } : {},
+            },
+            gameResult: result,
+            players: safePlayers,
+            diagnostics: {
+                selectedTargetCount: Object.keys(selectedTargets).length,
+                voteCount: Object.keys(votes).length,
+                shieldTargetCount: Object.keys(shieldTargets).length,
+                wolfKillVoteCount: Object.keys(wolfKillVotes).length,
+                banditKillVoteCount: Object.keys(banditKillVotes).length,
+                continueReadyCount: room.continueReady && typeof room.continueReady === "object" ? Object.keys(room.continueReady).length : 0,
+                chatMessages: Number(room.chatSeq || 0),
+            },
+            serverTime: new Date().toISOString(),
+        };
+    }
+
     socket.on("admin_list_rooms", (cb) => {
         if (typeof cb !== "function") cb=()=>{};
         const list=Object.values(rooms).map((r)=>({roomId:r.id,isTester:!!r.isTesterRoom,started:!!r.started,gameOver:!!r.gameOver,hostName:r.players?.find(p=>p.isHost)?.name||"-",hostSlot:r.testerHostSlot||0,players:(r.players||[]).filter(p=>!p.isHost).length,totalPlayers:(r.players||[]).filter(p=>!p.isHost&&!p.isBot).length,bots:(r.players||[]).filter(p=>p.isBot).length,maxPlayers:r.maxPlayers||0,createdAt:r.createdAt||null}));
+        list.forEach((item) => { const source = rooms[item.roomId]; ensureRoomRuntimeState(source); item.stateVersion = Number(source?.stateVersion || 0); item.stateChangedAt = Number(source?.stateChangedAt || 0); });
         list.sort((a,b)=>String(a.roomId).localeCompare(String(b.roomId)));
         cb({ok:true,rooms:list});
+    });
+
+    socket.on("admin_get_room_detail", async ({ roomId } = {}, cb) => {
+        if (typeof cb !== "function") cb = () => {};
+        const id = String(roomId || "").trim().toUpperCase();
+        if (!id) return cb({ ok:false, code:"ROOM_NOT_FOUND", error:"room_not_found" });
+        let room = rooms[id];
+        if (!room) {
+            try {
+                room = await recoverPersistedRoomById(id, { reason: "admin_room_inspector" });
+            } catch (e) {
+                recordDiagnostic({ source:"server", kind:"admin_room_detail_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", context:{ roomId:id, code:"SERVER_ERROR" } });
+                return cb({ ok:false, code:"SERVER_ERROR", error:"room_detail_unavailable" });
+            }
+        }
+        if (!room) return cb({ ok:false, code:"ROOM_NOT_FOUND", error:"room_not_found" });
+        try {
+            cb({ ok:true, room:buildAdminRoomDetail(room) });
+        } catch (e) {
+            recordDiagnostic({ source:"server", kind:"admin_room_detail_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", context:{ roomId:id, code:"SERIALIZE_FAILED" } });
+            cb({ ok:false, code:"SERVER_ERROR", error:"room_detail_unavailable" });
+        }
     });
 
     socket.on("admin_close_room", async ({roomId}={}, cb) => {
@@ -13843,9 +17399,11 @@ io.on("connection", (socket) => {
     });
 
     // LIST ACCOUNTS — ทุกบัญชีที่ "หน้าเว็บยังอยู่เบื้องหน้า" ไม่จำกัดว่าต้องอยู่ในห้องเกม
-    // และยังตัด tester/bot ออกเหมือนเดิม. หนึ่งบัญชีอาจมีหลาย session จึงแสดงตาม session ที่ออนไลน์จริง.
+    // และยังตัด tester/bot ออกเหมือนเดิม. หนึ่งบัญชีอาจมีหลาย socket/tab แต่ Admin แสดงบัญชีเพียง 1 แถว แล้วนับ connections แยก.
     socket.on("admin_list_accounts", async (cb) => {
         if (typeof cb !== "function") cb = () => {};
+        if (resetInProgress) return cb({ ok: true, accounts: [], resetInProgress: true, resetEpoch: resetEpoch || "" });
+        const resetEpochAtStart = resetEpoch || "";
         // Online presence is an in-memory live signal. Do NOT make the admin's online list depend
         // on DynamoDB being readable: an IAM/DB problem must not turn a visibly-open index page
         // into "offline". Persistence is a separate concern.
@@ -13860,25 +17418,40 @@ io.on("connection", (socket) => {
             } catch (e) {
                 recordDiagnostic({ source:"server", kind:"admin_presence_profile_read_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "" });
             }
+            if (resetInProgress || resetEpoch !== resetEpochAtStart) {
+                return cb({ ok: true, accounts: [], resetInProgress: !!resetInProgress, resetEpoch: resetEpoch || "" });
+            }
             const accounts = [];
-            for (const [accountId] of accountPresence) {
+            const accountIds = new Set(accountPresence.keys());
+            for (const sock of io.sockets.sockets.values()) {
+                const id = normalizeAccountId(sock?.data?.accountId || "");
+                if (sock?.connected && !sock.data?.resetInvalidated && id) accountIds.add(id);
+            }
+            for (const accountId of accountIds) {
                 const profile = profileMap.get(accountId);
                 if (profile?.status === "deleted" || profile?.isTester === true) continue;
-                const sessions = getVisibleAccountPresence(accountId);
-                for (const session of sessions) {
-                    accounts.push({
-                        accountId,
-                        roomId: session.roomId || "",
-                        page: session.page,
-                        name: session.name || profile?.currentName || "ผู้เล่น",
-                        accountType: profile?.accountType || ACCOUNT_TYPE_TEMPORARY,
-                        temporaryExpiresAt: profile?.temporaryExpiresAt || null,
-                        isHost: !!session.isHost,
-                        isTester: false,
-                        connected: true,
-                    });
-                }
+                const sessions = getLiveSessionsForAccount(accountId);
+                if (!sessions.length) continue;
+                const roomIds = Array.from(new Set(sessions.map((x) => String(x.roomId || "").toUpperCase()).filter(Boolean)));
+                const pages = Array.from(new Set(sessions.map((x) => String(x.page || "")).filter(Boolean)));
+                accounts.push({
+                    accountId,
+                    roomId: roomIds.length === 1 ? roomIds[0] : "",
+                    roomIds,
+                    page: pages.length === 1 ? pages[0] : (pages[0] || "unknown"),
+                    pages,
+                    name: profile?.currentName || sessions.find((x) => x.name)?.name || "ผู้เล่น",
+                    accountType: profile?.accountType || ACCOUNT_TYPE_TEMPORARY,
+                    temporaryExpiresAt: profile?.temporaryExpiresAt || null,
+                    isHost: sessions.some((x) => x.isHost),
+                    isTester: false,
+                    connected: true,
+                    connectionCount: sessions.length,
+                    sessionCount: sessions.length,
+                    activeActivity: getAccountActiveActivity(profile),
+                });
             }
+            accounts.sort((a,b) => String(a.name || "").localeCompare(String(b.name || ""), "th"));
             cb({ ok: true, accounts });
         } catch (e) {
             recordDiagnostic({ source:"server", kind:"admin_list_accounts_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "" });
@@ -13980,9 +17553,13 @@ io.on("connection", (socket) => {
     // iframe ของ player.html ที่ join_room ด้วย token ของบอทนี้ → กลายเป็น reconnect ปกติ
     // ทุกอย่างจึงใช้ path เดิมของผู้เล่นจริงหมด ไม่ต้องเขียน proxy การกระทำแยกเลย)
     // ----------------------------------------------------------------
-    socket.on("host_add_bot", (roomId, cb) => {
+    socket.on("host_add_bot", (payload, cb) => {
+        if (typeof cb !== "function") cb = () => {};
+        const roomId = typeof payload === "object" ? payload?.roomId : payload;
+        const requestedStateVersion = typeof payload === "object" ? payload?.stateVersion : undefined;
         const room = rooms[roomId];
-        if (!room || !isHostSocket(room, socket.id)) return cb && cb({ error: "not host" });
+        const validation = validateRoomAction(socket, room, { host: true, member: false, notStarted: true, stateVersion: requestedStateVersion });
+        if (!validation.ok) return cb({ ...validation, error: validation.code === "NOT_HOST" ? "not host" : validation.code });
 
         // กันเพิ่มบอทหลังเกมเริ่มไปแล้ว — start_game แจกบทบาทให้ realPlayers ทุกคนแค่ครั้งเดียว
         // ตอนกดเริ่มเกมเท่านั้น บอทที่เพิ่งถูกเพิ่มเข้ามาทีหลังจะค้าง role: null ไปตลอดเกม ทำให้
@@ -14014,7 +17591,7 @@ io.on("connection", (socket) => {
         };
         room.players.push(bot);
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
         cb && cb({ ok: true, id: bot.id, token: bot.token, name: bot.name });
     });
 
@@ -14041,7 +17618,7 @@ io.on("connection", (socket) => {
             room.botAI.enabled = !!enabled;
         }
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -14063,7 +17640,7 @@ io.on("connection", (socket) => {
         if (!room.botAI.llmBots) room.botAI.llmBots = {};
         room.botAI.llmBots[botId] = !!enabled;
 
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
     });
 
     // ----------------------------------------------------------------
@@ -14119,7 +17696,7 @@ io.on("connection", (socket) => {
         releasedBotSockets.add(socket.id);
 
         socket.leave(roomId);
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room);
         schedulePersistRoom(roomId);
         broadcastSuggestedRoom();
         reply({ ok: true });
@@ -14186,6 +17763,7 @@ io.on("connection", (socket) => {
             }
         }
 
+        if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "" }).catch(() => {});
         room.players = room.players.filter((p) => p.id !== playerId);
 
         if (room.players.length === 0) {
@@ -14196,7 +17774,7 @@ io.on("connection", (socket) => {
         } else {
             renumberBots(room); // ปิดช่องว่างเลขบอท เผื่อตัวที่เตะไปเป็นบอท (ดูฟังก์ชันด้านบน)
             checkGameEndGeneral(room, roomId);
-            io.to(roomId).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(roomId, room);
         }
 
         broadcastSuggestedRoom();
@@ -14214,7 +17792,11 @@ io.on("connection", (socket) => {
         if (!room) return cb && cb({ ok: true });
         if (room.started) return cb && cb({ error: "started", code: "ROOM_STARTED" });
 
-        const player = room.players.find((p) => p.id === socket.id && p.token === token);
+        const player = normalizeAccountId(socket.data?.accountId || "")
+            ? room.players.find((p) => !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === normalizeAccountId(socket.data.accountId || "")
+                && String(p.membershipId || "") === String(socket.data?.membershipId || ""))
+                || room.players.find((p) => !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === normalizeAccountId(socket.data.accountId || ""))
+            : room.players.find((p) => p.id === socket.id && p.token === token);
         if (!player || player.isHost) return cb && cb({ ok: true });
 
         // ยกเลิก pending removal / pending indicator ที่มีอยู่ (เหมือน kick_player)
@@ -14242,7 +17824,8 @@ io.on("connection", (socket) => {
         cleanMap(room.wolfKillVotes);
         cleanMap(room.banditKillVotes);
 
-        room.players = room.players.filter((p) => p.id !== player.id);
+        if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: socket.data?.accountSessionHash || "", deviceId: socket.data?.deviceId || "" }).catch(() => {});
+        room.players = room.players.filter((p) => p !== player && String(p.membershipId || "") !== String(player.membershipId || ""));
 
         if (room.players.length === 0) {
             if (ROOM_PERSISTENCE_ENABLED) { try { await deletePersistedRoom(roomId); } catch (e) { console.error(`[room-persist] ลบ snapshot ห้อง ${roomId} ไม่สำเร็จ:`, e.name, e.message); } }
@@ -14251,7 +17834,7 @@ io.on("connection", (socket) => {
             clearVoteTimer(roomId);
         } else {
             renumberBots(room);
-            io.to(roomId).emit("room_update", publicRoomView(room));
+            broadcastRoomUpdate(roomId, room, { timelineType: "player_left", source: "player" });
             schedulePersistRoom(roomId, true);
         }
 
@@ -14265,10 +17848,13 @@ io.on("connection", (socket) => {
     // "ดำเนินการต่อ" ครบทุกคนก่อนเหมือน start_game — ใช้ได้ทุกเมื่อแม้เกมกำลังเล่นอยู่
     // จากนั้นห้องจะกลับไปอยู่สถานะ "รอโฮสต์ตั้งค่าบทบาทแล้วกดเริ่มเกม" เหมือนตอนสร้างห้องใหม่
     // ----------------------------------------------------------------
-    socket.on("restart_room", (roomId) => {
+    socket.on("restart_room", (payload, cb) => {
+        if (typeof cb !== "function") cb = () => {};
+        const roomId = typeof payload === "object" ? payload?.roomId : payload;
+        const requestedStateVersion = typeof payload === "object" ? payload?.stateVersion : undefined;
         const room = rooms[roomId];
-        if (!room) return;
-        if (!isHostSocket(room, socket.id)) return;
+        const validation = validateRoomAction(socket, room, { host: true, member: false, stateVersion: requestedStateVersion });
+        if (!validation.ok) return cb(validation);
 
         clearGameOverTimer(roomId);
         clearVoteTimer(roomId);
@@ -14331,10 +17917,11 @@ io.on("connection", (socket) => {
         // request_sync รอบถัดไปถึงจะเห็นกล่องแชทว่างจริงๆ — แก้บั๊ก: เดิมข้อความเกมที่แล้วยังค้างโชว์อยู่
         // ในกล่องแชทที่เปิดค้างไว้ แม้ข้อมูลฝั่งเซิร์ฟเวอร์จะถูกล้างไปแล้วก็ตาม
         room.justReset = true;
-        io.to(roomId).emit("room_update", publicRoomView(room));
+        broadcastRoomUpdate(roomId, room, { timelineType: "room_reset", source: "host" });
         room.justReset = false; // ล้างทันทีหลังส่ง ไม่ให้ room_update รอบถัดไปเคลียร์กล่องแชทซ้ำ
 
         broadcastSuggestedRoom();
+        cb({ ok: true, stateVersion: room.stateVersion });
     });
 
     // ----------------------------------------------------------------
@@ -14352,6 +17939,8 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     socket.on("disconnect", async () => {
         removeAccountPresenceSocket(socket.id);
+        const disconnectedAccountId = normalizeAccountId(socket.data?.accountId || "");
+        if (disconnectedAccountId && !getConnectedSocketsForAccount(disconnectedAccountId).length) accountSessionWatchAt.delete(disconnectedAccountId);
         // ----- จอโฮสต์ (รองรับหลายจอพร้อมกัน) -----
         // เอา socket ที่หลุดออกจากชุดจอโฮสต์ของห้องนั้น แล้วค่อยเช็คว่ายังเหลือ
         // จอโฮสต์อื่นเชื่อมต่ออยู่ไหม — ถ้ายังมีอย่างน้อย 1 จอ ไม่ต้องขึ้นสถานะ "หลุด"
@@ -14368,7 +17957,7 @@ io.on("connection", (socket) => {
                 if (hostPlayer && !stillHasHostScreen) {
                     hostPlayer.disconnected = true;
                 }
-                io.to(hostRoomId).emit("room_update", publicRoomView(room));
+                broadcastRoomUpdate(hostRoomId, room);
                 schedulePersistRoom(hostRoomId);
             }
             broadcastSuggestedRoom();
@@ -14376,17 +17965,35 @@ io.on("connection", (socket) => {
 
         for (const id in rooms) {
             const room = rooms[id];
-            const player = room.players.find((p) => p.id === socket.id);
+            const player = getRoomPlayerForSocket(room, socket);
             if (!player || player.isHost) continue; // โฮสต์ถูกจัดการไปแล้วด้านบน
+            const playerAccountId = normalizeAccountId(player.accountId || "");
+            const playerMembershipId = String(player.membershipId || "").trim();
+            const otherAccountSockets = playerAccountId && playerMembershipId
+                ? getConnectedSocketsForAccount(playerAccountId).filter((sock) => sock.id !== socket.id && String(sock.data?.membershipId || "") === playerMembershipId)
+                : [];
             rememberSocketDisconnect('player', id, player.token, socket.id);
+            if (!player.isTester && !player.isBot && otherAccountSockets.length > 0) {
+                const nextSocket = otherAccountSockets[0];
+                if (String(player.id || "") === String(socket.id)) {
+                    remapPlayerId(room, socket.id, nextSocket.id);
+                    player.id = nextSocket.id;
+                    player.activeDeviceId = normalizeDeviceId(nextSocket.data?.deviceId || player.activeDeviceId || "");
+                    player.activeTabId = normalizeTabId(nextSocket.data?.tabId || player.activeTabId || "");
+                }
+                player.disconnected = false;
+                player.offline = false;
+                continue;
+            }
 
             // Tester player เป็น session ชั่วคราว: ถ้ายังไม่เริ่มเกมและแท็บถูกปิดจริง ให้เอาออกจากห้องทันที
             // เพื่อคืนเลข Player ที่ว่าง ไม่ปล่อยชื่อ 1/2/3 ค้างเพราะ RECONNECT_GRACE ของผู้เล่นปกติ
             if (player.isTester && !player.isBot && !room.started) {
                 if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
                 if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
+                if (player.accountId) await clearAccountActivity(player.accountId, { roomId: id }).catch(() => {});
                 room.players = room.players.filter((p) => p.id !== player.id);
-                io.to(id).emit("room_update", publicRoomView(room));
+                broadcastRoomUpdate(id, room);
                 if (room.players.length > 0) schedulePersistRoom(id, true);
                 if (room.players.length === 0 && room.isTesterRoom) {
                     if (ROOM_PERSISTENCE_ENABLED) { try { await deletePersistedRoom(id); } catch (e) { logAccountDbWarning(e); } }
@@ -14428,7 +18035,7 @@ io.on("connection", (socket) => {
                 if (!stillPlayer || isPlayerCurrentlyConnected(stillPlayer)) return; // ต่อกลับไปแล้วจริง
 
                 stillPlayer.disconnected = true;
-                io.to(id).emit("room_update", publicRoomView(stillRoom));
+                broadcastRoomUpdate(id, stillRoom);
                 schedulePersistRoom(id);
                 broadcastSuggestedRoom();
             }, DISCONNECT_INDICATOR_DELAY_MS);
@@ -14452,7 +18059,7 @@ io.on("connection", (socket) => {
 
                     stillPlayer.disconnected = false;
                     stillPlayer.offline = true;
-                    io.to(id).emit("room_update", publicRoomView(stillRoom));
+                    broadcastRoomUpdate(id, stillRoom);
                     broadcastSuggestedRoom();
                 }, RECONNECT_GRACE_MS),
             };
@@ -14463,33 +18070,115 @@ io.on("connection", (socket) => {
 });
 
 // ============================================================
-// HTTP_ERROR_MIDDLEWARE_V14: จับ exception ที่หลุดจาก Express route ให้มี trace/request/location ก่อนตอบ 500
-app.use(function HTTP_ERROR_MIDDLEWARE_V14(err, req, res, next) {
-    const ctx = req.__wwDiagnostic || {};
-    recordDiagnostic({
-        source:"server", kind:"http_handler_error", page:"server",
-        message:err?.message || String(err), stack:err?.stack || "",
-        endpoint:req.path, status:500,
-        traceId:ctx.traceId, sessionId:ctx.sessionId, action:ctx.action,
-        requestId:ctx.requestId, clientRequestId:ctx.clientRequestId,
-        durationMs:Date.now() - Number(ctx.startedAt || Date.now()),
-        context:{ method:req.method, endpoint:req.path, requestId:ctx.requestId },
-    });
+// HTTP_ERROR_MIDDLEWARE_V15: จับ exception ที่หลุดจาก Express route ให้มี trace/request/location ก่อนตอบ 500
+app.use(function HTTP_ERROR_MIDDLEWARE_V15(err, req, res, next) {
     if (res.headersSent) return next(err);
-    res.status(500).json({ error:"internal_server_error", requestId:ctx.requestId || "" });
+    const ctx = req.__wwDiagnostic || {};
+    const isEntityTooLarge = err?.type === "entity.too.large" || err?.status === 413 || err?.statusCode === 413;
+    const status = isEntityTooLarge ? 413 : 500;
+    const code = isEntityTooLarge ? "REQUEST_ENTITY_TOO_LARGE" : "INTERNAL_SERVER_ERROR";
+
+    // A malformed/oversized diagnostics submission must never be turned into a
+    // second 500 diagnostic event by the diagnostics endpoint itself. Return a
+    // stable 413 so the client can distinguish transport-size rejection from a
+    // real application failure. The client already hard-caps diagnostic payloads
+    // below the parser limit, so this is a defensive server-side ceiling.
+    res.status(status).json({
+            error: isEntityTooLarge ? "request_entity_too_large" : "internal_server_error",
+            code,
+            requestId: ctx.requestId || ""
+    });
+
+    // Keep the original diagnostic for ordinary server exceptions. For an
+    // oversized diagnostics report, do not recursively record the parser error
+    // from /api/diagnostics/client-error itself.
+    if (!(isEntityTooLarge && req.path === "/api/diagnostics/client-error")) {
+        recordDiagnostic({
+            source:"server", kind:"http_handler_error", page:"server",
+            message:err?.message || String(err), stack:err?.stack || "",
+            endpoint:req.path, status,
+            traceId:ctx.traceId, sessionId:ctx.sessionId, action:ctx.action,
+            requestId:ctx.requestId, clientRequestId:ctx.clientRequestId,
+            durationMs:Date.now() - Number(ctx.startedAt || Date.now()),
+            context:{ method:req.method, endpoint:req.path, requestId:ctx.requestId, code },
+        });
+    }
+
 });
 
 
 
 const HTTP_PORT = Number(process.env.PORT) || 3000;
-const SHUTDOWN_GRACE_MS = Math.max(5000, Number(process.env.SHUTDOWN_GRACE_MS) || 20000);
+const SHUTDOWN_GRACE_MS = Math.max(10_000, Number(process.env.SHUTDOWN_GRACE_MS) || 30_000);
+const SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS = Math.max(1_000, Math.min(20_000, Number(process.env.SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS) || 10_000));
+const SHUTDOWN_ROOM_PERSIST_CONCURRENCY = Math.max(1, Math.min(4, Number(process.env.SHUTDOWN_ROOM_PERSIST_CONCURRENCY) || 2));
 let shutdownStarted = false;
 
-function gracefulShutdown(signal) {
+async function waitForSocketDrain(maxMs = 2_500) {
+    const startedAt = Date.now();
+    while (io?.sockets?.sockets?.size > 0) {
+        if (Date.now() - startedAt >= maxMs) return false;
+        await sleepMs(25);
+    }
+    return true;
+}
+
+async function flushRoomPersistenceForShutdown(reason = "shutdown") {
+    if (!ROOM_PERSISTENCE_ENABLED) return { attempted: 0, persisted: 0, failed: 0, skipped: 0 };
+
+    // A normal persistence scan can race the final shutdown flush. Stop it and cancel
+    // debounce timers first so the final pass is the only writer started by shutdown.
+    if (roomPersistenceScanTimer) {
+        clearInterval(roomPersistenceScanTimer);
+        roomPersistenceScanTimer = null;
+    }
+    for (const timer of roomPersistenceTimers.values()) clearTimeout(timer);
+    roomPersistenceTimers.clear();
+
+    const ids = Object.keys(rooms).filter((id) => !!rooms[id]);
+    const deadline = Date.now() + SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS;
+    let cursor = 0;
+    let attempted = 0;
+    let persisted = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    async function worker() {
+        while (true) {
+            if (Date.now() >= deadline) return;
+            const index = cursor++;
+            if (index >= ids.length) return;
+            const id = ids[index];
+            const room = rooms[id];
+            if (!room) {
+                skipped++;
+                continue;
+            }
+            attempted++;
+            try {
+                const ok = await persistRoomSnapshot(room, { register: !roomPersistenceKnownIds.has(id) });
+                if (ok) persisted++;
+                else skipped++;
+            } catch (e) {
+                failed++;
+                console.error(`[shutdown] บันทึก snapshot ห้อง ${id} ไม่สำเร็จ (${reason}):`, e?.name || "Error", e?.message || e);
+            }
+        }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(SHUTDOWN_ROOM_PERSIST_CONCURRENCY, ids.length || 1) }, () => worker()));
+    const processed = attempted + skipped;
+    const remaining = Math.max(0, ids.length - processed);
+    const result = { attempted, persisted, failed, skipped: skipped + remaining };
+    console.log(`[shutdown] room snapshot flush (${reason}): attempted=${result.attempted} persisted=${result.persisted} failed=${result.failed} skipped=${result.skipped}`);
+    return result;
+}
+
+async function gracefulShutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
     appDraining = true;
-    console.log(`[shutdown] ${signal} received — draining HTTP/WebSocket connections`);
+    console.log(`[shutdown] ${signal} received — marking instance draining before closing WebSocket connections`);
 
     const forceExit = setTimeout(() => {
         console.error(`[shutdown] grace period ${SHUTDOWN_GRACE_MS}ms exceeded — forcing exit`);
@@ -14497,17 +18186,65 @@ function gracefulShutdown(signal) {
     }, SHUTDOWN_GRACE_MS);
     forceExit.unref?.();
 
-    try { io.close(); } catch (e) { console.error("[shutdown] Socket.IO close failed:", e?.message || e); }
-    server.close((err) => {
+    try {
+        // Stop new realtime handshakes first. Existing HTTP requests are allowed to finish,
+        // while /ready immediately returns 503 so Elastic Beanstalk/ALB can deregister this
+        // instance before the process actually exits.
+        try {
+            io.emit("server_draining", {
+                now: Date.now(),
+                retryAfterMs: Math.min(10_000, SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS),
+            });
+        } catch (_) {}
+
+        try { io.close(); } catch (e) { console.error("[shutdown] Socket.IO close failed:", e?.message || e); }
+
+        // Socket.IO disconnect handlers mutate room membership/connection flags. Wait for the
+        // namespace to become empty so the final durable snapshot reflects the post-disconnect
+        // room state, rather than racing a handler that runs immediately after io.close().
+        const socketDrained = await waitForSocketDrain();
+        if (!socketDrained) console.warn(`[shutdown] Socket.IO ยังมี connection ค้างก่อน snapshot (>${2_500}ms)`);
+
+        // Give Socket.IO disconnect handlers a short chance to finish their in-memory cleanup
+        // before the final durable snapshot pass. Any writes already in flight are drained first.
+        await waitForGameDataWritesDrain(Math.min(5_000, SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS));
+        await flushRoomPersistenceForShutdown("final");
+        await waitForGameDataWritesDrain(Math.min(5_000, SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS));
+        // The final snapshot is now durable. Release leases only after the snapshot/write drain so
+        // a replacement Immutable instance cannot acquire the room and read an older snapshot.
+        await releaseAllLocalRoomLeases(`shutdown:${signal}`);
+
+        if (roomRecoveryDeferredTimer) { clearInterval(roomRecoveryDeferredTimer); roomRecoveryDeferredTimer = null; }
+        for (const timer of roomLeaseTimers.values()) clearInterval(timer);
+        roomLeaseTimers.clear();
+
+        await new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+            };
+            try {
+                server.close((err) => {
+                    if (err && err.code !== "ERR_SERVER_NOT_RUNNING") {
+                        console.error("[shutdown] HTTP server close failed:", err.message || err);
+                    }
+                    done();
+                });
+            } catch (e) {
+                if (e?.code !== "ERR_SERVER_NOT_RUNNING") console.error("[shutdown] HTTP server close threw:", e?.message || e);
+                done();
+            }
+        });
+        console.log("[shutdown] HTTP/WebSocket drain complete; durable room snapshots flushed where possible");
         clearTimeout(forceExit);
-        if (err) {
-            console.error("[shutdown] HTTP server close failed:", err.message || err);
-            process.exit(1);
-            return;
-        }
-        console.log("[shutdown] HTTP/WebSocket drain complete");
         process.exit(0);
-    });
+    } catch (e) {
+        console.error("[shutdown] graceful shutdown failed:", e?.stack || e);
+        clearTimeout(forceExit);
+        process.exit(1);
+    }
 }
 
 process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));

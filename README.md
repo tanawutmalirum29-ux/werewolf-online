@@ -189,6 +189,20 @@ Lobby และหน้า admin (ประวัติรายคน) จะ�
 **สิ่งที่ไม่นับเป็นการหนี:** การออกจาก lobby ก่อนเกมเริ่ม, เกมที่จบไปแล้ว, และการปิดห้อง/บังคับปิดเซิร์ฟเวอร์แบบเงียบตามระบบดูแลเซิร์ฟเวอร์ ไม่เรียกสถิติแพ้/ชนะ/ออกของผู้เล่น
 
 
+## หน้า Admin — ประวัติเวอร์ชัน Elastic Beanstalk / ดาวน์โหลด ZIP / Rollback
+
+หน้า Admin มีเมนู **เวอร์ชันเกม** สำหรับอ่าน `Application Version` ที่มีอยู่ใน Elastic Beanstalk แล้ว โดยไม่ต้องอัปโหลด ZIP ใหม่ทุกครั้ง
+
+- **📥 ดาวน์โหลด ZIP** — Server จะอ่าน `SourceBundle` ของ Application Version ที่เลือก แล้ว stream ไฟล์ ZIP จาก S3 source bundle ของ Elastic Beanstalk ลงเครื่องแอดมินโดยตรง หน้าเว็บจะไม่เห็น bucket/key ของ AWS และไม่ต้องสร้าง S3 bucket ใหม่เอง
+- **↩️ ย้อนกลับ** — สั่ง `UpdateEnvironment` ให้ environment จริงใช้ `VersionLabel` ที่เลือกทันที เป็นการ rollback/deploy จริง ไม่ใช่ sandbox และไม่มีการย้อนกลับอัตโนมัติภายหลัง
+- หน้า Admin จะแสดง `Running EB Version`, สถานะ Environment, Health และประวัติเวอร์ชันเรียงจากใหม่ไปเก่า
+- ระบบจะไม่ส่งคำสั่งย้อนกลับถ้า environment ยังอยู่ในสถานะ deploy/operation หรือ Application Version มีสถานะที่ยังไม่พร้อมใช้งาน
+- Download ticket เป็นลิงก์แบบ signed อายุสั้นและไม่พึ่ง state ใน RAM ของ instance เดียว จึงทำงานได้แม้ Elastic Beanstalk load-balance request คนละ instance กัน
+
+**IAM ที่ต้องเพิ่มให้ Elastic Beanstalk instance role:** `elasticbeanstalk:DescribeApplicationVersions`, `elasticbeanstalk:UpdateEnvironment` และ `s3:GetObject` สำหรับ source bundle ที่ Application Version อ้างถึง ส่วน `elasticbeanstalk:DescribeEnvironments` ที่มีอยู่เดิมยังต้องคงไว้ด้วย หาก source bundle ของ version เก่าถูกลบตาม Application Version lifecycle policy แล้ว จะดาวน์โหลด ZIP หรือ rollback version นั้นไม่ได้
+
+**ข้อควรจำ:** rollback นี้เปลี่ยน version ของ environment ที่ผู้เล่นใช้งานอยู่ทั้งหมด เมื่อแก้ปัญหาเสร็จต้อง deploy/redeploy version ที่ต้องการกลับเข้า environment เอง ไม่มี timer ที่คืนรุ่นใหม่ให้อัตโนมัติ
+
 ### หน้า admin — "ผู้เล่นทั้งหมด" (ทุกคนที่เคยตั้งชื่อ ไม่ใช่แค่คนที่กำลังเชื่อมต่ออยู่)
 
 ใช้ตาราง DynamoDB เดียวกันด้านบน (ไม่ต้องตั้งตารางเพิ่ม) — แค่เพิ่ม statKey อีก 2 แบบ:
@@ -202,6 +216,14 @@ Lobby และหน้า admin (ประวัติรายคน) จะ�
 
 **การยืนยันสิทธิ์:** endpoint กลุ่มนี้อยู่หลัง HttpOnly Admin Session ฝั่งเซิร์ฟเวอร์เสมอ — ต้องเข้าสู่ระบบแอดมินก่อน ไม่สามารถใช้แค่การรู้ URL หรือส่ง `auth.admin=true` เพื่อเรียกข้อมูลได้
 
+
+## Bug Replay — รันต่อจนครบ + รายงานรวม
+
+ระบบ Bug Replay แบบ **รันต่อเนื่อง** จะไม่หยุดเมื่อเจอ failure จุดแรกอีกต่อไป เว้นแต่แอดมินกดหยุดเองหรือเกิด runner-level error ที่ทำให้ไปต่อไม่ได้ โดย failure ทุกจุดจะถูกบันทึกเป็น diagnostic event และเก็บ reference ไว้ตลอดทั้งรอบ ข้อมูลสรุปในหน้า Admin อาจแสดงเพียงรายการสั้น ๆ เพื่อไม่ให้ UI หนัก แต่รายงานรวมจะรวม failure points และผลของทุก scenario ไว้ในลิงก์เดียว
+
+เมื่อรอบตรวจจบ ระบบจะสร้าง **Aggregate Bug Replay Report** อัตโนมัติ ซึ่งประกอบด้วย Run ID, สถานะ, จำนวน scenario/step, failure ทุกจุด, ผลราย scenario และ Runtime Audit พร้อมทั้งมีลิงก์ JSON สำหรับนำไปวิเคราะห์ต่อ ลิงก์รวมนี้เป็นลิงก์เดียวที่ควรใช้ส่งต่อผลของทั้งรอบ แทนการเปิดรายงานของบั๊กทีละรายการ
+
+หากการสร้างลิงก์รายงานล้มเหลว หน้า Admin สามารถกดสร้างใหม่ได้หลังรันจบ โดยระบบจะไม่สร้างรายงานซ้ำในช่วงที่สถานะยังเป็น `generating`
 
 ## Bug Replay เฟส 2 — Chaos → Stress → Long-Run → Recovery
 
@@ -221,6 +243,12 @@ ZIP รุ่นนี้เพิ่มชุดตรวจเฟส 2 ที�
 Deploy อยู่บน AWS Elastic Beanstalk (environment: `Werewolf-online-env`)
 
 🔗 https://Werewolf-online-env.eba-5txpnuhb.ap-southeast-2.elasticbeanstalk.com
+
+## การตรวจจับรุ่น Admin หลัง Deploy
+
+หน้า Admin ที่เปิดค้างจะตรวจ `adminHash` จาก endpoint `/api/admin/release-check/<bucket>` ซึ่งใช้ pathname เปลี่ยนตามช่วงเวลา ไม่พึ่ง query string เพราะ CloudFront บางรูปแบบอาจไม่รวม query string ใน cache key ทำให้ `/api/config?timestamp=...` ได้ response เก่าจาก cache แม้ origin จะส่ง `Cache-Control: no-store` แล้วก็ตาม
+
+ปุ่ม `โหลดใหม่` ของ Admin จะไปที่ `/admin-refresh/<nonce>` ซึ่งเสิร์ฟ `admin.html` จาก origin แล้วเปลี่ยน URL กลับเป็น `/admin.html` ด้วย `history.replaceState` เพื่อหลีกเลี่ยง cached `/admin.html` เดิมใน distribution ที่แคช path หลักไว้
 
 ## ความทนทานตอน Deploy / CloudFront 502-504
 
@@ -244,6 +272,30 @@ Elastic Beanstalk origin** แล้วตั้ง CloudFront Custom Error Resp
 > ดังนั้นการอัปโหลดไฟล์นี้และตั้ง Custom Error Response บน CloudFront เป็นขั้นตอน AWS ที่ต้องทำกับ distribution จริงแยกจาก
 >การ deploy ZIP ของ Elastic Beanstalk
 
+### Deployment continuity — 2026-09-26
+
+รุ่นนี้เพิ่มการกัน downtime ตอน Elastic Beanstalk เปลี่ยน instance จริง โดยไม่ใช้หน้า “เซิร์ฟเวอร์กำลังปิด”
+เป็นตัวแก้ deployment: instance ที่กำลังถูกถอดจะเข้า `draining` ก่อน, `/ready` ตอบ `503`, Socket.IO
+handshake ใหม่ถูกปฏิเสธด้วย `SERVER_DRAINING`, connection เดิมถูกปิดตาม lifecycle และห้อง active จะถูก
+flush snapshot ลง DynamoDB รอบสุดท้ายก่อน process ออกจากเครื่อง
+
+ค่าที่เพิ่มใน server:
+
+- `SHUTDOWN_GRACE_MS` ค่าเริ่มต้น 30 วินาที — เวลาสูงสุดของ graceful shutdown
+- `SHUTDOWN_ROOM_PERSIST_TIMEOUT_MS` ค่าเริ่มต้น 10 วินาที — งบเวลาสำหรับ flush room snapshot รอบสุดท้าย
+- `SHUTDOWN_ROOM_PERSIST_CONCURRENCY` ค่าเริ่มต้น 2 — จำนวนห้องที่ snapshot พร้อมกันระหว่าง shutdown
+
+ไฟล์ `.ebextensions/01-high-availability.config` ตั้งค่า Immutable deployment, `MinSize=2`, `MaxSize=4`,
+health check เป็น `/ready` และเปิด ALB cookie stickiness สำหรับ Socket.IO handshake/session continuity
+ไฟล์นี้ตั้งใจสำหรับ environment แบบ LoadBalanced; หาก environment เดิมเป็น `SingleInstance` ต้องเปลี่ยนเป็น
+LoadBalanced ใน Elastic Beanstalk Console ก่อน เพราะ `.ebextensions` ไม่สามารถรับประกันการเปลี่ยนประเภท environment
+ที่มีอยู่แล้วจาก source bundle ได้ และค่าที่ตั้งใน Console/EB CLI สามารถ override `.ebextensions` ได้
+
+**สำคัญสำหรับห้องเกม:** Room persistence + ALB stickiness ช่วยให้ deployment/reconnect ข้าม instance ปลอดภัยขึ้น
+แต่ยังไม่ใช่ distributed room ownership แบบเต็มรูปแบบ. อย่าเพิ่มจำนวน instance แบบอิสระเกินกว่าค่าที่กำหนดโดย
+ไม่ทดสอบ room routing/recovery; ถ้าจะ scale realtime หลาย instance อย่างถาวร ควรเพิ่ม distributed lease หรือ
+ใช้ realtime adapter/shared state ที่ออกแบบมาสำหรับ multi-instance โดยตรง
+
 ## บอทเล่นเองด้วย Claude (เฟส 5 / "แนวทาง B")
 
 ต้องตั้ง environment variable `ANTHROPIC_API_KEY` บน Elastic Beanstalk ถึงจะใช้ได้ (Configuration →
@@ -254,10 +306,25 @@ Software → Environment properties) — ถ้าไม่ตั้งไว้
 ตอนนี้ใช้กับ 2 action หลักเท่านั้น: เลือกเป้ากัด (หมาป่า) และโหวต ดูรายละเอียด flow/การป้องกันข้อมูลรั่ว
 (fog-of-war) ที่ `bot-autonomous-ai-approach-b-technical.md`
 
+## แพตช์ล่าสุด 2026-09-26 — ไอคอน “เซิร์ฟเวอร์กำลังปิด” ใช้ source เดียวกับรูปทั้งหมด
+
+แพตช์นี้ต่อยอดจาก **First-Paint Server-State Gate / ป้องกันหน้า Lobby แวบตอนปิดเซิร์ฟเวอร์** และแก้จุดที่ไอคอน
+`icons-server.png` เคยถูกประกอบ URL ซ้ำหลายจุดไม่ตรงกับตัวโหลดรูปกลาง
+
+- กำหนด path ไฟล์ไอคอนเพียงจุดเดียว: `/icons-server.png`
+- ใช้ `IMAGE_BASE_URL` และ helper `imgUrl()`/`wwImg()` ชุดเดียวกับรูปเกมอื่น ๆ
+- `GET /api/server-state` และ `GET /api/config` ส่ง `serverIconUrl` ที่ server ประกอบด้วย helper รูปกลางให้แล้ว เพื่อให้หน้า Index/Overlay/Maintenance ไม่ต้องเดา S3 path เอง
+- First-paint ของ `index.html`, overlay ใน `shared.server-control.js` และ `maintenance.html` ใช้ URL เดียวกัน
+- ไม่เพิ่มไฟล์ `icons-server.png` กลับเข้า deploy ZIP; object ต้องอยู่ที่ root ของ S3/CDN image origin ระดับเดียวกับ `cover-1200x630.png`
+- เพิ่ม regression `tests/server-closed-icon-source-regression.js` และผูกเข้า `npm test` เพื่อกันการแยก image source ในอนาคต
+
+ข้อกำหนดนี้หมายความว่า เมื่อ environment ตั้ง `IMAGE_BASE_URL=https://<image-origin>` แล้ว ไอคอนต้อง resolve เป็น
+`https://<image-origin>/icons-server.png?v=<image-version>` (เมื่อมี image version) เช่นเดียวกับ asset รูปอื่นในเกม
+
 ## รูปภาพเกมและไอคอนเว็บใช้ S3/CDN เท่านั้น
 
 รูปภาพที่ผู้เล่นเห็นทั้งหมดต้องมาจาก S3 หรือ CloudFront ที่ชี้ไป S3 ไม่ใช่ไฟล์ใน deploy zip
-ทั้งรูปอาชีพ/ตราสัญลักษณ์ และ site/profile assets (`favicon.ico`, `favicon-16x16.png`, `favicon-32x32.png`,
+ทั้งรูปอาชีพ/ตราสัญลักษณ์, ไอคอนสถานะเซิร์ฟเวอร์ (`icons-server.png`) และ site/profile assets (`favicon.ico`, `favicon-16x16.png`, `favicon-32x32.png`,
 `apple-touch-icon.png`, `cover-1200x630.png`) ถูกแยกออกจากโปรเจคแล้ว
 
 การตั้งค่า S3 เดิมยังใช้ตัวแปร `IMAGE_BASE_URL` เดียวกัน เพื่อให้ URL กลายเป็น `IMAGE_BASE_URL + /images/...`
@@ -265,8 +332,9 @@ Software → Environment properties) — ถ้าไม่ตั้งไว้
 
 ตั้งค่า bucket/CloudFront ก่อน deploy:
 
-1. สร้าง/ใช้ S3 bucket (เช่น `werewolf-online-assets`) แล้วอัปโหลดรูปอาชีพทั้งหมดไว้ใต้ `images/`
-   เช่น `s3://werewolf-online-assets/images/xxx.jpg` และอัปโหลด site/profile assets 5 ไฟล์ไว้ที่ root ของ bucket:
+1. สร้าง/ใช้ S3 bucket (เช่น `werewolf-online-assets`) แล้วอัปโหลดรูปเกมทั้งหมดไว้ใต้ `images/`
+   เช่น `s3://werewolf-online-assets/images/xxx.jpg` และ **ต้องมี** `s3://werewolf-online-assets/icons-server.png` ที่ root ระดับเดียวกับ `cover-1200x630.png` ด้วย;
+   จากนั้นอัปโหลด site/profile assets 5 ไฟล์ไว้ที่ root ของ bucket:
    `favicon.ico`, `favicon-16x16.png`, `favicon-32x32.png`, `apple-touch-icon.png`, `cover-1200x630.png`
 2. ให้ S3/CloudFront ที่ใช้เป็น image origin อ่าน object เหล่านี้ได้ตามวิธีที่คุณตั้งไว้
    (เช่น CloudFront OAC สำหรับ bucket private หรือ public-read ตามสถาปัตยกรรมที่ใช้งาน)
@@ -421,6 +489,27 @@ Software → Environment properties) — ถ้าไม่ตั้งไว้
   อย่างเดียวก็ไม่ทำให้เกิด version hash ใหม่ถ้าไฟล์ไม่เปลี่ยน
 - จุดแจ้งอัปเดตอยู่ที่ `public/js/index.auto-update.js` เท่านั้น; `host.html`/`player.html` ไม่ popup หรือ reload
   เพียงเพราะ deployment ใหม่เกิดขึ้น
+
+### Immutable deployment transition guard — 2026-09-27
+
+Elastic Beanstalk environment นี้ใช้ **Immutable deployment** ดังนั้นระหว่าง deploy จะมี instance ชุดเก่าและชุดใหม่
+ให้บริการพร้อมกันช่วงหนึ่งจนกว่า environment จะกลับสถานะ `Ready`. ระบบจึงห้ามตัดสินว่า client มีรุ่นใหม่เพียงเพราะ
+`clientHash` ของ request หนึ่งต่างจาก hash ที่โหลดอยู่ ขณะที่ deployment ยัง `Updating`.
+
+- `utils/getAppVersion.js` อ่าน `EnvironmentDescription.Status` จาก `DescribeEnvironments` พร้อม `VersionLabel` เดิมใน request เดียวกัน
+  และแปลงเป็น `deploymentState: ready|updating|unknown`.
+- `/api/config` ส่ง `deploymentState`, `environmentStatus`, `environmentVersionLabel` และ `deploymentInProgress` เพื่อให้ client
+  รู้ว่า request นี้อยู่ในช่วงเปลี่ยน deployment หรือไม่.
+- `public/js/shared.update-check.js` จะไม่แสดง update เมื่อ version mismatch แต่ `deploymentState` ยังไม่ใช่ `ready`; เมื่อเห็น mismatch
+  ในช่วงที่ดูเหมือน `ready` จะยิง `/api/config?deploymentProbe=1` แบบ fresh เพื่อยืนยันซ้ำก่อนแจ้งผู้ใช้.
+- `public/js/shared.server-control.js` จะไม่ auto-reload Host/Player ระหว่าง Immutable transition และก่อน reload จะ probe ซ้ำอีกครั้ง
+  ให้ `deploymentState=ready` และ `clientHash` ตรงกับรุ่นที่จะโหลด เพื่อป้องกัน race จาก Socket.IO `serverInfo`.
+- `serverInfo` ของ Socket.IO ส่ง `deploymentState` ให้ Host/Player ใช้ guard เดียวกัน.
+- `/ready` **ไม่** ใช้ `deploymentState` เป็นเงื่อนไข readiness เพราะถ้าบล็อก `/ready` ระหว่าง EB `Updating` จะทำให้ instance ใหม่
+  ไม่ผ่าน health check และอาจสร้าง deployment deadlock; `/ready` ยังคงตรวจเฉพาะ bootstrap/recovery/drain/Admin Auth ของ instance.
+
+เป้าหมายคือช่วง `Updating` จะไม่มี auto-update loop หรือการ reload ข้าม old/new fleet; หลัง environment กลับ `Ready` แล้ว client จึงค่อย
+ตรวจ mismatch และอัปเดตตาม flow ปกติ.
 
 ## อัปเดต: ตัดช่องพิมพ์ค้นหาชื่อผู้เล่น (โฮสต์) ออก แทนที่ด้วยตัวปรับจำนวนคอลัมน์กริดผู้เล่น
 
@@ -832,7 +921,7 @@ Environment ที่ตั้งได้:
 3. Batch-get snapshot ของห้อง active
 4. สร้าง `rooms[id]` กลับเข้า RAM
 5. ล้าง `host/hostIds` ที่เป็น socket เก่า และ mark ผู้เล่นเป็น disconnected
-6. ผู้เล่น/โฮสต์ reconnect ด้วย token เดิม แล้ว server remap ไปยัง `socket.id` ใหม่
+6. ผู้เล่น/โฮสต์ reconnect ด้วย Account Session + `membershipId` ของห้องเดิม; `socket.id` เป็นเพียง connection handle ชั่วคราว และไม่ใช่ตัวตนถาวรของผู้เล่น
 
 Socket.io ฝั่ง client ของโปรเจกต์มี auto-reconnect/auto-rejoin อยู่แล้ว ดังนั้นการ restart process ไม่ควรเปลี่ยนเป็น `ROOM_NOT_FOUND` เพียงเพราะ socket หลุดชั่วคราว
 
@@ -843,7 +932,26 @@ Socket.io ฝั่ง client ของโปรเจกต์มี auto-recon
 - `/api/admin/reset` จะล้าง room snapshots และ `ROOM_INDEX` ด้วย
 - ไม่บันทึก Socket object หรือ timer handle ลง DB; สิ่งเหล่านั้นถูกสร้าง/ผูกใหม่ตอน runtime
 
-ระบบนี้รองรับการ recovery หลัง process restart ได้ แต่ยังไม่ได้ทำ distributed room ownership เต็มรูปแบบสำหรับหลาย Node/หลาย instance พร้อมกัน หากจะ scale Elastic Beanstalk เป็นหลาย instance ในอนาคตควรเพิ่ม distributed lease/room ownership หรือใช้สถาปัตยกรรม realtime state ที่รองรับ multi-instance โดยตรง
+ระบบ recovery ยึด Room ID + room membership เป็นตัวตนถาวร และไม่บันทึก Socket object/timer ลง DB. ในสภาพแวดล้อมหลาย EB instance ตัว socket เป็นเพียง connection handle; account/session watchdog จะตรวจ active Account Session จาก DynamoDB ข้าม instance และตัด socket เก่าที่ถูกแทนที่ออกโดยอัตโนมัติ
+
+> ขอบเขต: room snapshot ยังเป็น durable recovery source ของ server และ runtime room state ยัง cache อยู่ใน RAM ของแต่ละ instance; การทำ per-action distributed room transaction แบบฐานข้อมูลกลางทุกคำสั่งยังไม่ใช่ส่วนของ patch นี้
+
+### Deployment room handoff / failover fencing — 2026-09-27
+
+แพตช์นี้เพิ่มชั้น handoff สำหรับ Elastic Beanstalk Immutable deployment โดยไม่เปลี่ยนนโยบาย Immutable เดิม:
+
+- แต่ละ instance มี `INSTANCE_ID` และห้องปกติมี durable `ROOM_LEASE` ใน DynamoDB พร้อม `leaseEpoch` และ TTL/renewal
+- instance ใหม่ **ไม่กู้ห้องปกติในระหว่าง environment ยังเป็น `Updating`**; จะรอจน deployment พร้อมก่อน แล้วจึง acquire lease ของแต่ละห้อง
+- instance เก่าจะ `draining` → รอ Socket.IO/in-flight writes → flush snapshot ล่าสุด → release room leases → ปิด process ตามลำดับเดิม
+- snapshot ของห้องปกติมี `writerInstanceId` + `leaseEpoch` และ DynamoDB conditional write จะกัน writer รุ่นเก่ากลับมาเขียนทับ snapshot หลัง handoff แล้ว แม้ stateVersion ฝั่งเก่าจะสูงกว่า
+- การลบ snapshot ใช้ lease fencing เช่นกัน และจะไม่ลบ `ROOM_INDEX` หาก delete ถูกปฏิเสธเพราะ instance อื่นเป็นเจ้าของ lease
+- deadline ของ `vote` และ `game over` ถูกเก็บใน room snapshot และสร้าง timer กลับจาก deadline หลัง recovery; กรณีโหวตหมดเวลาระหว่างไม่มี socket จะทำเครื่องหมาย pending แล้วค่อย resolve ผ่าน live socket context เพื่อไม่ผูก closure ของ socket เก่า
+- Player/Host/Index รับ `ROOM_FAILOVER_WAIT` และ `ROOM_LEASE_UNAVAILABLE` เป็น transient state และ retry แบบมีขีดจำกัด แทนการล้าง identity หรือส่งผู้เล่นกลับ lobby ทันที
+- เปิด `Socket.IO connectionStateRecovery` 120 วินาทีสำหรับ network/tab interruption ภายใน runtime instance; การเปลี่ยน instance ระหว่าง deploy ยังคงใช้ Account Session + `membershipId` + durable room snapshot เป็น source of truth
+
+**ข้อจำกัดที่ต้องรู้:** แพตช์นี้ทำให้การเปลี่ยน instance ระหว่าง Immutable deploy ปลอดภัยขึ้น แต่ยังไม่ได้ติดตั้ง external Socket.IO adapter สำหรับการ fan-out realtime ระหว่างหลาย instance ในการทำงานปกติ (เช่น Redis/Valkey Streams). ดังนั้นอย่าถือว่า room runtime กลายเป็น multi-writer distributed game server แล้ว; lease นี้ตั้งใจให้มี authoritative owner ต่อห้องในช่วง handoff/recovery และป้องกัน stale writer โดยเฉพาะ
+
+**IAM เพิ่มเติมสำหรับ room handoff:** role ของ Elastic Beanstalk ต้องมีอย่างน้อย `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem` กับตาราง room persistence (และสิทธิ์เดิมที่ระบบ reset/statistics ใช้อยู่ตามฟังก์ชันที่เปิดใช้) เพราะ `ROOM_LEASE` ใช้ Put/Update/Delete และ snapshot fencing ใช้ Get/Put/Delete
 
 ## Admin / บัญชีผู้เล่น (v8 + Account Core Phase 1/2)
 - หน้า `admin.html` ยังเข้าได้ตรง ๆ ตามเดิมในรุ่นนี้ ยังไม่มีระบบรหัสผ่านสำหรับหน้า Admin ตามที่กำหนดไว้
@@ -865,6 +973,21 @@ Socket.io ฝั่ง client ของโปรเจกต์มี auto-recon
 - Admin API/Socket ที่ขึ้นต้น `admin_*` ต้องผ่าน HttpOnly admin session เสมอ; ถ้าตั้ง `ADMIN_PANEL_PASSWORD` จะเข้าได้ด้วยรหัสแอดมิน และถ้าตั้ง `ADMIN_GOOGLE_EMAILS` จะเข้าได้ด้วย Google เฉพาะอีเมลที่ whitelist และ `email_verified=true`; `auth.admin=true` ใน Socket.IO เพียงอย่างเดียวไม่ถือเป็นสิทธิ์
 - ถ้าไม่ได้ตั้งทั้ง `ADMIN_PANEL_PASSWORD` และ `ADMIN_GOOGLE_EMAILS` ระบบจะ **fail-closed**: API แอดมินตอบ `503 ADMIN_AUTH_NOT_CONFIGURED` และ socket ไม่ให้ใช้ `admin_*`
 
+### Account Session + Room Membership (Single Active Activity)
+
+เพื่อป้องกันปัญหาเดียวกันหลายแท็บ/หลายเครื่องแล้วสถานะผู้เล่นสลับตัว ระบบจริงใช้ identity 4 ชั้นแยกกัน:
+
+- `accountId` = ตัวตน Game Account ถาวร
+- `activeSessionHash` + `activeDeviceId` = session ที่ใช้งานได้เพียงชุดเดียวต่อ Account; login จากเครื่องอื่นจะ revoke session เดิม
+- `membershipId` = ช่องผู้เล่น/โฮสต์ในห้องแบบถาวร ใช้สำหรับ reconnect และค้นหาตัวเองใน room state
+- `socket.id` = ตัวตนของ connection ปัจจุบันเท่านั้น ไม่ใช่ player identity ถาวร
+
+หลายแท็บ/iframe ใน device เดียวกันสามารถเป็น views ของ activity เดียวกันได้ แต่จะไม่สร้าง player slot ใหม่. Account เดียวกันไม่สามารถทำ `HOST_ROOM` และ `PLAYER_ROOM` คนละกิจกรรมพร้อมกันได้. หน้า Index เปิดใหม่จะถาม `/api/account/context` และพากลับไป activity ล่าสุดของ Account แทนการสร้างกิจกรรมใหม่
+
+การ login จาก device อื่นจะเปลี่ยน active session บน server และส่ง `account_session_revoked` พร้อมตรวจซ้ำข้าม EB instance. Browser เดิมจะถูกตัดสิทธิ์และกลับหน้าแรก; ถ้าเป็นการแทน session ภายใน device เดียวกัน ระบบจะรอ credential ใหม่จาก shared storage แล้ว bootstrap ต่อ โดยคง Account/Room Membership เดิม
+
+Admin online list รวมเป็น **1 แถวต่อ Account** และ `connectionCount` ใช้บอกจำนวนแท็บ/iframe/socket ที่กำลังเชื่อมอยู่แทนการแสดงบัญชีซ้ำ
+
 ### Google OAuth Phase 2 — Environment
 
 ตั้งค่า env บน Elastic Beanstalk/server: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (ถ้าใช้ Web OAuth client แบบ confidential), `GOOGLE_CALLBACK_URL` (ต้องตรงกับ Google OAuth redirect URI), `GOOGLE_SCOPES` (ค่าเริ่มต้น `openid profile email`) และ `AUTH_STATE_SECRET` เป็น random secret คงที่ยาวๆ
@@ -875,7 +998,7 @@ Authorized JavaScript origins ให้เป็น origin HTTPS ของเก
 
 Scopes เริ่มต้นคือ `openid profile email` และโค้ดตรวจลายเซ็น/issuer/audience/expiry/nonce ของ Google ID token ฝั่ง server ก่อนยอมรับ Google identity; ห้ามเอา Google access/refresh token มาเก็บใน localStorage
 
-## Diagnostics Center (v10)
+## Diagnostics Center (v11)
 
 หน้า `admin.html` มีแท็บ **🩺 ปัญหา / บั๊ก** สำหรับดูข้อผิดพลาดจาก `index`, `host`, `player`, JavaScript, Socket.IO, HTTP และ server-side logs
 
@@ -887,9 +1010,15 @@ Scopes เริ่มต้นคือ `openid profile email` และโค�
 - AWS `AccessDenied` พร้อม action เช่น `dynamodb:BatchWriteItem` และ resource ARN ที่ถูกปฏิเสธ
 - รายการ IAM permissions ที่เกมใช้ เพื่อดูว่า role ควรมี action ใด
 
-Diagnostics เก็บไว้ใน memory ของ process สูงสุด 500 รายการ และถูกล้างเมื่อ server process restart/deploy หรือเมื่อ Admin กด **ล้างบันทึก**
+Diagnostics เก็บไว้ใน memory ของ process สูงสุด 700 รายการ และถูกล้างเมื่อ server process restart/deploy หรือเมื่อ Admin กด **ล้างบันทึก**
 
 การแจ้งเตือนทั่วไปในหน้าเกมใช้ CSS toast ผ่าน `wwToast/wwAlert` แทน browser `alert()` และกล่องยืนยันใช้ CSS modal เพื่อไม่บล็อก JavaScript event loop แบบ native dialog
+
+การจัดการรายงานบั๊กใน Header ของ Diagnostics แยกเป็น 2 ชั้น: บรรทัดบนแสดงลิงก์ repository `werewolf-bug-reports` เพียงรายการเดียว ส่วนบรรทัด action ใช้แถวเดียวสำหรับ `ส่งรายงานทั้งหมดขึ้น GitHub`, `⬇️ JSON`, `ล้าง Error`, `ล้าง GitHub Issues` และ `ล้าง Screenshot PNG/JSON` โดยแถว action จะเลื่อนในแนวนอนบนหน้าจอแคบแทนการตกหลายบรรทัด
+
+ปุ่ม `🐙 ส่งรายงานทั้งหมดขึ้น GitHub` ส่ง event IDs ของรายงานที่กำลังแสดงอยู่ใน Diagnostics ไปยัง `/api/admin/diagnostics/github/all` ฝั่ง server แบบ concurrent จำกัด 4 รายการ และ reuse GitHub Issue เดิมเมื่อ event นั้นเคยถูกส่งแล้ว
+
+ปุ่ม `⬇️ JSON` จะเปิด popup ขนาดเล็กเพื่อแสดงจำนวนรายงาน/รายการรุนแรง/IAM และให้เลือก `เปิด JSON`, `ดาวน์โหลด`, `คัดลอก` หรือ `ปิด` แทนการดาวน์โหลดทันที
 
 
 ### Legacy → Game Account migration
@@ -901,6 +1030,7 @@ Diagnostics เก็บไว้ใน memory ของ process สูงสุ
 - หน้า Admin สามารถสร้างลิงก์วินิจฉัยแบบ public, unguessable และมีอายุจำกัดจากเหตุการณ์เดียวได้ โดยปุ่ม **คัดลอกลิงก์ AI** จะคัดลอก URL ที่ AI/เบราว์เซอร์ที่เข้าถึงเว็บได้สามารถเปิดอ่านได้ โดยไม่ต้องล็อกอิน
 - รายงานถูกเก็บใน DynamoDB partition เฉพาะ และใช้ token แบบสุ่มเป็น bearer capability; ค่าเริ่มต้นหมดอายุใน 3 วัน (`DIAGNOSTIC_SHARE_TTL_MS`) จำกัดสูงสุด 7 วัน/ต่ำสุด 15 นาที เพื่อให้ข้าม instance ของ Elastic Beanstalk ได้
 - Human-readable: `/diagnostics/share/<token>` และ machine-readable: `/diagnostics/share/<token>.json`; หน้า HTML เป็น server-rendered `<pre>` ไม่มี JavaScript ที่ต้องรันก่อนอ่าน และมี `noindex`, `no-referrer`, `no-store`
+- สำหรับการส่งรายงานให้ AI โดยตรง ระบบจะถือ `/diagnostics/share/<token>.json` เป็น **AI Share URL** (response ยังมี `url` สำหรับ HTML เดิมเพื่อ compatibility) เพื่อให้ลิงก์ที่คัดลอกเป็นข้อมูล machine-readable แบบเดียวกับ endpoint รายงานปกติ
 - สามารถกำหนด host ที่ใช้สร้าง URL ด้วย `DIAGNOSTIC_PUBLIC_BASE_URL` เมื่อ deployment อยู่หลัง proxy/CDN ที่ต้องการ URL canonical เฉพาะ
 - การวิเคราะห์ไม่ได้หยุดที่ข้อความ Error: ระบบผูก `traceId`, `sessionId`, `operationId`, `requestId`, `clientRequestId`, room และ event name แล้วสร้าง **first failure → blocking event → causal chain → downstream effects → next step** ตามหลักฐานที่มีจริง
 - Socket.IO handler เก็บ payload ที่ sanitize แล้วและ `authObservation` แบบไม่เก็บ credential จริง เพื่อแยกกรณี **client บอกว่ามี tester pass** ออกจาก **server ได้รับ/ตรวจ/ให้สิทธิ์ tester pass จริงหรือไม่**
@@ -914,3 +1044,115 @@ Diagnostics เก็บไว้ใน memory ของ process สูงสุ
 - ระบบสร้าง graph จาก correlation หลายระดับ (operation/request/trace/session/room) + semantic event transition + เวลา จึงรองรับกรณี root cause กับ symptom คนละชนิดของ log แต่ยังอยู่ใน incident เดียวกัน
 - `nodeReports` เก็บ summary ของ node สำคัญ เพื่อให้เปิด log ตัวถัดไปแล้วเห็น root cause/impact ของ node นั้นโดยไม่ต้องเดาเองจากข้อความ raw
 - รายงานยังระบุชัดว่าเป็น **incident snapshot ณ เวลาที่สร้างลิงก์**; log ที่เกิดหลังจาก snapshot จะไม่โผล่ในลิงก์เดิมจนกว่าจะสร้าง snapshot ใหม่
+
+
+## Current Game Feature Profile / Diagnostics v11
+
+ตั้งแต่ taxonomy v5 รายงาน Diagnostics และ Bug Replay จะเก็บ **Game / Feature snapshot ณ เวลาที่เกิดเหตุ** เพื่อไม่ให้รายงานย้อนหลังไปอ่านเกมรุ่นปัจจุบันแล้วทำให้ข้อมูลคลาดเคลื่อน
+
+- snapshot ระบุ `appVersion`, `sourceHash` และ `featureSetHash` เพื่อผูกบั๊กกับ build ที่เกิดเหตุจริง
+- snapshot อ่าน Role Registry จาก source ปัจจุบันและเก็บ role count, role แยกตามทีม และ Win Conditions ที่รองรับใน build นั้น
+- snapshot เก็บ feature ที่ตรวจพบจริง เช่น Reveal Dead Role, Bot/Tester, room recovery/failover, screenshot capture, Diagnostics, GitHub reporting และ Reset State Fan-out แทนการประกาศรายการ feature แบบคงที่
+- Runtime game state ที่ใส่รายงานเป็นข้อมูลสรุปปลอดภัย เช่น phase, จำนวนผู้เล่น, alive, bot, tester, state version และ role counts; ไม่ใส่รายชื่อผู้เล่นหรือ credential ลง GitHub
+- Bug Replay scenario ทุกตัวมี canonical feature tags และหน้า Admin จะแสดง tag เหล่านี้ใต้แต่ละ scenario เพื่อดู coverage ตาม feature ได้ทันที
+- Python browser test ที่ขาด Playwright จะถูกบันทึกเป็น `PYTHON_PLAYWRIGHT_UNAVAILABLE`/environment skip ไม่ถูกนับเป็น failure ของเกม
+- Aggregate/first-failure report และ GitHub Issue ใช้ profile snapshot เดียวกันเมื่อมีข้อมูลอยู่ใน event เพื่อให้ประวัติหลัง deploy ไม่เปลี่ยนตาม code ปัจจุบัน
+
+## Admin release / update behavior
+
+- หน้า Admin แสดง `Admin release` เป็นข้อมูลของรุ่นที่กำลังเปิดอยู่เท่านั้น
+- ลบ popup `🛠️ หน้า Admin รุ่นใหม่พร้อมใช้งาน` และการ poll `adminHash` ทุก 20 วินาที เพราะการเทียบรุ่นของหน้า Admin เองอาจเกิด false positive จาก cache/CDN หรือระหว่างหลาย instance และทำให้แจ้งซ้ำแม้หน้าเพิ่งเปิดรุ่นล่าสุด
+- การตรวจ “มีอัปเดตเกมใหม่” สำหรับผู้เล่นยังคงใช้ `computeServerVersion()` / `index.auto-update.js` ตามระบบเดิม และไม่ปะปนกับ Admin release
+
+
+## Diagnostics / Replay Incident Consolidation
+
+- `IAM_ACCESS_DENIED` จะถูกประกาศเมื่อมีหลักฐาน AWS ฝั่ง server เท่านั้น เช่น `AccessDeniedException`, `UnauthorizedOperation`, หรือ action ของบริการ AWS ที่รองรับจริง (`dynamodb:*`, `elasticbeanstalk:*`, `s3:*`, `cloudfront:*`). ค่าอย่าง `node:fs` และ `node:internal` จาก test/replay runtime จะไม่ถูกตีความเป็น IAM.
+- `network_error`, `resource_error` และ `fetch_aborted` ที่มี fingerprint/correlation เดียวกันภายในช่วงสั้น ๆ จะถูก coalesce เป็น event เดียว พร้อม `coalescedCount`/`coalescedEventIds` เพื่อไม่ให้หน้า Diagnostics หรือ GitHub ได้รับ duplicate noise.
+- การส่ง Diagnostics เข้า GitHub จะรวม event ที่มี correlation/causal evidence เดียวกัน แต่ **Bug Replay failure ใช้ bug key เฉพาะของ failure** (test path + exit/signal/timeout + normalized output) ไม่ใช้ `operationId` เพียงอย่างเดียว จึงไม่ยุบ failure จากคนละ test ใน replay เดียวกันเป็น Issue เดียว; `operationId` ยังเก็บไว้เป็นบริบทของ replay. ระบบล็อกการสร้าง Issue แบบ in-flight และ reuse open Issue เดิมเมื่อหา key เดิมเจอ; หากการค้นหา GitHub เดิมล้มเหลว ระบบจะไม่สร้าง Issue ใหม่เพื่อป้องกัน duplicate จาก API/rate-limit failure.
+- การลบ screenshot/Issues สำเร็จเป็น operational action/breadcrumb ไม่ใช่ `[BUG]`; เฉพาะ partial/failed cleanup จึงถูกบันทึกเป็น diagnostic failure.
+
+## Bug Replay UI / Live Failure Reports
+
+- ปุ่ม `รันชุดมาตรฐานจนจบ`, `ตรวจละเอียดทุกขั้น` และ `เฟส 2` แยกความหมายชัดเจน ไม่ใช้คำว่า "รันต่อเนื่อง" ซ้ำกัน
+- เมื่อ Bug Replay พบ failure ระบบจะสร้างลิงก์ focused report ของ event นั้นจาก Diagnostics Share ทันที โดยไม่ต้องรอให้รอบทั้งหมดจบ และลิงก์สำหรับส่งให้ AI จะใช้ focused `.json` endpoint ของ snapshot เดียวกัน
+- เมื่อรอบจบ Aggregate Report ใช้ storage + public route เดียวกับ Diagnostics Share (`/diagnostics/share/<token>` / `.json`) ไม่สร้างระบบแชร์อีกชุด; ปุ่มคัดลอกลิงก์สำหรับ AI จะเลือก `.json` เป็นหลัก และเก็บ HTML URL ไว้สำหรับการเปิดอ่านแบบมนุษย์
+- รายงานบั๊กที่พบแล้วจะแสดงค้างอยู่ในแถบผลของรอบนั้นขณะ runner เดินต่อไปบั๊กถัดไป
+- เมื่อรอบจบ ระบบยังคงสร้าง/แสดง Aggregate Report เพียงหนึ่งลิงก์ต่อ Run และลิงก์รายงานรายจุดจะยังอยู่คู่กับรายงานรวม
+
+
+### Admin developer copy command
+หน้า Admin มีปุ่ม `📎` อยู่ข้าง Running version สำหรับคัดลอกคำสั่งแก้ไฟล์เต็ม โดย payload ถูกกำหนดเป็นค่าคงที่ใน `public/admin.html` และมี regression test ตรวจทั้งข้อความและตำแหน่งปุ่ม เพื่อไม่ให้หายหรือเปลี่ยนข้อความในการแก้ Shell รอบถัดไป
+
+## Index server-reopen no-flash hardening — 2026-09-26
+
+The Index first-paint server-state gate now protects the full **closed → reopened → refresh** transition on mobile browsers (especially iPad/Chrome), including load-balanced Elastic Beanstalk instances:
+
+- `/api/server-state` remains the no-store first-paint state probe, but now reconciles `serverClosed` against the persisted `SERVER_STATE` row so an instance that still has stale local state does not return the maintenance page after Admin has reopened the server elsewhere.
+- The reconciliation is short-lived/flight-coalesced (1.5s cache) to avoid turning every client poll into an independent DynamoDB read while still allowing reopen propagation across rolling/immutable deployments.
+- The public navigation gate (`/` and `/index.html`) and `/api/config` reconcile persisted state before the closed-server middleware chooses between the normal Index document and `maintenance.html`. This removes the main source of a brief maintenance-page flash caused by a stale EB instance.
+- Maintenance HTML responses now explicitly send `no-store`, `Pragma: no-cache`, `Surrogate-Control: no-store`, and `Expires: 0` so the old closed document is not reusable as a browser/CDN snapshot.
+- Index lifecycle hardening now neutralizes the closed screen on `visibilitychange`, `freeze`, `pagehide`, and `beforeunload`; when the document becomes visible again, `syncElement()` restores the real open/closed state instead of leaving the Lobby hidden.
+- The existing stale `/api/config` reopen verification remains as a secondary safety net; it still verifies `/api/server-state?verify=1` before showing a closed screen when the early authoritative boot result already confirmed the server open.
+- Tester-mode shielding and the normal closed-server behavior remain unchanged. Cross-instance reconciliation keeps tester rooms when cleaning a stale session.
+
+Verification for this patch:
+
+- `npm run test:index-server-state-boot-gate` — PASS
+- `node tests/index-server-state-authority-behavior.js` — PASS
+- `node tests/index-server-reopen-no-flash-regression.js` — PASS
+- `python3 tests/index-server-closed-no-flash-browser.py` — PASS
+- `node tests/server-state-snapshot-contract-regression.js` — PASS
+- `node tests/config-client-retry-regression.js` — PASS
+- `node tests/config-client-runtime-behavior.js` — PASS
+- `node tests/config-diagnostics-regression.js` — PASS
+- `node tests/index-account-touch-lifecycle-regression.js` — PASS
+- `node tests/s3-assets-regression.js` — PASS
+- `node tests/server-closed-icon-source-regression.js` — PASS
+- `node tests/update-detector-behavior.js` — PASS
+- `node --check server.js` — PASS
+- `node --check public/js/shared.server-control.js` — PASS
+
+This is a transition/state-authority fix: it does not change the rule that a genuinely closed public server remains inaccessible.
+## Admin Mobile Layout Fix — 2026-09-27
+
+- Mobile Admin page headers were compacted so the selected section keeps more vertical space for its actual content. Operations and Diagnostics secondary controls remain usable in a single horizontal strip.
+- Internal Browser viewport controls now reserve a real flex row above the stage instead of floating over it; the iframe uses only the remaining stage area.
+- Regression coverage includes 390×844 phone layout plus 1180×682 iPad-style browser focus geometry.
+
+## Admin Internal Browser — viewport-accurate screenshots — 2026-09-28
+
+- Capture ยังคงใช้ปุ่ม/เมนูเดิม, no-preview flow, preset หลายขนาด และ GitHub endpoint เดิม
+- Preset/custom capture จะรอให้ child iframe เปลี่ยนเป็น logical viewport ที่เลือกจริงก่อนแคป เพื่อไม่ให้กดเร็วแล้วได้ geometry ของขนาดเดิม
+- Auto capture อ่าน `innerWidth`/`innerHeight` ของหน้า child ณ จังหวะแคป และใช้ visual viewport เมื่อมีค่าที่เหมาะสม
+- renderer ยังคงใช้ html2canvas แต่ไม่บังคับ `html`/`body` ของ clone ให้สูง/กว้างเท่ากับ viewport อีกต่อไป เพราะการ clamp นี้ทำให้ scroll range และ layout ของหน้าที่ผู้ใช้เห็นเปลี่ยนไป
+- ไม่เติม synthetic evidence badge ใน PNG เพราะ badge ไม่ได้อยู่บนหน้า live ตอนผู้ใช้กด Capture; ข้อมูลขนาด/scroll ยังคงอยู่ใน JSON metadata
+- ไม่ใช้ `x/y` ซ้ำกับ `scrollX/scrollY` เพื่อป้องกันการเลื่อน crop ซ้ำ
+- GitHub JSON metadata เพิ่ม `captureEngine` และรายละเอียด scroll/visual viewport เพื่อวิเคราะห์ภาพย้อนหลัง
+
+Verification for this patch:
+
+- `node tests/admin-internal-browser-screenshot-scroll-state-regression.js` — PASS
+- `python3 tests/admin-internal-browser-screenshot-scroll-browser.py` — PASS ทั้ง preset และ Auto capture
+- `node tests/admin-internal-browser-screenshot-github-regression.js` — PASS
+- `node tests/admin-internal-browser-screenshot-network-fallback-regression.js` — PASS
+- `node tests/admin-internal-browser-screenshot-auth-fallback-regression.js` — PASS
+- `node tests/admin-internal-browser-screenshot-performance-regression.js` — PASS
+- Browser screenshot batch/performance/auth/GitHub tests — PASS
+- Admin Internal Browser contract/embed/health/storage/viewport recovery tests — PASS
+- Admin viewport command + real HTML/iPad focus regression tests — PASS
+
+รายละเอียดและรายการตรวจทั้งหมดอยู่ใน `ADMIN-INTERNAL-BROWSER-VIEWPORT-EXACT-CAPTURE-VERIFICATION-20260928.md`
+
+## Admin Internal Browser — scroll-aware screenshots / unified page title — 2026-09-27
+
+- Internal Browser screenshot capture now preserves both the child window scroll position and every real nested scroll container that is currently scrolled. This covers layouts such as Host Focus where `.app` owns vertical scrolling while `window.scrollY` stays at `0`, as well as nested panels such as chat/modal regions.
+- Capture state is applied to the html2canvas clone before rendering and reapplied after the temporary evidence badge/style changes. Temporary capture markers are removed from the real page in a `finally` block, so taking a screenshot never jumps the user's live page to the top and does not leave diagnostic attributes behind.
+- The browser-visible document title for normal game pages is now exactly `Werewolf-Online` on Lobby, Host, Player, and the maintenance page. Admin keeps its existing title, including `Admin · Embedded` for an embedded Admin page.
+- Tester Host / Tester Player / Tester Bot labels inside the Admin Internal Browser remain distinct and are not overwritten by the normal game document title.
+
+Regression coverage added for this patch:
+
+- `node tests/admin-internal-browser-screenshot-scroll-state-regression.js` — verifies scroll snapshot/clone/cleanup contract.
+- `python3 tests/admin-internal-browser-screenshot-scroll-browser.py` — verifies real window + `.app` + nested scroll positions are preserved and the live page stays unchanged after capture.
+- `node tests/page-title-branding-regression.js` — verifies the unified normal-page title and protects the existing Admin titles.
