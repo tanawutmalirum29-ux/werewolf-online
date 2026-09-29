@@ -24,7 +24,7 @@ function config() {
   return getGithubBugReportConfig({
     GITHUB_BUG_REPORT_TOKEN: 'github_pat_screenshot_test',
     GITHUB_BUG_REPORT_OWNER: 'tanawutmalirum29-ux',
-    GITHUB_BUG_REPORT_REPO: 'werewolf-bug-reports',
+    GITHUB_BUG_REPORT_REPO: 'werewolf-online',
     GITHUB_BUG_REPORT_BRANCH: 'main',
   });
 }
@@ -87,7 +87,7 @@ async function testRepositoryFileUpload() {
     return {
       ok:true,
       status:201,
-      async text() { return JSON.stringify({content:{path:'x.png',sha:'abc123',html_url:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/x.png',download_url:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-bug-reports/main/x.png'}}); },
+      async text() { return JSON.stringify({content:{path:'x.png',sha:'abc123',html_url:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/x.png',download_url:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-online/main/x.png'}}); },
     };
   };
   const result = await createGithubRepositoryFile({
@@ -114,7 +114,7 @@ async function testScreenshotPairUpload() {
         const parsed = JSON.parse(options.body);
         const isMeta = String(parsed.message).includes('metadata');
         const file = isMeta ? 'a.json' : 'a.png';
-        return JSON.stringify({content:{path:file,sha:isMeta?'jsonsha':'pngsha',html_url:`https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/${file}`,download_url:`https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-bug-reports/main/${file}`}});
+        return JSON.stringify({content:{path:file,sha:isMeta?'jsonsha':'pngsha',html_url:`https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/${file}`,download_url:`https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-online/main/${file}`}});
       },
     };
   };
