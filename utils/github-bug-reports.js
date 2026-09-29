@@ -1,7 +1,7 @@
 'use strict';
 
 const DEFAULT_OWNER = 'tanawutmalirum29-ux';
-const DEFAULT_REPO = 'werewolf-bug-reports';
+const DEFAULT_REPO = 'werewolf-online';
 const DEFAULT_LABELS = ['bug-report'];
 const DEFAULT_TIMEOUT_MS = 12000;
 const DEFAULT_BRANCH = 'main';
@@ -23,7 +23,10 @@ function normalizeList(value, fallback = []) {
 
 function getGithubBugReportConfig(env = process.env) {
     const owner = String(env.GITHUB_BUG_REPORT_OWNER || DEFAULT_OWNER).trim();
-    const repo = String(env.GITHUB_BUG_REPORT_REPO || DEFAULT_REPO).trim();
+    const configuredRepo = String(env.GITHUB_BUG_REPORT_REPO || DEFAULT_REPO).trim();
+    // Migrate the legacy destination automatically so an existing EB environment
+    // cannot keep sending bug reports/screenshots to the retired repository.
+    const repo = configuredRepo === 'werewolf-bug-reports' ? DEFAULT_REPO : configuredRepo;
     const token = String(env.GITHUB_BUG_REPORT_TOKEN || '').trim();
     const labels = normalizeList(env.GITHUB_BUG_REPORT_LABELS, DEFAULT_LABELS);
     const branch = String(env.GITHUB_BUG_REPORT_BRANCH || DEFAULT_BRANCH).trim().replace(/[^A-Za-z0-9_.\/-]/g, '').slice(0, 120) || DEFAULT_BRANCH;
