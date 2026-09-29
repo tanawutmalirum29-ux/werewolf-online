@@ -7,6 +7,9 @@ assert(s.includes('if (room.started) {\n                    return cb && cb({ er
 assert(s.includes('if (code !== room.joinCode)'), 'join-code comparison missing');
 assert(s.includes('if (room.joinCode)'), 'join-code gate missing');
 assert(s.includes('if (room.maxPlayers > 0)'), 'max-player gate missing');
-assert(s.includes('player = room.players.find((p) => p.token === token)'), 'reconnect-by-token path missing');
+assert(s.includes('room.players.find((p) => !p?.isHost && !p?.isBot && normalizeAccountId(p.accountId || "") === accountIdentity.accountId)'), 'reconnect-by-account path missing');
+assert(s.includes('const legacyTokenPlayer = token ? room.players.find((p) => p.token === token) : null;'), 'legacy reconnect-by-token fallback path missing');
+assert(s.includes('!legacyTokenPlayer.accountId && !legacyTokenPlayer.isBot && !legacyTokenPlayer.isTester'), 'legacy token must only recover legacy non-bot/non-tester membership');
+assert(s.includes('code: "ROOM_ACCOUNT_MISMATCH"'), 'cross-account token reuse must be rejected');
 assert(s.includes('if (isReconnect && room.started && player.role)'), 'reconnect must restore role after start');
 console.log('room security depth regression: PASS (create collision/code/full/reconnect/start-lock audited)');

@@ -8,7 +8,7 @@ const shared = fs.readFileSync(path.join(root, 'public', 'js', 'shared.server-co
 const host = fs.readFileSync(path.join(root, 'public', 'js', 'host.main.js'), 'utf8');
 
 assert(server.includes('async function closeAllRoomsSilently({ fast = false } = {})'), 'closeAllRoomsSilently must support a fast path');
-assert(server.includes('if (fast) {\n        wipeAllRoomsInMemory({ keepTesterRooms: true });'), 'fast room close must wipe RAM immediately');
+assert(server.includes('if (fast) {') && server.includes('releaseActivities().catch(() => {});\n        wipeAllRoomsInMemory({ keepTesterRooms: true });'), 'fast room close must release activity without awaiting it and then wipe RAM immediately');
 assert(server.includes('Promise.all(ids.map((id) => deletePersistedRoom(id).catch'), 'fast room close must clean persistence in background');
 const fastEndpoint = server.match(/app\.post\("\/api\/admin\/force-reload"[\s\S]*?\n\}\);\n\n\/\/ ============================================================/);
 assert(fastEndpoint, 'force-reload endpoint block missing');

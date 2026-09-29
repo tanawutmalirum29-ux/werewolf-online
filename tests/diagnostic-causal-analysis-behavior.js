@@ -18,6 +18,7 @@ const sandbox = {
     DIAGNOSTIC_CAUSAL_MAX_EDGES: 72,
     DIAGNOSTIC_CAUSAL_WINDOW_MS: 3 * 60 * 1000,
     DIAGNOSTIC_CAUSAL_STRONG_WINDOW_MS: 15 * 60 * 1000,
+    DIAGNOSTIC_AWS_SERVICE_PREFIXES: new Set(['dynamodb','elasticbeanstalk','s3','cloudfront']),
 };
 const block = `${serverText.slice(start, end)}\nthis.__api={isSuccessfulDiagnosticAck,buildDiagnosticAnalysis,buildDiagnosticCausalGraph,diagnosticStageForItem,diagnosticEventCode,diagnosticCausalPair};`;
 vm.runInNewContext(block, sandbox, { filename: 'diagnostic-analysis-block.js' });

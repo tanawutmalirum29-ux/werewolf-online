@@ -21,6 +21,10 @@ for(const [event] of checks){
  assert(b.includes('const room = rooms[roomId]') || b.includes('let room = rooms[roomId]') || b.includes('room = rooms[roomId]') || b.includes('roomId = String(roomId)') || hasRoomLookup,`${event}: no room binding`);
 }
 assert(s.includes('if (!isHostSocket(room, socket.id)) return;'),'host-only actions need socket ownership checks');
-assert(s.includes('const player = room.players.find((p) => p.id === socket.id);'),'player identity must bind to socket');
+assert(s.includes('function getRoomPlayerForSocket(room, socket, { includeHost = false } = {})'),'central room-player/socket identity helper must exist');
+assert(s.includes('const socketRoomId = String(socket.data?.roomId || "").trim().toUpperCase();'),'socket identity must carry room binding');
+assert(s.includes('const socketMembershipId = String(socket.data?.membershipId || "").trim();'),'socket identity must carry membership binding');
+assert(s.includes('if (accountId && socketRoomId === String(room.id || "").trim().toUpperCase() && socketMembershipId)'),'account identity must be scoped to the socket room and membership');
+assert(s.includes('return (room.players || []).find((p) => p && p.id === socket.id'),'legacy resolution must remain socket-bound');
 assert(s.includes('if (!player || !player.alive || player.isHost) return;'),'sensitive actions must reject dead/host actor');
 console.log('cross-room authorization regression: PASS (room-bound socket identity and host/player guards audited)');

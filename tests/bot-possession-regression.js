@@ -33,7 +33,7 @@ assertOk(sharedJs.includes('if (testerHostControllerId && notifyTesterHostContro
 assertOk(sharedJs.includes('var key = "ww_tester_return_host_" + testerHostControllerId;'), 'Host return storage fallback missing');
 
 // Server still treats the bot token as the authority for reconnecting an existing bot.
-assertOk(serverJs.includes('let player = token ? room.players.find((p) => p.token === token) : null;'), 'join_room bot token reconnect path missing');
+assertOk(serverJs.includes('const legacyTokenPlayer = token ? room.players.find((p) => p.token === token) : null;'), 'join_room legacy bot token reconnect path missing');
 assertOk(serverJs.includes('if (player.isBot || player.isTester) {'), 'bot reconnect must bypass normal account authentication');
 const botReconnectPos = serverJs.indexOf('if (player.isBot || player.isTester) {');
 const normalReconnectAuthPos = serverJs.indexOf('ensureNormalAccountIdentity(reconnectAccountId, player.name', botReconnectPos);

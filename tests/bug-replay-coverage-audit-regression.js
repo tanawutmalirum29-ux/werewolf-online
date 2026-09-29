@@ -24,9 +24,20 @@ for (const group of scenarioGroups) {
     }
   }
 }
+// Shared harnesses and focused regression/unit tests are support code, not standalone replay scenarios.
+const supportFiles = new Set([
+    'tests/browser_harness.py',
+    'tests/bug-replay-environment-skip-regression.js',
+    'tests/diagnostic-github-bug-replay-submit-behavior.js',
+    'tests/admin-reset-state-fanout-regression.js',
+]);
+for (const supportPath of supportFiles) {
+    assert(fs.existsSync(path.join(root, supportPath)), `missing replay support module: ${supportPath}`);
+}
 const runnable = fs.readdirSync(testsDir)
     .filter((name) => /\.(?:js|py)$/.test(name))
     .map((name) => `tests/${name}`)
+    .filter((testPath) => !supportFiles.has(testPath))
     .sort();
 const uncovered = runnable.filter((p) => !referenced.has(p));
 assert.deepStrictEqual(uncovered, [], `uncovered runnable tests: ${uncovered.join(', ')}`);

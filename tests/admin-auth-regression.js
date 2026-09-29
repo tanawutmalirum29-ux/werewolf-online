@@ -5,6 +5,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+const reporter = fs.readFileSync(path.join(root, 'public', 'js', 'error-reporter.js'), 'utf8');
 
 assert(server.includes('ADMIN_GOOGLE_EMAILS'), 'Google admin email allowlist missing');
 assert(server.includes('ADMIN_AUTH_CONFIGURED = !!ADMIN_PANEL_PASSWORD || ADMIN_GOOGLE_EMAILS.length > 0'), 'admin auth must be configured by password or Google allowlist');
@@ -15,6 +16,9 @@ assert(server.includes('claims?.email_verified === true'), 'Google admin login m
 assert(server.includes('ADMIN_GOOGLE_EMAILS.includes(email)'), 'Google admin login must enforce email allowlist');
 assert(server.includes('ADMIN_TAB_AUTH_ENFORCED'), 'Google-configured Admin mode must enforce tab-scoped sessions');
 assert(server.includes('ADMIN_TAB_ID_REQUIRED'), 'password fallback must also bind newly issued sessions to a tab');
+assert(server.includes('hasAdminToken:!!adminAuthToken'), 'socket diagnostics must record whether an admin token was presented without exposing the token');
+assert(server.includes('hasAdminTabId:!!adminPresentedTabId'), 'socket diagnostics must record whether an admin tab id was presented without exposing the tab id');
+assert(server.includes('adminSessionValid'), 'socket diagnostics must record the final admin session validation result');
 assert(server.includes('tabScoped:true'), 'password fallback must issue tab-scoped bearer sessions');
 assert(server.includes('app.get("/auth/google/admin-start"'), 'Google admin start endpoint missing');
 assert(server.includes('mode: "admin"'), 'admin OAuth state mode missing');
@@ -33,8 +37,26 @@ assert(admin.includes('credentials:"same-origin"'), 'admin password login must u
 assert(admin.includes('tabId:window.WWAdminTabAuth?.getTabId?.()'), 'password admin login must present tab id');
 assert(admin.includes('window.WWAdminTabAuth?.setSession?.(d)'), 'password admin login must store the returned tab session');
 assert(admin.includes('pendingAdminError'), 'Google admin callback errors must be shown by the modal');
+assert(admin.includes('auth: (cb) => {'), 'Socket.IO admin auth must use the callback contract so handshake credentials are actually sent');
+assert(admin.includes('<script src="/js/error-reporter.js?v=8"></script>'), 'Admin must cache-bust the updated diagnostic Socket.IO wrapper so the auth-callback fix reaches production');
+assert(admin.includes('cb(auth);'), 'Socket.IO admin auth callback must pass the tab token/intent into the handshake');
+assert(reporter.includes('if (typeof authValue === "function")'), 'diagnostic Socket.IO wrapper must preserve auth callbacks');
+assert(reporter.includes('cb(Object.assign({}, base, { wwDiagSessionId: sessionId }));'), 'diagnostic Socket.IO wrapper must inject diagnostics without dropping dynamic auth credentials');
+assert(reporter.includes('window.__WW_ERROR_REPORTER_VERSION__ = "21";'), 'diagnostic wrapper version marker must match the cache-busted Admin build');
+assert(!reporter.includes('socket.auth = Object.assign({}, socket.auth || {}, { wwDiagSessionId: sessionId });'), 'diagnostic Socket instrumentation must not flatten socket.auth callbacks');
+assert(reporter.includes('function addDiagnosticSocketAuth(authValue)'), 'diagnostic socket auth normalizer missing');
+assert(reporter.includes('socket.auth = addDiagnosticSocketAuth(socket.auth);'), 'instrumented socket must preserve the Socket.IO auth contract');
+assert(reporter.includes('instrumentedIo.__wwInstrumentedV20 = true;'), 'diagnostic wrapper instrumentation marker must match v20');
+assert(reporter.includes('window.__WW_DIAG_LAST_SOCKET_AUTH__'), 'diagnostic wrapper must retain safe auth-presence evidence for callback-form Socket.IO auth');
+assert(reporter.includes('hasAdminToken: !!base.adminToken'), 'diagnostic auth evidence must record only admin-token presence');
+assert(reporter.includes('hasAdminTabId: !!base.adminTabId'), 'diagnostic auth evidence must record only admin-tab presence');
 
 const socketGuard = server.indexOf('if (String(event).startsWith("admin_") && !socket.data.isAdmin)');
 assert(socketGuard >= 0, 'socket admin event guard missing');
+const socketMiddlewareAuthReject = server.indexOf('if (socket.handshake?.auth?.admin === true && !isAdminSocket(socket))');
+assert(socketMiddlewareAuthReject >= 0, 'admin-intent socket must be rejected during handshake when tab credentials are invalid');
+const socketMiddlewareAuthRejectMsg = server.indexOf('return next(new Error("admin_auth_required"));', socketMiddlewareAuthReject);
+assert(socketMiddlewareAuthRejectMsg > socketMiddlewareAuthReject, 'invalid admin socket handshake must emit admin_auth_required so the client can re-authenticate');
+assert(server.includes('auth.rejected:admin_auth_required'), 'invalid admin handshake rejection must be recorded in diagnostics');
 
 console.log('✅ admin auth regression checks passed');

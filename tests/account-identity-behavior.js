@@ -103,5 +103,34 @@ function makeEnv() {
     assert.strictEqual(localStorage.getItem('ww_account_id'), 'brand-new-id');
   }
 
+  // 4) Same-device session replacement must keep the Account identity alive while the new
+  // credential propagates through the shared localStorage used by the sibling tab.
+  {
+    const { account, localStorage } = makeEnv();
+    localStorage.setItem('ww_account_id', 'same-device-id');
+    localStorage.setItem('ww_account_token', 'old-session-token');
+    localStorage.setItem('ww_account_type', 'temporary');
+    const identity = account.getIdentity();
+    let eventDetail = null;
+    account.storage.setItem('ww_account_token', 'new-session-token');
+    const before = account.getIdentity();
+    account.handleSessionRevoked('new_login', { deviceId: before.deviceId });
+    assert.strictEqual(localStorage.getItem('ww_account_id'), 'same-device-id');
+    assert.strictEqual(localStorage.getItem('ww_account_token'), 'new-session-token');
+  }
+
+  // 5) A session replacement from another device must revoke this browser's local identity.
+  {
+    const { account, localStorage } = makeEnv();
+    localStorage.setItem('ww_account_id', 'cross-device-id');
+    localStorage.setItem('ww_account_token', 'session-token');
+    localStorage.setItem('ww_account_type', 'temporary');
+    const identity = account.getIdentity();
+    account.handleSessionRevoked('new_login', { deviceId: 'different-device' });
+    assert.strictEqual(localStorage.getItem('ww_account_id'), null);
+    assert.strictEqual(localStorage.getItem('ww_account_token'), null);
+    assert.strictEqual(identity.deviceId !== 'different-device', true);
+  }
+
   console.log('PASS: account.identity behavioral lifecycle checks');
 })().catch(err => { console.error(err); process.exit(1); });

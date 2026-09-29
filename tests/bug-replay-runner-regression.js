@@ -27,7 +27,7 @@ const { listBugReplayScenarios, getBugReplayScenario, runBugReplayScenario } = r
   assert(totalSteps >= 115, `expected expanded test depth, got ${totalSteps} steps`);
   assert(require('fs').readFileSync(path.join(__dirname, '..', 'utils', 'bug-replay-runner.js'), 'utf8').includes(`const isPython = absolute.endsWith('.py');`), 'runner must support Python browser harnesses');
   assert(require('fs').readFileSync(path.join(__dirname, '..', 'utils', 'bug-replay-runner.js'), 'utf8').includes(`const command = isPython ? 'python3' : process.execPath;`), 'runner must declare fixed Python/Node interpreters');
-  assert(require('fs').readFileSync(path.join(__dirname, '..', 'utils', 'bug-replay-runner.js'), 'utf8').includes('const skipped = code === 77 || /^SKIP:/m.test(combined);'), 'runner must distinguish explicit fixture skips from failures');
+  assert(require('fs').readFileSync(path.join(__dirname, '..', 'utils', 'bug-replay-runner.js'), 'utf8').includes('const skipped = code === 77 || /^SKIP:/m.test(combined) || pythonPlaywrightMissing;'), 'runner must distinguish explicit fixture skips and environment skips from failures');
   assert(require('fs').readFileSync(path.join(__dirname, '..', 'utils', 'bug-replay-runner.js'), 'utf8').includes('python3 unavailable'), 'runner must expose missing Python as an explicit skip');
   console.log(`bug-replay runner regression: PASS (${scenarios.length} scenarios, ${totalSteps} steps catalogued)`);
 })().catch((err) => { console.error(err.stack || err); process.exit(1); });

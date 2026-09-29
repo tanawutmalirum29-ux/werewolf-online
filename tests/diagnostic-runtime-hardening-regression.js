@@ -21,13 +21,14 @@ assert(index.includes('ACCOUNT_AUTH_TIMEOUT:"เซิร์ฟเวอร์�
 assert(reporter.includes('window.__WW_DIAG_PAGEHIDE__ = true'), 'diagnostic pagehide marker must remain available');
 
 assert(sharedControl.includes('function loadedClientHash()'), 'loaded client hash detector missing');
-assert(sharedControl.includes('function startClientCodeUpdate(expectedClientHash)'), 'stale client update handler missing');
+assert(sharedControl.includes('function startClientCodeUpdate(expectedClientHash, deploymentState)'), 'stale client update handler missing');
 assert(sharedControl.includes('window.wwCheckClientVersion = startClientCodeUpdate;'), 'client update checker export missing');
-assert(sharedControl.includes('startClientCodeUpdate(cfg.clientHash || "")'), 'config polling must check stale Host/Player client code');
+assert(sharedControl.includes('startClientCodeUpdate(cfg.clientHash || "", cfg.deploymentState)'), 'config polling must check stale Host/Player client code');
 assert(sharedControl.includes('refreshAssetCache("files")'), 'stale client update must refresh game assets before reload');
+assert(sharedControl.includes('window.wwGetConfig({ url: "/api/config?deploymentProbe=1"'), 'stale client refresh must re-probe deployment state before reload');
 assert(sharedControl.includes('_ww_client'), 'stale client reload must carry the target client hash');
 assert(sharedControl.includes('ต่างจาก startReload(): ห้ามล้าง room/token'), 'stale client reload must preserve room credentials');
-assert(host.includes('window.wwCheckClientVersion(info && info.clientHash)'), 'Host must check client hash immediately on socket serverInfo');
-assert(player.includes('window.wwCheckClientVersion(info && info.clientHash)'), 'Player must check client hash immediately on socket serverInfo');
+assert(host.includes('window.wwCheckClientVersion(info && info.clientHash, info && info.deploymentState)'), 'Host must check client hash immediately on socket serverInfo');
+assert(player.includes('window.wwCheckClientVersion(info && info.clientHash, info && info.deploymentState)'), 'Player must check client hash immediately on socket serverInfo');
 
 console.log('✅ diagnostic runtime hardening regression checks passed');

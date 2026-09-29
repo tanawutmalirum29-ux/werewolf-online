@@ -1,0 +1,18 @@
+const fs = require('fs');
+const assert = require('assert');
+const p = fs.readFileSync('public/js/admin-browser.js','utf8');
+assert(p.includes('function activeFrameLayout(tab)'), 'activeFrameLayout missing');
+assert(p.includes('function scheduleFrameLayoutSync(tab'), 'layout sync missing');
+assert(p.includes('const maxAttempts = 45'), 'layout retry bound missing');
+assert(p.includes('type: "ww-admin-browser-layout"'), 'layout message missing');
+assert(p.includes('dispatchEvent(new Event("resize"))'), 'child resize bridge missing');
+assert(p.includes('if (!active) return;'), 'hidden iframe must not initialize');
+assert(p.includes('tab.status === "error"'), 'errored iframe must not be promoted to ready by layout sync');
+assert(p.includes('delete iframe.dataset.readyBridgeSent;'), 'fallback/new loads must reset the ready bridge');
+assert(p.includes('new ResizeObserver'), 'parent resize observer missing');
+const css = fs.readFileSync('public/css/admin-browser.css','utf8');
+assert(css.includes('.admin-browser-frame[hidden]{display:none !important;}'), 'hidden frame contract changed unexpectedly');
+const html = fs.readFileSync('public/admin.html','utf8');
+assert(html.includes('/css/admin-browser.css?v=20260927-22'), 'admin browser css cache bust missing');
+assert(html.includes('/js/admin-browser.js?v=20260926-24'), 'admin browser js cache bust missing');
+console.log('PASS admin-internal-browser-viewport-recovery-regression');

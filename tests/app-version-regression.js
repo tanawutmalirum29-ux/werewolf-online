@@ -22,7 +22,7 @@ assert.doesNotMatch(server, /const \{ ElasticBeanstalkClient, DescribeEnvironmen
 assert.doesNotMatch(server, /function getCachedRunningVersionLabel\(/, "legacy running-version helper must be removed");
 assert.match(server, /getAppVersion\(\)\.then\(\(version\) =>/);
 assert.match(server, /console\.log\("Running version:", version\)/);
-assert.match(server, /socket\.emit\("serverInfo", \{ version, buildVersion: computeServerVersion\(\), clientHash: computeClientHash\(\), adminHash: computeAdminHash\(\) \}\)/);
+assert.match(server, /socket\.emit\("serverInfo", \{ version, buildVersion: computeServerVersion\(\), clientHash: computeClientHash\(\), adminHash: computeAdminHash\(\), deploymentState: getCachedAppEnvironmentState\(\)\.deploymentState/);
 assert.match(server, /const appVersion = await Promise\.race\(\[versionPromise, versionTimeout\]\);/);
 
 const shared = fs.readFileSync(sharedPath, "utf8");
