@@ -2,6 +2,7 @@
 (function () {
     "use strict";
     const TAB_KEY = "ww_admin_tab_id";
+    const EMBEDDED_ADMIN = (() => { try { return new URLSearchParams(location.search).get("ww_admin_embed") === "1"; } catch (_) { return false; } })();
     const TOKEN_KEY = "ww_admin_tab_token";
     const META_KEY = "ww_admin_tab_meta";
     const makeId = () => {
@@ -36,7 +37,10 @@
     }
     async function protectTabIdentity() {
         const current = getTabId();
-        if (typeof BroadcastChannel === "undefined") return current;
+        // An Admin page rendered inside the Admin Internal Browser intentionally shares
+        // the parent Admin tab credential/session. It must not claim the same BroadcastChannel
+        // identity as a duplicate top-level browser tab or rotate the parent's credential.
+        if (EMBEDDED_ADMIN || typeof BroadcastChannel === "undefined") return current;
         let channel = null;
         try { channel = new BroadcastChannel(TAB_GUARD_CHANNEL); } catch (_) { return current; }
         tabGuardChannel = channel;
@@ -130,5 +134,5 @@
     }
     getTabId();
     patchAdminFetch();
-    window.WWAdminTabAuth={TAB_KEY,TOKEN_KEY,getTabId,getToken,getMeta,setSession,clear,consumeTicketFromUrl,beginGoogleLogin,getSocketAuth,ready:tabReady};
+    window.WWAdminTabAuth={TAB_KEY,TOKEN_KEY,getTabId,getToken,getMeta,setSession,clear,consumeTicketFromUrl,beginGoogleLogin,getSocketAuth,ready:tabReady,embedded:EMBEDDED_ADMIN};
 })();

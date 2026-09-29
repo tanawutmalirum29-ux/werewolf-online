@@ -26,6 +26,7 @@
         lastBreadcrumbKey: '',
         seenBreadcrumbs: new Set(),
         domTimer: null,
+        pageIntegrityTimer: null,
         stateTimer: null,
         socketTimer: null,
         summaryTimer: null,
@@ -33,6 +34,8 @@
         lastSummarySentAt: 0,
         requestSeq: 0,
         originals: {},
+        auditCaptureSeq: 0,
+        viewportGraceMs: 2500,
     };
 
     function pathOf(url) {
@@ -79,12 +82,33 @@
         const rootRect = root.getBoundingClientRect();
         const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
         const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+        const scrollingElement = document.scrollingElement || document.documentElement || document.body;
+        const documentScrollTop = Math.max(0, Number(scrollingElement?.scrollTop) || 0);
+        const rootFullyVisible = viewportW > 0 && viewportH > 0
+            && rootRect.left >= -1 && rootRect.top >= -1
+            && rootRect.right <= viewportW + 1 && rootRect.bottom <= viewportH + 1;
+        const rootIntersectsViewport = viewportW > 0 && viewportH > 0
+            && rootRect.right > 0 && rootRect.left < viewportW
+            && rootRect.bottom > 0 && rootRect.top < viewportH;
+        const rootVisibleHeightPx = Math.max(0, Math.min(rootRect.bottom, viewportH) - Math.max(rootRect.top, 0));
+        const rootVisibleWidthPx = Math.max(0, Math.min(rootRect.right, viewportW) - Math.max(rootRect.left, 0));
+        const rootVisibleHeightRatio = rootRect.height > 0 ? rootVisibleHeightPx / rootRect.height : 0;
+        const rootNearBottomSliver = PAGE === 'host' && viewportH > 0
+            && rootRect.top >= viewportH - Math.min(48, viewportH * 0.08)
+            && rootVisibleHeightRatio < 0.20;
+        const rootOffscreenBelowAtTop = viewportW > 0 && viewportH > 0 && PAGE === 'host'
+            && documentScrollTop <= 2
+            && (rootRect.top > viewportH + 1 || rootNearBottomSliver);
+        const rootOffscreenAboveAtBottom = viewportW > 0 && viewportH > 0 && PAGE === 'host'
+            && rootRect.bottom < -1 && scrollingElement
+            && documentScrollTop + viewportH >= Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0) - 2;
         const seen = new Set();
         let duplicateIdCount = 0;
         let zeroSizeCount = 0;
         let missingLabelCount = 0;
         let outsideViewportCount = 0;
         let overflowPx = 0;
+        const viewportAvailable = viewportW > 0 && viewportH > 0;
         const rects = [];
         cards.forEach((card) => {
             const rect = card.getBoundingClientRect();
@@ -97,22 +121,34 @@
             }
             const label = card.querySelector('.pname, .player-name, .name, [data-player-name]') || card;
             if (!String(label.textContent || '').trim()) missingLabelCount += 1;
-            if (rect.right < 0 || rect.left > viewportW || rect.bottom < 0 || rect.top > viewportH) outsideViewportCount += 1;
-            overflowPx = Math.max(overflowPx,
-                Math.max(0, rootRect.left - rect.left),
-                Math.max(0, rect.right - rootRect.right),
-                Math.max(0, rootRect.top - rect.top),
-                Math.max(0, rect.bottom - rootRect.bottom)
-            );
+            // Blame individual player cards only when the grid root intersects the viewport.
+            // When the entire #list is below the first viewport, page scrolling/layout is the actual signal;
+            // counting all cards as "outside" creates a noisy false-positive flood.
+            if (viewportAvailable && rootIntersectsViewport && (rect.right < 0 || rect.left > viewportW || rect.bottom < 0 || rect.top > viewportH)) outsideViewportCount += 1;
+            if (viewportAvailable && rootRect.width > 0 && rootRect.height > 0) {
+                overflowPx = Math.max(overflowPx,
+                    Math.max(0, rootRect.left - rect.left),
+                    Math.max(0, rect.right - rootRect.right),
+                    Math.max(0, rootRect.top - rect.top),
+                    Math.max(0, rect.bottom - rootRect.bottom)
+                );
+            }
         });
         return {
             selector, present: true, cardCount: cards.length, zeroSizeCount, duplicateIdCount,
             missingLabelCount, outsideViewportCount, overflowPx,
+            viewportAvailable, viewportW, viewportH,
             scrollOverflowPx: Math.max(0, root.scrollHeight - root.clientHeight),
             width: rootRect.width, height: rootRect.height,
+            rootX: rootRect.x, rootY: rootRect.y, rootRight: rootRect.right, rootBottom: rootRect.bottom,
+            rootFullyVisible, rootIntersectsViewport,
+            rootVisibleHeightPx, rootVisibleWidthPx, rootVisibleHeightRatio, rootNearBottomSliver,
+            rootOffscreenBelowAtTop, rootOffscreenAboveAtBottom,
+            documentScrollTop,
             visibleCardCount: rects.filter((r) => r.width > 0 && r.height > 0).length,
             gridColumns: Number(root.dataset.gridColumns || 0) || 0,
             gridRows: Number(root.dataset.gridRows || 0) || 0,
+            gridLayoutReady: root.dataset.gridLayoutReady === 'true',
         };
     }
 
@@ -125,10 +161,10 @@
     function runDomAudit() {
         const target = expectedForPage();
         if (!target) return;
-        const snap = domSnapshot(target.selector, target.cardSelector);
-        if (!snap.present) return;
+        const captureId = `audit-${++state.auditCaptureSeq}-${Date.now().toString(36)}`;
         const provider = window.__WW_RUNTIME_STATE_PROVIDER__;
         let expectedCount = null;
+        let stateCaptured = false;
         if (typeof provider === 'function') {
             try {
                 const value = provider();
@@ -137,12 +173,94 @@
                 engine.checkStateInvariants(value, {
                     roomId: value?.roomId || value?.id || '',
                     maxPlayers: value?.maxPlayers || value?.config?.maxPlayers || undefined,
+                    captureId,
                 });
+                stateCaptured = true;
             } catch (err) {
-                addFinding('state', 'STATE_PROVIDER_ERROR', 'ตัวอ่าน game state ของหน้าเกมทำงานไม่ได้', { message: err?.message || String(err) }, 'error');
+                addFinding('state', 'STATE_PROVIDER_ERROR', 'ตัวอ่าน game state ของหน้าเกมทำงานไม่ได้', { message: err?.message || String(err), captureId }, 'error');
             }
         }
-        engine.checkDomSnapshot(snap, expectedCount == null ? {} : { expectedCount });
+        const snap = domSnapshot(target.selector, target.cardSelector);
+        if (!snap.present) return;
+        snap.captureId = captureId;
+        snap.stateCaptureId = stateCaptured ? captureId : '';
+        snap.capturedAt = new Date().toISOString();
+        if (!snap.viewportAvailable) {
+            const elapsed = Date.now() - state.startedAt;
+            if (elapsed < state.viewportGraceMs) {
+                engine.record('lifecycle', 'layout.waiting_for_viewport', {
+                    captureId, viewportW: snap.viewportW, viewportH: snap.viewportH, elapsedMs: elapsed,
+                }, { severity: 'info', source: 'browser-runtime' });
+                return;
+            }
+        }
+        engine.checkDomSnapshot(snap, expectedCount == null ? { stateCaptureId: stateCaptured ? captureId : '' } : { expectedCount, stateCaptureId: stateCaptured ? captureId : '' });
+    }
+
+    function pageIntegritySnapshot() {
+        const viewportW = Number(window.innerWidth || document.documentElement?.clientWidth || 0);
+        const viewportH = Number(window.innerHeight || document.documentElement?.clientHeight || 0);
+        const root = document.documentElement;
+        const body = document.body;
+        const controls = Array.from(document.querySelectorAll('button,a,[role="button"],input,select,textarea'));
+        const duplicateIds = new Map();
+        let zeroSizeInteractive = 0;
+        let offscreenInteractive = 0;
+        let unnamedInteractive = 0;
+        let visibleDisabledInteractive = 0;
+        controls.forEach((el) => {
+            const id = String(el.id || '').trim();
+            if (id) duplicateIds.set(id, (duplicateIds.get(id) || 0) + 1);
+            const style = window.getComputedStyle?.(el);
+            const rect = el.getBoundingClientRect();
+            const isHidden = !!el.hidden || style?.display === 'none' || style?.visibility === 'hidden' || Number(style?.opacity) === 0;
+            if (isHidden) return;
+            if (rect.width <= 0 || rect.height <= 0) zeroSizeInteractive += 1;
+            if (viewportW > 0 && viewportH > 0 && (rect.right < -2 || rect.left > viewportW + 2 || rect.bottom < -2 || rect.top > viewportH + 2)) offscreenInteractive += 1;
+            if (('disabled' in el && el.disabled) || el.getAttribute?.('aria-disabled') === 'true') visibleDisabledInteractive += 1;
+            const name = String(el.getAttribute?.('aria-label') || el.getAttribute?.('title') || el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+            if (!name) unnamedInteractive += 1;
+        });
+        let duplicateIdCount = 0;
+        duplicateIds.forEach((count) => { if (count > 1) duplicateIdCount += count - 1; });
+        const docWidth = Math.max(Number(root?.scrollWidth || 0), Number(body?.scrollWidth || 0));
+        const horizontalOverflowPx = viewportW > 0 ? Math.max(0, docWidth - viewportW) : 0;
+        const hasActiveUpdateOverlay = !!document.querySelector('#wwUpdateOverlay:not(.hidden)');
+        return {
+            page: PAGE,
+            path: location.pathname,
+            readyState: document.readyState,
+            viewportW, viewportH,
+            documentWidth: docWidth,
+            horizontalOverflowPx,
+            controlCount: controls.length,
+            zeroSizeInteractive,
+            offscreenInteractive,
+            unnamedInteractive,
+            visibleDisabledInteractive,
+            duplicateIdCount,
+            hasActiveUpdateOverlay,
+        };
+    }
+
+    function runPageIntegrityAudit() {
+        const snap = pageIntegritySnapshot();
+        record('dom', 'page.integrity.snapshot', snap, {source:'browser-runtime'});
+        if (snap.duplicateIdCount > 0) addFinding('dom', 'PAGE_DUPLICATE_ID', 'หน้าเว็บมี id ซ้ำใน DOM', snap, 'error');
+        if (snap.unnamedInteractive > 0) addFinding('dom', 'PAGE_UNNAMED_INTERACTIVE', 'พบ control ที่มองเห็นได้แต่ไม่มี accessible name', snap, 'warning');
+        if (snap.zeroSizeInteractive > 0) addFinding('dom', 'PAGE_ZERO_SIZE_INTERACTIVE', 'พบ control ที่มองเห็นใน DOM แต่มีขนาด 0', snap, 'warning');
+        if (snap.viewportW > 0 && snap.horizontalOverflowPx > 2 && !document.body?.dataset?.page?.includes('maintenance')) {
+            addFinding('dom', 'PAGE_HORIZONTAL_OVERFLOW', 'หน้าเว็บมี horizontal overflow มากกว่าพื้นที่ viewport', snap, 'warning');
+        }
+        if (snap.viewportW > 0 && snap.viewportH > 0 && snap.offscreenInteractive > 0 && PAGE !== 'admin') {
+            addFinding('dom', 'PAGE_INTERACTIVE_OFFSCREEN', 'มี control ที่อยู่นอก viewport และไม่ควรถูกซ่อนไว้', snap, 'warning');
+        }
+        if (window.WWRuntimeAuditActions?.coverage) {
+            try {
+                const c = window.WWRuntimeAuditActions.coverage();
+                record('action', 'actions.coverage', {registeredOnPage:c.registeredOnPage, safeOnPage:c.safeOnPage, attempted:c.attempted, passed:c.passed, failed:c.failed, skipped:c.skipped, blocked:c.blocked, timedOut:c.timedOut}, {source:'action-suite'});
+            } catch (_) {}
+        }
     }
 
     function pollStateAndDom() {
@@ -344,7 +462,7 @@
     }
 
     window.WWRuntimeAudit = {
-        version: '1.0',
+        version: '2.0',
         enabled: true,
         engine,
         record,
@@ -353,6 +471,7 @@
         snapshot: function () { return engine.snapshot(); },
         flush: function () { flush(true); },
         setStateProvider: function (provider) { window.__WW_RUNTIME_STATE_PROVIDER__ = provider; pollStateAndDom(); },
+        pageIntegrity: pageIntegritySnapshot,
     };
     window.__WW_RUNTIME_AUDIT__ = true;
 
@@ -364,11 +483,13 @@
 
     state.stateTimer = setInterval(pollStateAndDom, 900);
     state.domTimer = setInterval(runDomAudit, 1400);
+    state.pageIntegrityTimer = setInterval(runPageIntegrityAudit, 2200);
     state.socketTimer = setInterval(pollSocketBreadcrumbs, 300);
     state.summaryTimer = setInterval(() => flush(false), 15000);
     setTimeout(() => {
         record('lifecycle', 'runtime_audit.started', { page: PAGE });
         pollStateAndDom();
+        runPageIntegrityAudit();
         pollSocketBreadcrumbs();
     }, 0);
 })();

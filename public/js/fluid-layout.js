@@ -78,8 +78,8 @@
 
         // ค่ากลางที่ค่อย ๆ เปลี่ยน ไม่ใช่การสลับทีละ breakpoint
         if (page === "player") {
-            const chat = clamp(w * 0.28, 232, 380);
-            const roles = clamp(w * 0.22, 220, 330);
+            const chat = clamp(w * 0.22, 260, 320);
+            const roles = clamp(w * 0.17, 200, 250);
             const gap = clamp(w * 0.008, 6, 14);
             const edge = clamp(w * 0.012, 6, 18);
             const bottom = clamp(h * 0.07, 52, 82);

@@ -13,12 +13,14 @@
 (function () {
     const params = new URLSearchParams(location.search);
     const tester = params.get("tester") === "1";
-    const storage = tester ? sessionStorage : localStorage;
+    const storage = tester ? ((window.wwEmbeddedStorage && window.wwEmbeddedStorage.session) || sessionStorage) : localStorage;
     const ACCOUNT_ID_KEY = "ww_account_id";
     const ACCOUNT_TOKEN_KEY = "ww_account_token";
     const ACCOUNT_NAME_KEY = "ww_account_name";
     const ACCOUNT_TYPE_KEY = "ww_account_type";
     const ACCOUNT_EXPIRES_KEY = "ww_account_expires";
+    const DEVICE_ID_KEY = "ww_device_id";
+    const TAB_ID_KEY = "ww_tab_id";
     // เมื่อบัญชีจริงถูกลบแล้ว ห้าม bootstrap อัตโนมัติสร้างบัญชีใหม่เงียบ ๆ
     // ผู้ใช้ต้องกด “สร้างบัญชีใหม่” และตั้งชื่อใหม่ก่อน จึงจะเริ่ม Temporary Account ใหม่ได้
     const ACCOUNT_RECREATE_REQUIRED_KEY = "ww_account_recreate_required";
@@ -31,6 +33,22 @@
     }
     function isRecreationRequired() {
         return storage.getItem(ACCOUNT_RECREATE_REQUIRED_KEY) === "1";
+    }
+    function ensureScopedId(targetStorage, key, prefix) {
+        let value = targetStorage.getItem(key) || "";
+        if (value) return value;
+        value = (window.crypto && typeof window.crypto.randomUUID === "function")
+            ? window.crypto.randomUUID()
+            : `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+        try { targetStorage.setItem(key, value); } catch (_) {}
+        return value;
+    }
+    function getDeviceId() {
+        const target = tester ? sessionStorage : localStorage;
+        return ensureScopedId(target, DEVICE_ID_KEY, "device");
+    }
+    function getTabId() {
+        return ensureScopedId(sessionStorage, TAB_ID_KEY, "tab");
     }
     function getIdentity() {
         const accountType = storage.getItem(ACCOUNT_TYPE_KEY) || "temporary";
@@ -49,6 +67,8 @@
             accountType,
             temporaryExpiresAt: storage.getItem(ACCOUNT_EXPIRES_KEY) || "",
             recreationRequired,
+            deviceId: getDeviceId(),
+            tabId: getTabId(),
         };
     }
     function applyAccount(account) {
@@ -62,13 +82,13 @@
         else storage.removeItem(ACCOUNT_EXPIRES_KEY);
     }
     function getName() { return storage.getItem(ACCOUNT_NAME_KEY) || ""; }
-    function setName(name) { storage.setItem(ACCOUNT_NAME_KEY, String(name || "").trim().slice(0, 24)); }
+    function setName(name) { storage.setItem(ACCOUNT_NAME_KEY, String(name || "").replace(/\s+/gu, "").slice(0, 24)); }
     function setAuthenticatedIdentity({ accountId = "", accountToken = "", name = "", accountType = "google", temporaryExpiresAt = "" } = {}) {
         // OAuth handoff สำเร็จ = ได้ตัวตนที่ยืนยันแล้ว จึงยกเลิกสถานะบังคับสร้างใหม่
         storage.removeItem(ACCOUNT_RECREATE_REQUIRED_KEY);
         if (accountId) storage.setItem(ACCOUNT_ID_KEY, String(accountId));
         if (accountToken) storage.setItem(ACCOUNT_TOKEN_KEY, String(accountToken));
-        if (name) storage.setItem(ACCOUNT_NAME_KEY, String(name).trim().slice(0, 24));
+        if (name) storage.setItem(ACCOUNT_NAME_KEY, String(name).replace(/\s+/gu, "").slice(0, 24));
         if (accountType) storage.setItem(ACCOUNT_TYPE_KEY, String(accountType));
         if (temporaryExpiresAt) storage.setItem(ACCOUNT_EXPIRES_KEY, String(temporaryExpiresAt));
         else storage.removeItem(ACCOUNT_EXPIRES_KEY);
@@ -76,11 +96,25 @@
     async function logout() {
         const identity = getIdentity();
         if (identity.accountId && identity.accountToken) {
-            try {
-                await fetch("/api/account/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountId: identity.accountId, accountToken: identity.accountToken }) });
-            } catch (_) {}
+            const response = await fetch("/api/account/logout", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-WW-Device-Id": identity.deviceId || "",
+                },
+                body: JSON.stringify({
+                    accountId: identity.accountId,
+                    accountToken: identity.accountToken,
+                    deviceId: identity.deviceId || "",
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data?.ok === false) {
+                throw Object.assign(new Error(data?.error || data?.code || "account logout failed"), { code: data?.code || "ACCOUNT_LOGOUT_FAILED" });
+            }
         }
         clearAccount();
+        return { ok: true };
     }
     function clearAccount() {
         storage.removeItem(ACCOUNT_ID_KEY);
@@ -94,10 +128,43 @@
         storage.setItem(ACCOUNT_RECREATE_REQUIRED_KEY, "1");
         window.dispatchEvent(new CustomEvent("wwAccountRecreationRequired", { detail: { reason: String(reason || "deleted") } }));
     }
+    async function waitForSessionReplacement(previousToken, { timeoutMs = 6000, pollMs = 120 } = {}) {
+        const oldToken = String(previousToken || "");
+        if (!oldToken) return { ok: false, code: "ACCOUNT_SESSION_REPLACEMENT_MISSING_TOKEN" };
+        const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 6000);
+        while (Date.now() < deadline) {
+            const identity = getIdentity();
+            if (identity.accountToken && identity.accountToken !== oldToken) {
+                return { ok: true, identity };
+            }
+            await new Promise((resolve) => setTimeout(resolve, Math.max(30, Number(pollMs) || 120)));
+        }
+        const identity = getIdentity();
+        return identity.accountToken && identity.accountToken !== oldToken
+            ? { ok: true, identity }
+            : { ok: false, code: "ACCOUNT_SESSION_REPLACEMENT_TIMEOUT" };
+    }
+
+    function handleSessionRevoked(reason = "session_replaced", info = {}) {
+        const safeReason = String(reason || "session_replaced");
+        const identity = getIdentity();
+        const nextDeviceId = String(info?.deviceId || "").trim();
+        const sameDeviceReplacement = safeReason === "new_login" && !!nextDeviceId && !!identity.deviceId && nextDeviceId === identity.deviceId;
+        if (!sameDeviceReplacement) clearAccount();
+        const detail = {
+            reason: safeReason,
+            deviceId: nextDeviceId,
+            sameDeviceReplacement,
+            previousAccountId: identity.accountId || "",
+            previousAccountToken: identity.accountToken || "",
+        };
+        window.dispatchEvent(new CustomEvent("wwAccountSessionRevoked", { detail }));
+        return { sameDeviceReplacement, previousAccountToken: identity.accountToken || "", deviceId: identity.deviceId || "" };
+    }
     function beginNewTemporaryAccount(name = "") {
         clearAccount();
         storage.removeItem(ACCOUNT_RECREATE_REQUIRED_KEY);
-        const safeName = String(name || "").trim().slice(0, 24);
+        const safeName = String(name || "").replace(/\s+/gu, "").slice(0, 24);
         if (safeName) storage.setItem(ACCOUNT_NAME_KEY, safeName);
         // getIdentity() จะออก credential ใหม่ให้เฉพาะหลังจากปลด block แล้ว
         return getIdentity();
@@ -131,6 +198,8 @@
                 accountToken: identity.accountToken,
                 name: String(name || getName() || "").trim().slice(0, 24),
                 page,
+                deviceId: identity.deviceId,
+                tabId: identity.tabId,
             }, (res) => {
                 if (res && res.ok && res.account) {
                     const returnedId = String(res.account.accountId || res.accountId || "").trim();
@@ -153,6 +222,11 @@
                     return;
                 }
                 // Google session หมดอายุ: คง accountId ไว้เพื่อ re-auth บัญชีเดิม
+                if (res?.code === "ACCOUNT_SESSION_REVOKED" || res?.code === "ACCOUNT_DEVICE_CONFLICT") {
+                    handleSessionRevoked(res.code, { deviceId: res?.deviceId || "" });
+                    reject(Object.assign(new Error("Account session replaced"), { code: res.code }));
+                    return;
+                }
                 if (res?.code === "ACCOUNT_SESSION_EXPIRED" && identity.accountType === "google") {
                     storage.removeItem(ACCOUNT_TOKEN_KEY);
                     window.dispatchEvent(new CustomEvent("wwGoogleReauthRequired", { detail: { accountId: identity.accountId, name: identity.name } }));
@@ -182,13 +256,13 @@
     }
     function payload(extra) {
         const i = getIdentity();
-        return Object.assign({ accountId: i.accountId, accountToken: i.accountToken }, extra || {});
+        return Object.assign({ accountId: i.accountId, accountToken: i.accountToken, deviceId: i.deviceId, tabId: i.tabId }, extra || {});
     }
     function isTester() { return tester; }
 
     window.wwAccount = {
-        storage, getIdentity, applyAccount, setAuthenticatedIdentity, getName, setName,
-        clearAccount, markAccountDeleted, beginNewTemporaryAccount, isRecreationRequired,
-        logout, bootstrap, payload, isTester,
+        storage, getIdentity, getDeviceId, getTabId, applyAccount, setAuthenticatedIdentity, getName, setName,
+        clearAccount, markAccountDeleted, handleSessionRevoked, beginNewTemporaryAccount, isRecreationRequired,
+        logout, bootstrap, waitForSessionReplacement, payload, isTester,
     };
 })();

@@ -4,11 +4,18 @@
   const commands=[];
   const add=(c)=>{ if(!c||!c.id||commands.some(x=>x.id===c.id)) return; commands.push({...c,keywords:Array.isArray(c.keywords)?c.keywords:[]}); };
   const runExisting=(fn,...args)=>{ try{ if(typeof window[fn]!=="function") throw new Error("ADMIN_COMMAND_HANDLER_MISSING:"+fn); return Promise.resolve(window[fn](...args)); }catch(e){ return Promise.reject(e); } };
-  add({id:"dashboard.open",title:"เปิดภาพรวม",icon:"📊",category:"นำทาง",keywords:["overview","dashboard"],run:()=>runExisting("closeAdminPanel")});
+  add({id:"browser.open",title:"เปิด Internal Game Browser",icon:"🖥️",category:"Browser",keywords:["browser","game","internal","แท็บ","เกม"],run:()=>{ window.WWAdminBrowser?.showBrowser?.(); return Promise.resolve(); }});
+  add({id:"browser.game",title:"เปิด Game Home ในแท็บภายใน",icon:"🏠",category:"Browser",keywords:["game","home","index","แท็บ"],run:()=>Promise.resolve(window.WWAdminBrowser?.openGame?.())});
+  add({id:"browser.admin",title:"เปิด Admin ใน iframe ภายใน",icon:"🛡️",category:"Browser",keywords:["admin","iframe","nested","แท็บ","แอดมิน"],run:()=>Promise.resolve(window.WWAdminBrowser?.openAdmin?.())});
+  add({id:"browser.tester.host",title:"สร้างแท็บ Tester Host",icon:"🎮",category:"Browser",keywords:["tester","host","browser","ทดสอบ","โฮสต์"],run:()=>window.WWAdminBrowser?.openTester?.("host")});
+  add({id:"browser.tester.player",title:"สร้างแท็บ Tester Player",icon:"👤",category:"Browser",keywords:["tester","player","browser","ทดสอบ","ผู้เล่น"],run:()=>window.WWAdminBrowser?.openTester?.("player")});
+  add({id:"browser.next",title:"สลับไปแท็บถัดไป",icon:"⇥",category:"Browser",keywords:["tab","next","แท็บถัดไป"],run:()=>Promise.resolve(window.WWAdminBrowser?.activateRelativeTab?.(1))});
+  add({id:"dashboard.open",title:"เปิดภาพรวม",icon:"📊",category:"นำทาง",keywords:["overview","dashboard"],run:()=>runExisting("switchTab","overview")});
   add({id:"players.open",title:"เปิดผู้เล่นทั้งหมด",icon:"👥",category:"ผู้เล่น",keywords:["player","account","ผู้เล่น","บัญชี"],run:()=>runExisting("switchTab","all")});
   add({id:"online.open",title:"เปิดผู้เล่นออนไลน์",icon:"🟢",category:"ผู้เล่น",keywords:["online","live","ออนไลน์"],run:()=>runExisting("switchTab","live")});
   add({id:"rooms.open",title:"เปิดห้องเกม",icon:"🏠",category:"ห้อง",keywords:["room","ห้อง"],run:()=>runExisting("switchTab","rooms")});
   add({id:"system.open",title:"เปิดคำสั่งระบบ",icon:"⚙️",category:"ระบบ",keywords:["server","system","ระบบ","เซิร์ฟเวอร์"],run:()=>runExisting("switchTab","tools")});
+  add({id:"versions.open",title:"เปิดตัวจัดการเวอร์ชันเกม",icon:"🗂️",category:"ระบบ",keywords:["version","release","rollback","download","เวอร์ชัน","ย้อนกลับ","ดาวน์โหลด"],run:()=>runExisting("switchTab","versions")});
   add({id:"diagnostics.open",title:"เปิดศูนย์ตรวจปัญหา",icon:"🩺",category:"ตรวจสอบ",keywords:["diagnostic","error","bug","ปัญหา"],run:()=>runExisting("switchTab","diagnostics")});
   add({id:"dashboard.refresh",title:"รีเฟรชภาพรวม",icon:"🔄",category:"ทางลัด",keywords:["refresh","reload","รีเฟรช"],run:()=>runExisting("refreshDashboard")});
   add({id:"server.reload.files",title:"โหลดไฟล์เกมใหม่",icon:"📄",category:"เซิร์ฟเวอร์",keywords:["force reload","files","ไฟล์"],risk:"high",run:()=>runExisting("askForceReload","files")});
@@ -27,6 +34,7 @@
   add({id:"bugreplay.deep",title:"รัน Bug Replay แบบละเอียดต่อเนื่อง",icon:"🔎",category:"ตรวจสอบ",keywords:["deep","replay"],run:()=>runExisting("startBugReplay","deep")});
   add({id:"bugreplay.phase2",title:"รัน Chaos → Stress → Long-Run → Recovery",icon:"⚡",category:"ตรวจสอบ",keywords:["chaos","stress","long-run","recovery"],run:()=>runExisting("startBugReplay","phase2")});
   add({id:"diagnostics.refresh",title:"รีเฟรช Diagnostics",icon:"🔄",category:"ตรวจสอบ",keywords:["diagnostics","refresh"],run:()=>runExisting("loadDiagnostics")});
+  add({id:"diagnostics.runtime-actions",title:"รัน Runtime Action Audit",icon:"🧭",category:"ตรวจสอบ",keywords:["runtime","action","audit","coverage","ตรวจการกระทำ"],run:()=>{ if(typeof window.runRuntimeSafeActions!=="function") return Promise.reject(new Error("RUNTIME_ACTION_AUDIT_HANDLER_MISSING")); return window.runRuntimeSafeActions(); }});
   add({id:"diagnostics.clear",title:"ล้างบันทึก Diagnostics",icon:"🧹",category:"ตรวจสอบ",keywords:["clear","diagnostics"],risk:"high",run:()=>runExisting("clearDiagnostics")});
   add({id:"system.reset",title:"ล้างข้อมูลเกมทั้งหมด",icon:"🧹",category:"ROOT / ระบบ",keywords:["reset","wipe","ล้างข้อมูล"],risk:"critical",run:()=>runExisting("openResetModal")});
   add({id:"bugreplay.stop",title:"หยุด Bug Replay ที่กำลังรัน",icon:"⏹",category:"ตรวจสอบ",keywords:["stop","replay"],run:()=>runExisting("stopBugReplay")});

@@ -10,7 +10,55 @@
 // โดย Account ID จะคงเดิมตลอดอายุบัญชี
 const PLAYER_NAME_KEY = "ww_playerName";
 const HOST_DISPLAY_NAME_KEY = "ww_host_display_name";
+const NAME_MAX_LENGTH = 24;
+const RESERVED_TESTER_NAME_RE = /^(?:player|ผู้เล่น)(?:[0-9]+)?$/iu;
+
+function normalizeNameInput(value) {
+    return String(value ?? "").replace(/\s+/gu, "").slice(0, NAME_MAX_LENGTH);
+}
+
+function isReservedTesterNameInput(value) {
+    return RESERVED_TESTER_NAME_RE.test(normalizeNameInput(value));
+}
+
+function bindNameInputRestrictions(input) {
+    if (!input || input.dataset.namePolicyBound === "1") return input;
+    input.dataset.namePolicyBound = "1";
+    // กด Space บนคีย์บอร์ดจริง = ไม่มีผลทันที; input handler ด้านล่างรองรับ paste/IME/การกรอกที่ไม่ผ่าน keydown ด้วย
+    input.addEventListener("keydown", (event) => {
+        if (event.key === " " || event.code === "Space") event.preventDefault();
+    });
+    input.addEventListener("input", () => {
+        const normalized = normalizeNameInput(input.value);
+        if (input.value !== normalized) input.value = normalized;
+    });
+    return input;
+}
+
 const indexSocket = io();
+if (!window.__wwAccountSessionRevokedListener) {
+    indexSocket.on("account_session_revoked", async function (info) {
+        let result = null;
+        try { result = window.wwAccount?.handleSessionRevoked(info?.reason || "session_replaced", info || {}); } catch (_) {}
+        const sameDevice = !!result?.sameDeviceReplacement;
+        window.dispatchEvent(new CustomEvent("wwAccountSessionRevoked", { detail: { reason: String(info?.reason || "session_replaced"), page: "index", sameDeviceReplacement: sameDevice, deviceId: String(info?.deviceId || ""), previousAccountToken: String(result?.previousAccountToken || "") } }));
+        if (!sameDevice || !window.wwAccount) return;
+        const replacement = await window.wwAccount.waitForSessionReplacement(result.previousAccountToken, { timeoutMs: 8000, pollMs: 120 });
+        if (!replacement.ok) {
+            window.dispatchEvent(new CustomEvent("wwAccountSessionReplacementFailed", { detail: { page: "index", code: replacement.code || "ACCOUNT_SESSION_REPLACEMENT_TIMEOUT" } }));
+            return;
+        }
+        try {
+            if (!indexSocket.connected) indexSocket.connect();
+            else await bootstrapIndexAccount();
+        } catch (e) {
+            window.dispatchEvent(new CustomEvent("wwAccountSessionReplacementFailed", { detail: { page: "index", code: e?.code || "ACCOUNT_SESSION_REPLACEMENT_BOOTSTRAP_FAILED" } }));
+        }
+    });
+    window.__wwAccountSessionRevokedListener = true;
+}
+
+const indexRuntime = window.WWGameRuntime?.attach(indexSocket, { page: "index" });
 
 indexSocket.on("serverInfo", function (info) {
     if (window.wwSetServerVersion) window.wwSetServerVersion(info && info.version);
@@ -99,6 +147,57 @@ async function ensureIndexAccountReady() {
     return data;
 }
 
+async function getIndexAccountContext() {
+    const identity = window.wwAccount?.getIdentity?.();
+    if (!identity?.accountId || !identity?.accountToken) return null;
+    const headers = {
+        "X-WW-Account-Id": identity.accountId,
+        "X-WW-Account-Token": identity.accountToken,
+        "X-WW-Device-Id": identity.deviceId || "",
+    };
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+        try {
+            const r = await fetch(`/api/account/context?accountId=${encodeURIComponent(identity.accountId)}`, { cache:"no-store", credentials:"same-origin", headers });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok) return d;
+            const transient = ["ROOM_FAILOVER_WAIT", "ROOM_LEASE_UNAVAILABLE"].includes(String(d?.code || "")) || r.status === 502 || r.status === 503 || r.status === 504;
+            if (!transient) return null;
+            const retryMs = Math.max(500, Math.min(3000, Number(d?.retryAfterMs) || (700 + attempt * 300)));
+            await new Promise((resolve) => setTimeout(resolve, retryMs));
+        } catch (_) {
+            if (attempt >= 7) return null;
+            await new Promise((resolve) => setTimeout(resolve, Math.min(2500, 700 + attempt * 250)));
+        }
+    }
+    return null;
+}
+function shouldRouteIndexToActivity() {
+    try {
+        if (new URLSearchParams(location.search).get("stay") === "1") return false;
+        if (window.top !== window.self) return false;
+        if (location.pathname.startsWith("/__ww_admin_embed__/") || location.pathname.startsWith("/admin")) return false;
+        return true;
+    } catch (_) { return true; }
+}
+async function routeIndexToActiveActivity() {
+    if (!shouldRouteIndexToActivity() || !window.wwAccount || window.wwAccount.isTester?.()) return false;
+    const context = await getIndexAccountContext();
+    const activity = context?.activeActivity;
+    const room = context?.room;
+    if (!activity?.roomId || !room) return false;
+    const roomId = String(activity.roomId).trim().toUpperCase();
+    if (!roomId) return false;
+    if (String(activity.type) === "HOST_ROOM") {
+        location.replace(`/host.html?room=${encodeURIComponent(roomId)}&activity=1`);
+        return true;
+    }
+    if (String(activity.type) === "PLAYER_ROOM") {
+        location.replace(`/player.html?room=${encodeURIComponent(roomId)}&activity=1`);
+        return true;
+    }
+    return false;
+}
+
 async function startGoogleAuthentication(mode, anchor){
     if (!window.wwAccount) return;
     let identity = window.wwAccount.getIdentity();
@@ -134,7 +233,9 @@ async function startGoogleAuthentication(mode, anchor){
         // while preserving the same signed state + PKCE + HttpOnly-cookie flow on the server.
         if (mode === "login") {
             const params = new URLSearchParams();
-            if (reauth && identity.accountId) { params.set("accountId", identity.accountId); params.set("reauth", "1"); }
+            if (identity.accountId) params.set("accountId", identity.accountId);
+            if (reauth) params.set("reauth", "1");
+            if (identity.deviceId) params.set("deviceId", identity.deviceId);
             params.set("returnTo", "/");
             window.location.assign(`/auth/google/start?${params.toString()}`);
             return;
@@ -149,7 +250,7 @@ async function startGoogleAuthentication(mode, anchor){
             r = await fetch("/api/auth/google/start", {
                 method:"POST", headers:{"Content-Type":"application/json"}, cache:"no-store", credentials:"same-origin",
                 signal:controller.signal,
-                body:JSON.stringify({ mode:"link", accountId:identity.accountId, accountToken:identity.accountToken, reauth:false, returnTo:"/" })
+                body:JSON.stringify({ mode:"link", accountId:identity.accountId, accountToken:identity.accountToken, reauth:false, deviceId:identity.deviceId, returnTo:"/" })
             });
         } finally {
             clearTimeout(timer);
@@ -182,11 +283,45 @@ async function logoutGoogleAccount(anchor){
     location.replace("/");
 }
 window.addEventListener("wwAccountChanged", () => { refreshNameUI(); sendIndexPresence(); });
+window.addEventListener("wwAccountSessionRevoked", (event) => {
+    if (event?.detail?.sameDeviceReplacement) return;
+    if (typeof wwToast === "function") wwToast("เซสชันบัญชีนี้ถูกแทนที่ด้วยการเข้าสู่ระบบจากอุปกรณ์อื่น", { type:"warning", duration:2600 });
+});
 function getSavedDisplayName(){
     return window.wwAccount?.getName() || localStorage.getItem(PLAYER_NAME_KEY) || localStorage.getItem(HOST_DISPLAY_NAME_KEY) || "";
 }
+
+// Profile presentation follows available viewport space rather than a device label.
+// >= 1120px wide + >= 560px high gets the always-visible right-side Profile dock.
+// Smaller layouts keep the exact same Profile data in the modal presentation so the
+// lobby never has to squeeze the Start Game surface into an unusably narrow column.
+let indexProfileDocked = false;
+function shouldDockIndexProfile(){
+    return window.matchMedia?.("(min-width: 1120px) and (min-height: 560px)").matches || false;
+}
+function syncIndexProfileLayout(){
+    const body = document.body;
+    const name = getSavedDisplayName();
+    const shouldDock = !!name && shouldDockIndexProfile();
+    const wasDocked = indexProfileDocked;
+    indexProfileDocked = shouldDock;
+    body.classList.toggle("profile-docked", shouldDock);
+    const statsModal = document.getElementById("statsModal");
+    if (statsModal) statsModal.setAttribute("aria-modal", shouldDock ? "false" : "true");
+    const nameBadge = document.getElementById("nameBadge");
+    if (nameBadge && getSavedDisplayName()) {
+        nameBadge.setAttribute("aria-hidden", shouldDock ? "true" : "false");
+    }
+
+    if (shouldDock && !statsModal?.classList.contains("hidden")) return;
+    if (shouldDock && document.getElementById("statsModal")?.classList.contains("hidden")) {
+        openStatsModal();
+        return;
+    }
+    if (!shouldDock && wasDocked) closeStatsModal();
+}
 function syncLegacyNameStores(name){
-    const safe = String(name || "").trim().slice(0, 24);
+    const safe = normalizeNameInput(name);
     if (!safe) return;
     localStorage.setItem(PLAYER_NAME_KEY, safe);
     localStorage.setItem(HOST_DISPLAY_NAME_KEY, safe);
@@ -214,9 +349,15 @@ async function startNewAccountAfterDeletion() {
     const input = document.getElementById("accountRecreateName");
     const error = document.getElementById("accountRecreateError");
     const button = document.getElementById("accountRecreateButton");
-    const name = String(input?.value || "").trim().slice(0, 24);
+    const name = normalizeNameInput(input?.value || "");
+    if (input) input.value = name;
     if (!name) {
         if (error) error.textContent = "กรอกชื่อบัญชีใหม่ก่อน";
+        input?.focus();
+        return;
+    }
+    if (isReservedTesterNameInput(name)) {
+        if (error) error.textContent = "ชื่อนี้สงวนไว้สำหรับ Player Tester";
         input?.focus();
         return;
     }
@@ -285,6 +426,81 @@ function bootstrapIndexAccount(){
     indexAccountReady = indexBootstrapPromise;
     return indexAccountReady;
 }
+let indexAccountTouchInFlight = null;
+
+async function touchIndexAccount(reason = "touch") {
+    if (!window.wwAccount || window.wwAccount.isTester()) return { ok:false, code:"IGNORED" };
+    if (indexAccountTouchInFlight) return indexAccountTouchInFlight;
+
+    indexAccountTouchInFlight = (async () => {
+        try {
+            // Never emit account_touch onto a disconnected Socket.IO transport.
+            // The old direct emit could wait for the global diagnostic ACK timeout (15s)
+            // while the socket was already offline, producing Issue #5 on the index page.
+            if (!indexSocket.connected) {
+                try { indexSocket.connect(); } catch (_) {}
+                try {
+                    await new Promise((resolve, reject) => {
+                        const timer = setTimeout(() => { cleanup(); reject(Object.assign(new Error("account socket timeout"), { code:"ACCOUNT_SOCKET_TIMEOUT" })); }, 7000);
+                        const cleanup = () => { clearTimeout(timer); indexSocket.off("connect", onConnect); indexSocket.off("connect_error", onConnectError); };
+                        const onConnect = () => { cleanup(); resolve(); };
+                        const onConnectError = (error) => { cleanup(); reject(error); };
+                        indexSocket.once("connect", onConnect);
+                        indexSocket.once("connect_error", onConnectError);
+                    });
+                } catch (e) {
+                    return { ok:false, code:String(e?.code || "ACCOUNT_SOCKET_UNAVAILABLE"), error:String(e?.message || e || "") };
+                }
+            }
+
+            let identity = window.wwAccount.getIdentity();
+            // Profile access normally already has a stable Account ID/token. Bootstrap only
+            // when the identity is genuinely incomplete, avoiding an extra persistence write
+            // every time the profile panel opens.
+            if (!identity.accountId || !identity.accountToken) {
+                try {
+                    const data = await bootstrapIndexAccount();
+                    identity = window.wwAccount.getIdentity();
+                    if (!data?.accountId || !identity.accountId || !identity.accountToken) return { ok:false, code:"ACCOUNT_ID_MISSING" };
+                } catch (e) {
+                    return { ok:false, code:String(e?.code || "ACCOUNT_SOCKET_UNAVAILABLE"), error:String(e?.message || e || "") };
+                }
+            }
+            if (!indexSocket.connected) return { ok:false, code:"ACCOUNT_SOCKET_UNAVAILABLE" };
+
+            return await new Promise((resolve) => {
+                let settled = false;
+                let timer = null;
+                const cleanup = () => {
+                    if (timer) clearTimeout(timer);
+                    timer = null;
+                    indexSocket.off("disconnect", onDisconnect);
+                };
+                const finish = (result) => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(result || { ok:false, code:"ACCOUNT_TOUCH_EMPTY_ACK" });
+                };
+                const onDisconnect = (socketReason) => finish({
+                    ok:false, code:"ACCOUNT_TOUCH_SOCKET_DISCONNECTED", reason:String(socketReason || "")
+                });
+
+                indexSocket.once("disconnect", onDisconnect);
+                timer = setTimeout(() => finish({ ok:false, code:"ACCOUNT_TOUCH_ACK_TIMEOUT" }), 9000);
+                try {
+                    indexSocket.emit("account_touch", window.wwAccount.payload({ reason }), finish);
+                } catch (e) {
+                    finish({ ok:false, code:"ACCOUNT_TOUCH_EMIT_FAILED", error:String(e?.message || e || "") });
+                }
+            });
+        } finally {
+            indexAccountTouchInFlight = null;
+        }
+    })();
+    return indexAccountTouchInFlight;
+}
+
 function sendIndexPresence(){
     if (!indexSocket.connected || !window.wwAccount || window.wwAccount.isTester()) return;
     const identity = window.wwAccount.getIdentity();
@@ -315,16 +531,24 @@ function sendIndexPresence(){
     });
 }
 indexSocket.on("connect", bootstrapIndexAccount);
+(async function(){
+    try { await ensureIndexAccountReady(); } catch (_) {}
+    try { await routeIndexToActiveActivity(); } catch (_) {}
+})();
+
 document.addEventListener("visibilitychange", sendIndexPresence);
 window.addEventListener("beforeunload", ()=>{ try { indexSocket.disconnect(); } catch (_) {} });
 if (!indexPresenceTimer) indexPresenceTimer = setInterval(sendIndexPresence, 20000);
 
 function saveDisplayName(name){
-    syncLegacyNameStores(name);
+    const safe = normalizeNameInput(name);
+    if (!safe || isReservedTesterNameInput(safe)) return false;
+    syncLegacyNameStores(safe);
     setTimeout(sendIndexPresence, 0);
+    return true;
 }
 
-// สลับ UI ของชื่อหน้าแรกตามสถานะบัญชี: ก่อนตั้งชื่อใช้ช่องกรอก; หลังตั้งแล้วใช้ป้ายชื่อที่กดเปิดโปรไฟล์ได้
+// สลับ UI ของชื่อหน้าแรกตามสถานะบัญชี: ก่อนตั้งชื่อใช้ช่องกรอก; หลังตั้งแล้วใช้ชื่อบัญชี/โปรไฟล์ตามขนาดพื้นที่
 // เรียกทั้งตอนเปิดหน้าครั้งแรก และทันทีหลังบันทึกชื่อสำเร็จครั้งแรก (ในensureDisplayName ด้านล่าง)
 function refreshNameUI(){
     const name = getSavedDisplayName();
@@ -334,14 +558,23 @@ function refreshNameUI(){
         nameField.classList.add("hidden");
         document.getElementById("nameBadgeText").textContent = name;
         nameBadge.classList.remove("hidden");
+        nameBadge.setAttribute("aria-label", `เปิดโปรไฟล์ของ ${name}`);
+        nameBadge.setAttribute("aria-hidden", document.body.classList.contains("profile-docked") ? "true" : "false");
     } else {
         nameField.classList.remove("hidden");
         nameBadge.classList.add("hidden");
+        nameBadge.removeAttribute("aria-label");
+        nameBadge.removeAttribute("aria-hidden");
     }
+    syncIndexProfileLayout();
 }
 
 // เติมชื่อล่าสุดที่เคยตั้งไว้ให้อัตโนมัติทันทีที่เปิดหน้า (ถ้าเคยตั้งมาก่อน) แล้วสลับ UI ให้ตรงสถานะ
-document.getElementById("displayNameInput").value = getSavedDisplayName();
+const displayNameInput = document.getElementById("displayNameInput");
+const accountRecreateNameInput = document.getElementById("accountRecreateName");
+bindNameInputRestrictions(displayNameInput);
+bindNameInputRestrictions(accountRecreateNameInput);
+if (displayNameInput) displayNameInput.value = normalizeNameInput(getSavedDisplayName());
 refreshNameUI();
 if (indexSocket.connected) bootstrapIndexAccount();
 
@@ -349,7 +582,8 @@ if (indexSocket.connected) bootstrapIndexAccount();
 // แล้ว "ไม่พาไปต่อ" คืนค่า false ให้ฟังก์ชันที่เรียกใช้หยุดทำงานต่อ
 function ensureDisplayName(){
     const input = document.getElementById("displayNameInput");
-    const name = input.value.trim() || getSavedDisplayName();
+    const name = normalizeNameInput(input.value) || normalizeNameInput(getSavedDisplayName());
+    input.value = name;
     if (!name) {
         document.getElementById("displayNameError").textContent = "กรอกชื่อของคุณก่อนนะ";
         input.classList.remove("shake");
@@ -358,8 +592,16 @@ function ensureDisplayName(){
         input.focus();
         return false;
     }
+    if (isReservedTesterNameInput(name)) {
+        document.getElementById("displayNameError").textContent = "ชื่อนี้สงวนไว้สำหรับ Player Tester";
+        input.classList.remove("shake");
+        void input.offsetWidth;
+        input.classList.add("shake");
+        input.focus();
+        return false;
+    }
     document.getElementById("displayNameError").textContent = "";
-    saveDisplayName(name);
+    if (!saveDisplayName(name)) return false;
     refreshNameUI(); // ตั้งชื่อสำเร็จครั้งแรก — ซ่อนช่องกรอกทันที เปลี่ยนไปโชว์ป้ายมุมขวาบนแทน
     return true;
 }
@@ -368,7 +610,7 @@ document.getElementById("displayNameInput").addEventListener("input", () => {
     document.getElementById("displayNameError").textContent = "";
 });
 
-// ===== ป็อปอัปสถิติผู้เล่น (กดที่ป้ายชื่อมุมขวาบน) =====
+// ===== Profile panel: modal on compact screens / docked panel on large screens =====
 // ดึงจาก /api/player-stats?name=... (endpoint ฝั่ง server อ่านจากไฟล์สถิติถาวร บันทึกไว้ทุกครั้งที่
 // จบเกม ดู recordGameStats ใน server.js) แสดงอัตราชนะรวม + กางดูแยกตาม "ทีม" (หมาป่า/ชาวบ้าน/ฯลฯ)
 // ได้อีกที ใต้แต่ละทีมกางย่อยลงไปเป็นรายอาชีพอีกชั้นผ่าน <details> ของ HTML เอง ไม่ต้องเขียน
@@ -390,7 +632,7 @@ function openStatsModal(){
 
     const identityForStats = window.wwAccount?.getIdentity?.() || {};
     const statsUrl = "/api/player-stats?name=" + encodeURIComponent(name) + (identityForStats.accountId ? "&accountId=" + encodeURIComponent(identityForStats.accountId) : "");
-    indexSocket.emit("account_touch", window.wwAccount?.payload({ reason: "open_profile" }) || {}, (res) => {
+    touchIndexAccount("open_profile").then((res) => {
         if (res?.ok) return;
         if (res?.code === "ACCOUNT_EXPIRED" || res?.code === "ACCOUNT_DELETED" || res?.code === "ACCOUNT_NOT_FOUND") {
             try { window.wwAccount.markAccountDeleted(res.code); } catch (_) {}
@@ -400,7 +642,10 @@ function openStatsModal(){
         if (res?.code === "ACCOUNT_SUSPENDED") {
             wwAlert("บัญชีนี้ถูกพักอยู่");
         }
-    });
+        // Socket lifecycle failures are intentionally non-blocking for the profile UI.
+        // The stats request can still render independently, while the next connection/presence
+        // cycle will synchronize the account activity again.
+    }).catch(() => {});
     fetch(statsUrl, { headers: identityForStats.accountToken ? { "X-WW-Account-Token": identityForStats.accountToken } : {} })
         .then((r) => r.json())
         .then(renderStatsModal)
@@ -449,8 +694,9 @@ function openRenameAccountPrompt(){
     input.className = "stats-modal-name-edit";
     input.maxLength = 24;
     input.autocomplete = "off";
-    input.value = current && current !== "ผู้เล่น" ? current : "";
+    input.value = normalizeNameInput(current && current !== "ผู้เล่น" ? current : "");
     input.setAttribute("aria-label", "ชื่อบัญชีใหม่");
+    bindNameInputRestrictions(input);
     input.addEventListener("keydown", (event) => {
         if (event.key === "Enter") { event.preventDefault(); submitRenameAccount(); }
         if (event.key === "Escape") { event.preventDefault(); closeRenameAccountEditor(); }
@@ -483,9 +729,15 @@ function closeRenameAccountEditor(){
 async function submitRenameAccount(){
     if (!window.wwAccount) return;
     const input = document.getElementById("accountRenameInput");
-    const newName = String(input?.value || "").trim().slice(0, 24);
+    const newName = normalizeNameInput(input?.value || "");
+    if (input) input.value = newName;
     if (!newName || newName === "ผู้เล่น") {
         wwToast("กรุณาใช้ชื่อที่ถูกต้อง", {type:"error"});
+        input?.focus();
+        return;
+    }
+    if (isReservedTesterNameInput(newName)) {
+        wwToast("ชื่อนี้สงวนไว้สำหรับ Player Tester", {type:"error"});
         input?.focus();
         return;
     }
@@ -496,6 +748,8 @@ async function submitRenameAccount(){
         if (!res?.ok) {
             const messages = {
                 NAME_IN_USE: "ชื่อนี้มีคนใช้แล้ว",
+                NAME_RESERVED: "ชื่อนี้สงวนไว้สำหรับ Player Tester",
+                BAD_NAME: "กรุณาใช้ชื่อที่ถูกต้อง",
                 NAME_COOLDOWN: res?.error || "ยังเปลี่ยนชื่อไม่ได้ตอนนี้",
                 ACCOUNT_SUSPENDED: "บัญชีถูกพักอยู่",
                 ACCOUNT_DELETED: "บัญชีนี้ถูกลบแล้ว",
@@ -516,6 +770,8 @@ async function submitRenameAccount(){
 
 function closeStatsModal(){
     closeRenameAccountEditor();
+    // Desktop dock is intentionally persistent; only the small-screen modal can be closed.
+    if (document.body.classList.contains("profile-docked")) return;
     document.getElementById("statsModal").classList.add("hidden");
 }
 
@@ -526,8 +782,12 @@ document.addEventListener("keydown", (event) => {
         closeRenameAccountEditor();
         return;
     }
-    if (!document.getElementById("statsModal")?.classList.contains("hidden")) closeStatsModal();
+    if (!document.getElementById("statsModal")?.classList.contains("hidden")) {
+        if (!document.body.classList.contains("profile-docked")) closeStatsModal();
+    }
 });
+
+window.addEventListener("resize", syncIndexProfileLayout, { passive:true });
 
 indexSocket.on("account_deleted", () => {
     try { window.wwAccount?.markAccountDeleted("account_deleted"); } catch (_) {}

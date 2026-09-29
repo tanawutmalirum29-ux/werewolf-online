@@ -68,15 +68,49 @@
     var TESTER_SESSION_KEY = "ww_tester_launch_id";
     var TESTER_ADMIN_CONTROLLER_KEY = "ww_tester_admin_controller_id";
 
-    // แท็บผู้ทดสอบเปิดจาก admin.html ต้องมี opener ไว้สำหรับ "กลับแท็บเดิม + ปิดแท็บทดสอบ"
-    // แต่การเปิดแบบมี opener ตามมาตรฐานสามารถทำให้ sessionStorage ถูก clone จากแท็บ admin ได้
-    // จึงใช้ launch id ที่ไม่ซ้ำกันเป็นสัญญาณว่าเป็นการเปิดแท็บทดสอบครั้งแรก แล้วล้าง sessionStorage
-    // เฉพาะครั้งแรกของ launch นั้น ก่อน host.main.js/player.main.js จะอ่าน token ใด ๆ
+    // Internal Browser ของ Admin ทำให้ iframe หลายตัวอยู่ใน top-level browsing context เดียวกัน
+    // ดังนั้น sessionStorage ปกติของ iframe จะ "แชร์กัน" ระหว่าง Tester Host/Player หลายแท็บภายใน Admin
+    // เราจึงสร้าง Storage facade ที่ namespace ต่อ Internal Tab โดยไม่แตะ storage ของเกมปกติ
+    // และไม่ใช้ sessionStorage.clear() เพราะการ clear ทั้ง origin จะทำลาย session ของแท็บ Tester อื่น
     var testerPageRequested = false;
     var testerLaunchId = "";
     var testerAdminControllerId = "";
     var testerHostControllerId = "";
     var testerIsHostPage = false;
+    var adminEmbedded = false;
+    var adminEmbeddedTabId = "";
+    var embeddedSessionStorage = null;
+
+    function createScopedStorage(raw, prefix) {
+        var p = String(prefix || "");
+        return {
+            get length() {
+                var count = 0;
+                try { for (var i = 0; i < raw.length; i++) if (String(raw.key(i) || "").indexOf(p) === 0) count++; } catch (_) {}
+                return count;
+            },
+            key: function (index) {
+                var keys = [];
+                try { for (var i = 0; i < raw.length; i++) { var k = raw.key(i); if (k && k.indexOf(p) === 0) keys.push(k.slice(p.length)); } } catch (_) {}
+                return keys[index] || null;
+            },
+            getItem: function (key) {
+                try { return raw.getItem(p + String(key)); } catch (_) { return null; }
+            },
+            setItem: function (key, value) {
+                raw.setItem(p + String(key), String(value));
+            },
+            removeItem: function (key) {
+                try { raw.removeItem(p + String(key)); } catch (_) {}
+            },
+            clear: function () {
+                var keys = [];
+                try { for (var i = 0; i < raw.length; i++) { var k = raw.key(i); if (k && k.indexOf(p) === 0) keys.push(k); } } catch (_) {}
+                keys.forEach(function (k) { try { raw.removeItem(k); } catch (_) {} });
+            }
+        };
+    }
+
     try {
         var testerQs = new URLSearchParams(window.location.search);
         testerPageRequested = testerQs.get("tester") === "1";
@@ -84,15 +118,26 @@
         testerAdminControllerId = testerQs.get("ac") || "";
         testerHostControllerId = testerQs.get("hc") || "";
         testerIsHostPage = /\/host(?:\.html)?$/i.test(String(window.location.pathname || ""));
-        if (testerPageRequested && testerLaunchId) {
-            var oldLaunchId = sessionStorage.getItem(TESTER_SESSION_KEY);
-            if (oldLaunchId !== testerLaunchId) {
-                sessionStorage.clear();
-                sessionStorage.setItem(TESTER_SESSION_KEY, testerLaunchId);
-            }
+        adminEmbedded = testerQs.get("am") === "1";
+        adminEmbeddedTabId = testerQs.get("at") || testerLaunchId || "";
+        if (adminEmbedded && adminEmbeddedTabId) {
+            embeddedSessionStorage = createScopedStorage(sessionStorage, "ww_admin_tab_" + adminEmbeddedTabId + "__");
+        } else {
+            embeddedSessionStorage = sessionStorage;
         }
+        // ใช้ launch id marker ต่อ namespace: เปิด Tester ภายในแท็บใหม่จะไม่ล้าง session ของ Internal Tab อื่น
+        if (testerPageRequested && testerLaunchId) {
+            var oldLaunchId = embeddedSessionStorage.getItem(TESTER_SESSION_KEY);
+            if (oldLaunchId !== testerLaunchId) embeddedSessionStorage.setItem(TESTER_SESSION_KEY, testerLaunchId);
+        }
+        window.wwEmbeddedStorage = {
+            session: embeddedSessionStorage,
+            embedded: adminEmbedded,
+            tabId: adminEmbeddedTabId
+        };
     } catch (e) {
-        // storage/URL API ใช้ไม่ได้ — ปล่อยให้ main.js ใช้ fallback ตามปกติ
+        embeddedSessionStorage = sessionStorage;
+        window.wwEmbeddedStorage = {session: embeddedSessionStorage, embedded:false, tabId:""};
     }
 
     // บอทที่ถูกสิงส่งสัญญาณกลับมาหา Host controller โดยตรงเป็นเส้นทางสำรอง
@@ -384,6 +429,41 @@
     }
 
     // info = { message, reopenAt } จาก event server_closed หรือ /api/config (เรียกซ้ำได้เพื่ออัปเดตข้อความตอนแอดมินแก้)
+    function getClosedServerIconUrl() {
+        try {
+            if (typeof window.WW_CLOSED_SERVER_ICON_URL === "string" && window.WW_CLOSED_SERVER_ICON_URL) {
+                return window.WW_CLOSED_SERVER_ICON_URL;
+            }
+            if (typeof window.wwImg === "function") {
+                var ready = window.wwImg("/icons-server.png");
+                if (ready) return ready;
+            }
+        } catch (_) {}
+        return "";
+    }
+
+    function hydrateClosedServerIcon(img) {
+        if (!img) return;
+        var src = getClosedServerIconUrl();
+        if (src) {
+            img.src = src;
+            return;
+        }
+        // showClosed can fire from socket rejection before /api/config has populated WW_IMG_BASE.
+        // Ask the lightweight public state endpoint for the S3/CDN base without blocking the closed screen.
+        try {
+            fetch("/api/server-state?icon=1", { cache: "no-store", credentials: "same-origin" })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (d) {
+                    if (!d || !d.imageBase) return;
+                    try { window.WW_IMG_BASE = d.imageBase; if (d.imageVersion) window.WW_IMG_VER = d.imageVersion; if (d.serverIconUrl) window.WW_CLOSED_SERVER_ICON_URL = d.serverIconUrl; } catch (_) {}
+                    var next = getClosedServerIconUrl();
+                    if (next && img.isConnected) img.src = next;
+                })
+                .catch(function () {});
+        } catch (_) {}
+    }
+
     function showClosed(info) {
         if (info) closedInfo = { message: info.message || "", reopenAt: info.reopenAt || 0 };
         if (closedShown) { renderClosedInfo(); renderClosedRoles(); return; }
@@ -402,7 +482,7 @@
             "touch-action:pan-y;-webkit-overflow-scrolling:touch;-webkit-user-select:none;user-select:none;";
         el.innerHTML =
             '<div style="max-width:420px;max-height:100%;display:flex;flex-direction:column;align-items:center">' +
-            '<div style="font-size:56px;line-height:1;margin-bottom:14px">🔧</div>' +
+            '<img id="wwClosedServerIcon" src="" alt="" width="72" height="72" style="display:block;width:72px;height:72px;object-fit:contain;border-radius:16px;margin-bottom:14px">' +
             '<div style="font-size:24px;font-weight:700;margin-bottom:10px">เซิร์ฟเวอร์กำลังปิด</div>' +
             '<div style="font-size:15px;line-height:1.7;color:rgba(255,255,255,.72);margin-bottom:22px">' +
             "ตอนนี้ยังเข้าเกมไม่ได้ (รีเฟรชก็ไม่ได้)<br>เมื่อเซิร์ฟเวอร์เปิดอีกครั้ง ระบบจะพาคุณกลับหน้าแรกให้อัตโนมัติ" +
@@ -418,7 +498,19 @@
         (document.body || document.documentElement).appendChild(el);
         renderClosedInfo();
         renderClosedRoles();
+        hydrateClosedServerIcon(document.getElementById("wwClosedServerIcon"));
         try { document.documentElement.style.overflow = "hidden"; } catch (e) { /* ไม่เป็นไร */ }
+
+        // Index has a first-paint server-state gate. Once the full shared overlay exists,
+        // hand the visual layer over to it so there is never a frame where the lobby is exposed.
+        try {
+            if (window.__WW_INDEX_BOOT_GATE__ && typeof window.__WW_INDEX_BOOT_GATE__.closed === "function") {
+                window.__WW_INDEX_BOOT_GATE__.closed(closedInfo);
+            }
+            if (window.__WW_INDEX_BOOT_GATE__ && typeof window.__WW_INDEX_BOOT_GATE__.handoffClosed === "function") {
+                window.__WW_INDEX_BOOT_GATE__.handoffClosed();
+            }
+        } catch (_) {}
 
         schedulePoll(); // สลับไปเช็คถี่
     }
@@ -472,10 +564,11 @@
     function tooManyReloads() {
         try {
             var now = Date.now();
-            var log = JSON.parse(sessionStorage.getItem(RELOAD_LOG_KEY) || "[]").filter(function (t) { return now - t < 60000; });
+            var reloadStore = (testerPageRequested && embeddedSessionStorage) ? embeddedSessionStorage : sessionStorage;
+            var log = JSON.parse(reloadStore.getItem(RELOAD_LOG_KEY) || "[]").filter(function (t) { return now - t < 60000; });
             if (log.length >= 3) return true;
             log.push(now);
-            sessionStorage.setItem(RELOAD_LOG_KEY, JSON.stringify(log));
+            reloadStore.setItem(RELOAD_LOG_KEY, JSON.stringify(log));
         } catch (e) { /* storage ใช้ไม่ได้ก็ไม่เป็นไร ปล่อยผ่าน */ }
         return false;
     }
@@ -485,15 +578,20 @@
     // ถ้าอยู่หน้าแรกอยู่แล้วก็แค่รีโหลด (เอาไฟล์ใหม่ + เริ่มหน้าสะอาด) — ไม่ใช้ replace("/") เพราะจะไม่ทำอะไรเลยเมื่อ URL เหมือนเดิม
     // เครื่องออฟไลน์อยู่พอดี → อย่าไปหน้า error ของเบราว์เซอร์ รอจนเน็ตกลับมา (เหมือน wwSafeReload ใน *.auto-update.js)
     function clearTesterSessionIdentity() {
-        // ห้ามแตะ localStorage ของแท็บ admin/ผู้ใช้จริง — tester ใช้ sessionStorage ของแท็บตัวเองเป็นหลัก
+        // Internal Browser ใช้ scoped sessionStorage: ล้างเฉพาะ Internal Tab นี้ ห้ามชนแท็บ Tester อื่น
         try {
-            SESSION_KEYS.forEach(function (k) { sessionStorage.removeItem(k); });
+            var store = embeddedSessionStorage || sessionStorage;
+            if (adminEmbedded && store && typeof store.clear === "function") {
+                store.clear();
+                return;
+            }
+            SESSION_KEYS.forEach(function (k) { store.removeItem(k); });
             var keys = [];
-            for (var i = 0; i < sessionStorage.length; i++) keys.push(sessionStorage.key(i));
+            for (var i = 0; i < store.length; i++) keys.push(store.key(i));
             keys.forEach(function (k) {
-                if (k && SESSION_PREFIXES.some(function (prefix) { return k.indexOf(prefix) === 0; })) sessionStorage.removeItem(k);
+                if (k && SESSION_PREFIXES.some(function (prefix) { return k.indexOf(prefix) === 0; })) store.removeItem(k);
             });
-            sessionStorage.removeItem(TESTER_SESSION_KEY);
+            store.removeItem(TESTER_SESSION_KEY);
         } catch (e) { /* storage ใช้ไม่ได้ — ปิดแท็บต่อได้ */ }
     }
 
@@ -600,6 +698,10 @@
 
     function returnTesterToAdmin() {
         clearTesterSessionIdentity();
+        if (adminEmbedded && window.parent && window.parent !== window) {
+            try { window.parent.postMessage({type:"ww-admin-browser-return-admin", tabId:adminEmbeddedTabId}, window.location.origin); } catch (_) {}
+            return;
+        }
         // Primary path: แจ้ง Admin controller โดยตรง ไม่พึ่ง opener เลย
         if (notifyTesterAdminController()) {
             closeSelfAfterControllerNotify();
@@ -634,6 +736,10 @@
 
     function returnTesterToHost() {
         clearTesterSessionIdentity();
+        if (adminEmbedded && window.parent && window.parent !== window) {
+            try { window.parent.postMessage({type:"ww-admin-browser-return-host", tabId:adminEmbeddedTabId, targetTabId:testerHostControllerId || ""}, window.location.origin); } catch (_) {}
+            return;
+        }
         // เส้นทางหลักของบอท: แจ้ง Host เดิมโดยตรงแล้วปิดแท็บ — ห้าม navigate ไป host.html
         // เพราะจะสร้าง Host ใหม่และแยก session/h้องออกจาก Host ที่กำลังคุมอยู่
         if (testerHostControllerId && notifyTesterHostController()) {
@@ -885,9 +991,14 @@
     var clientUpdateReloading = false;
     var lastClientUpdateVersion = "";
 
-    function startClientCodeUpdate(expectedClientHash) {
+    function startClientCodeUpdate(expectedClientHash, deploymentState) {
         if (clientUpdateReloading || reloading) return;
         if (isTesterUpdateContext()) return;
+        // During Elastic Beanstalk Immutable deployment, old and new instances serve traffic
+        // together while the environment is Updating. Do not auto-refresh Host/Player against
+        // a half-transitioned fleet. The next /api/config poll will retry after Status=Ready.
+        var deployment = String(deploymentState || "").trim();
+        if (deployment && deployment !== "ready") return;
         var expected = String(expectedClientHash || "").trim();
         var loaded = loadedClientHash();
         if (!expected || !loaded || expected === loaded) return;
@@ -895,21 +1006,44 @@
         lastClientUpdateVersion = expected;
         clientUpdateReloading = true;
 
-        // ต่างจาก startReload(): ห้ามล้าง room/token เพราะผู้เล่น/โฮสต์ที่เปิดแท็บค้าง
-        // ก่อน deploy ต้องสามารถโหลดโค้ดใหม่แล้ว reconnect ห้องเดิมด้วย credential เดิมได้
-        // (host.main.js/player.main.js มี auto-rejoin จาก storage อยู่แล้ว)
-        var job = refreshAssetCache("files");
-        job.catch(function () {}).then(function () {
-            var target;
-            try {
-                var u = new URL(location.href);
-                u.searchParams.set("_ww_force", String(Date.now()) + "-" + Math.random().toString(36).slice(2,8));
-                u.searchParams.set("_ww_client", expected);
-                target = u.pathname + u.search + u.hash;
-            } catch (e) {
-                target = location.pathname + "?_ww_force=" + Date.now();
+        // ก่อนโหลดไฟล์ใหม่ให้ยืนยันซ้ำจาก AWS/Elastic Beanstalk ว่า Immutable deployment
+        // จบแล้วจริงและ clientHash ที่ประกาศยังเป็นรุ่นเดียวกับที่เรากำลังจะโหลด
+        // เพื่อปิด race ที่ socket serverInfo อาจมาถึงก่อน status cache ของ instance จะทัน.
+        var deploymentProbe = typeof window.wwGetConfig === "function"
+            ? window.wwGetConfig({ url: "/api/config?deploymentProbe=1", init: { cache: "no-store" } })
+            : Promise.resolve(null);
+        deploymentProbe.then(function (cfg) {
+            var state = String(cfg && cfg.deploymentState || "").trim();
+            if (state && state !== "ready") {
+                clientUpdateReloading = false;
+                lastClientUpdateVersion = "";
+                return null;
             }
-            location.replace(target);
+            if (!cfg || !cfg.clientHash || String(cfg.clientHash) !== expected) {
+                clientUpdateReloading = false;
+                lastClientUpdateVersion = "";
+                return null;
+            }
+
+            // ต่างจาก startReload(): ห้ามล้าง room/token เพราะผู้เล่น/โฮสต์ที่เปิดแท็บค้าง
+            // ก่อน deploy ต้องสามารถโหลดโค้ดใหม่แล้ว reconnect ห้องเดิมด้วย credential เดิมได้
+            // (host.main.js/player.main.js มี auto-rejoin จาก storage อยู่แล้ว)
+            var job = refreshAssetCache("files");
+            return job.catch(function () {}).then(function () {
+                var target;
+                try {
+                    var u = new URL(location.href);
+                    u.searchParams.set("_ww_force", String(Date.now()) + "-" + Math.random().toString(36).slice(2,8));
+                    u.searchParams.set("_ww_client", expected);
+                    target = u.pathname + u.search + u.hash;
+                } catch (e) {
+                    target = location.pathname + "?_ww_force=" + Date.now();
+                }
+                location.replace(target);
+            });
+        }).catch(function () {
+            clientUpdateReloading = false;
+            lastClientUpdateVersion = "";
         });
     }
 
@@ -969,6 +1103,7 @@
 
         // ค่าแสดงผลล้วนๆ: ที่อยู่ต้นทางรูป + ป้ายเวอร์ชันมุมซ้ายบน
         window.WW_IMG_BASE = typeof cfg.imageBase === "string" ? cfg.imageBase : (window.WW_IMG_BASE || "");
+        if (typeof cfg.serverIconUrl === "string") window.WW_CLOSED_SERVER_ICON_URL = cfg.serverIconUrl;
         window.wwSetServerVersion(cfg.appVersion);
 
         // Host/Player ที่เปิดค้างตั้งแต่ก่อน deploy อาจถือ JS/CSS รุ่นเก่าอยู่ ขณะที่
@@ -976,11 +1111,27 @@
         // แล้วโหลดหน้าเดิมใหม่โดย "ไม่" ล้าง room/token เพื่อให้ auto-rejoin ห้องเดิมได้ต่อทันที
         // ดักเฉพาะเกมที่มี client code hash ต่างกัน; หน้า index มี index.auto-update.js จัดการ overlay อยู่แล้ว
         if (!isHomePage() && !testerPageRequested && !testerShielded) {
-            startClientCodeUpdate(cfg.clientHash || "");
+            startClientCodeUpdate(cfg.clientHash || "", cfg.deploymentState);
         }
 
         // ปิดอยู่ → จอเต็ม แล้วไม่ต้องสนใจเรื่องสั่งการ (ตอนเปิดคืนจะถูกพากลับหน้าแรกอยู่แล้ว)
+        // Index has already made a no-store /api/server-state decision before first paint.
+        // During the very short reopen/reload handoff, an older /api/config response can still
+        // arrive with serverOpen=false. Do not flash the closed screen from that stale secondary
+        // signal; verify the authoritative lightweight state endpoint once before showing it.
         if (cfg.serverOpen === false && !testerShielded && !testerPageRequested) {
+            if (isHomePage() && window.__WW_INDEX_EARLY_SERVER_OPEN__ === true && window.__WW_INDEX_BOOT_STATE_CONFIRMED__ === true) {
+                fetch('/api/server-state?verify=1', { cache:'no-store', credentials:'same-origin', headers: readRoomIdentityHeaders() })
+                    .then(function(r){ return r.ok ? r.json() : null; })
+                    .then(function(state){
+                        if (state && state.serverOpen === false) {
+                            window.__WW_INDEX_EARLY_SERVER_OPEN__ = false;
+                            showClosed({ message: state.noticeMessage || cfg.noticeMessage, reopenAt: Number(state.reopenAt) || Number(cfg.reopenAt) || 0 });
+                        }
+                    })
+                    .catch(function(){});
+                return;
+            }
             showClosed({ message: cfg.noticeMessage, reopenAt: cfg.reopenAt });
             return;
         }
@@ -1022,8 +1173,9 @@
             } catch (e) { /* fallback to storage */ }
         }
         var stores = [];
-        try { stores.push(sessionStorage); } catch (e) { /* ข้าม */ }
-        try { stores.push(localStorage); } catch (e) { /* ข้าม */ }
+        try { stores.push((testerPageRequested && embeddedSessionStorage) ? embeddedSessionStorage : sessionStorage); } catch (e) { /* ข้าม */ }
+        // โหมด tester ต้องไม่ fallback ไป localStorage ก่อน เพราะ localStorage ใช้ร่วมกันทั้ง browser และทำให้แท็บอื่นชนกัน
+        if (!testerPageRequested) { try { stores.push(localStorage); } catch (e) { /* ข้าม */ } }
         for (var i = 0; i < stores.length; i++) {
             try {
                 var room = stores[i].getItem("ww_joinedRoom") || stores[i].getItem("ww_host_room");
@@ -1090,7 +1242,12 @@
         // socket "connect_error" — ต่อไม่ได้เพราะ server ปฏิเสธ (message = "server_closed") ต่างจากเน็ตหลุดธรรมดา
         onConnectError: function (err) {
             if (testerPageRequested || testerShielded) return;
-            if (err && err.message === "server_closed") { showClosed(null); check(); } // check() = ดึงข้อความ/เวลาที่คาดว่าจะเปิดมาโชว์ (event เกมถูกบล็อกแล้ว)
+            // A deployment/drain is a transport interruption, not an intentional public server close.
+            // Do not show the maintenance screen during failover; Host/Player reconnect handlers
+            // keep the room identity and retry the authoritative room state.
+            const message = String(err?.message || "");
+            if (message === "server_draining" || message === "room_failover_wait") return;
+            if (message === "server_closed") { showClosed(null); check(); } // check() = ดึงข้อความ/เวลาที่คาดว่าจะเปิดมาโชว์ (event เกมถูกบล็อกแล้ว)
         },
         // ให้ host.main.js/player.main.js แนบไปกับ io({ auth: ... }) ตอนสร้าง socket — เป็น "หลักฐาน" เดียวกับ
         // readRoomIdentityHeaders ด้านบน (roomId+token) ให้ server เช็คตอน handshake ว่านี่คือสมาชิกห้องผู้ทดสอบจริงไหม

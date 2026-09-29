@@ -17,10 +17,31 @@ const hostSocketAuth = Object.assign(
     })()
 );
 const socket = io({ auth: hostSocketAuth });
+if (!window.__wwAccountSessionRevokedListener) {
+    socket.on("account_session_revoked", async function (info) {
+        let result = null;
+        try { result = window.wwAccount?.handleSessionRevoked(info?.reason || "session_replaced", info || {}); } catch (_) {}
+        const sameDevice = !!result?.sameDeviceReplacement;
+        window.dispatchEvent(new CustomEvent("wwAccountSessionRevoked", { detail: { reason: String(info?.reason || "session_replaced"), page: "host", sameDeviceReplacement: sameDevice, deviceId: String(info?.deviceId || ""), previousAccountToken: String(result?.previousAccountToken || "") } }));
+        if (!sameDevice || !window.wwAccount) return;
+        const replacement = await window.wwAccount.waitForSessionReplacement(result.previousAccountToken, { timeoutMs: 8000, pollMs: 120 });
+        if (!replacement.ok) {
+            window.dispatchEvent(new CustomEvent("wwAccountSessionReplacementFailed", { detail: { page: "host", code: replacement.code || "ACCOUNT_SESSION_REPLACEMENT_TIMEOUT" } }));
+            return;
+        }
+        try {
+            if (!socket.connected) socket.connect();
+            else await window.wwAccount.bootstrap(socket, { name: window.wwAccount.getName() || "", page: "host" });
+        } catch (e) {
+            window.dispatchEvent(new CustomEvent("wwAccountSessionReplacementFailed", { detail: { page: "host", code: e?.code || "ACCOUNT_SESSION_REPLACEMENT_BOOTSTRAP_FAILED" } }));
+        }
+    });
+    window.__wwAccountSessionRevokedListener = true;
+}
 
 socket.on("serverInfo", function (info) {
     if (window.wwSetServerVersion) window.wwSetServerVersion(info && info.version);
-    if (window.wwCheckClientVersion) window.wwCheckClientVersion(info && info.clientHash);
+    if (window.wwCheckClientVersion) window.wwCheckClientVersion(info && info.clientHash, info && info.deploymentState);
 });
 // แอดมินกดล้างข้อมูลเกมทั้งหมด (ดู shared.reset-guard.js) — ล้างตัวตนในเครื่องนี้แล้วกลับหน้าแรกทันที
 socket.on("force_reset", function (d) {
@@ -50,6 +71,16 @@ socket.on("connect_error", function (err) {
 
 // บัญชีจริงถูกจัดการจากหน้า Admin ทั้งหมด: เมื่อถูกเตะ/พัก/ลบ ให้ปิด session นี้ทันที
 // Tester จะไม่ถูก event ชุดนี้เพราะ server ไม่ผูก tester เข้ากับ accountId ถาวร
+window.addEventListener("wwAccountSessionRevoked", function (event) {
+    if (event?.detail?.sameDeviceReplacement) return;
+    try { socket.disconnect(); } catch (_) {}
+    const notice = document.createElement("div");
+    notice.textContent = "เซสชันบัญชีนี้ถูกแทนที่ด้วยการเข้าสู่ระบบจากอุปกรณ์อื่น";
+    Object.assign(notice.style, { position:"fixed", inset:"0", zIndex:"99999", display:"grid", placeItems:"center", padding:"24px", background:"rgba(5,7,12,.94)", color:"#fff", textAlign:"center", fontSize:"18px", fontWeight:"700" });
+    document.body.appendChild(notice);
+    setTimeout(() => location.replace("index.html"), 450);
+});
+
 function handleManagedAccountSession(reason) {
     hostAllowIntentionalExit("managed_account_session");
     hostBrowserExitServerClosed = true;
@@ -89,8 +120,19 @@ if (typeof window.wwImg !== "function") {
     };
 }
 
-let roomId = "";
+const hostActivityRoomId = new URLSearchParams(location.search).get("room") || "";
+let roomId = hostActivityRoomId ? String(hostActivityRoomId).trim().toUpperCase() : "";
 let currentRoom = null;
+const gameRuntime = window.WWGameRuntime?.attach(socket, {
+    page: "host",
+    getRoom: () => currentRoom,
+});
+
+function withHostRoomState(payload = {}) {
+    const stateVersion = gameRuntime?.getStateVersion?.() || Number(currentRoom?.stateVersion || 0);
+    return { ...payload, ...(stateVersion > 0 ? { stateVersion } : {}) };
+}
+
 
 // เฟส 1 Runtime Audit: ให้ตัวตรวจกลางอ่าน room state จริงของหน้า Host
 if (window.WWRuntimeAudit?.setStateProvider) {
@@ -117,7 +159,7 @@ document.addEventListener("touchmove", (e) => {
 const testerQuery = new URLSearchParams(location.search);
 const isTesterMode = testerQuery.get("tester") === "1";
 const TESTER_RETURN_URL = "admin.html";
-const hostStorage = isTesterMode ? sessionStorage : localStorage;
+const hostStorage = isTesterMode ? ((window.wwEmbeddedStorage && window.wwEmbeddedStorage.session) || sessionStorage) : localStorage;
 
 // ===== จำธีมห้องล่าสุดข้ามการรีโหลด =====
 // ห้องที่ยังไม่เริ่มเกมต้องเปิดมาด้วยชายหาดตอนเช้าเสมอ แต่ห้องที่กำลังเล่นตอนกลางคืน
@@ -170,7 +212,7 @@ function persistHostRoomTheme(room) {
     // ก่อนเริ่มเกมและช่วงกลางวัน = day; กลางคืนจะถูกบันทึกเฉพาะเมื่อ server ยืนยัน isNight=true
     writeSavedHostRoomTheme(id, room?.started && room?.isNight ? "night" : "day");
 }
-const initialHostRoomId = hostStorage.getItem("ww_host_room")
+const initialHostRoomId = hostActivityRoomId || hostStorage.getItem("ww_host_room")
     || (isTesterMode ? new URLSearchParams(location.search).get("r") : "");
 applySavedHostRoomTheme(initialHostRoomId);
 // ตัวระบุ "แท็บ Host ผู้คุมบอท" แยกจาก ts ของ Admin launch — บอทแต่ละแท็บจะส่งกลับหาผู้คุม
@@ -185,10 +227,10 @@ function makeTesterControllerId() {
 let testerHostControllerId = "";
 if (isTesterMode) {
     try {
-        testerHostControllerId = sessionStorage.getItem(TESTER_HOST_CONTROLLER_KEY) || "";
+        testerHostControllerId = hostStorage.getItem(TESTER_HOST_CONTROLLER_KEY) || "";
         if (!testerHostControllerId) {
             testerHostControllerId = makeTesterControllerId();
-            sessionStorage.setItem(TESTER_HOST_CONTROLLER_KEY, testerHostControllerId);
+            hostStorage.setItem(TESTER_HOST_CONTROLLER_KEY, testerHostControllerId);
         }
     } catch (e) {
         testerHostControllerId = "host-" + makeTesterControllerId();
@@ -473,6 +515,22 @@ function possessBot(botId) {
     // แก้โดยเช็คก่อนว่ามี reference ของหน้าต่างบอทตัวนี้เปิดค้างอยู่ไหม (openBotWindows) ถ้ายังเปิด
     // อยู่จริง (!win.closed) จะ "ไม่" เรียก window.open() ซ้ำเลย — เลี่ยงการ navigate/reload ทิ้งไป
     // แค่เรียก .focus() ตรง ๆ บน reference เดิมเท่านั้น ไม่ไปรบกวนคอนเนกชัน socket ที่ต่ออยู่แล้ว
+    // Internal Admin Browser: เปิดบอทเป็นแท็บภายในแทน window.open() เพื่อไม่สร้าง Chrome tab ใหม่
+    if (window.top !== window.self && window.parent && window.parent.WWAdminBrowser && typeof window.parent.WWAdminBrowser.openBot === "function") {
+        try {
+            const hostTabId = window.frameElement?.dataset?.browserFrame || "";
+            const testerPass = testerQuery.get("tp") || "";
+            Promise.resolve(window.parent.WWAdminBrowser.openBot({
+                botToken: token, roomId, testerPass, hostTabId,
+                title: (bot?.name || ("บอท " + botId)) + " · เข้าสิง"
+            })).catch((e) => wwAlert("เปิดแท็บบอทไม่สำเร็จ: " + (e?.message || e)));
+            return;
+        } catch (e) {
+            wwAlert("เปิดแท็บบอทไม่สำเร็จ");
+            return;
+        }
+    }
+
     const existing = openBotWindows[token];
     if (existing && !existing.closed) {
         existing.focus();
@@ -634,6 +692,97 @@ function getBotControlBadgeHTML(p, room) {
 }
 
 const roleConfig = {};
+let activeHostPreset = "custom";
+
+const HOST_PRESETS = {
+    quick: { label: "⚡ เร็ว", defaultPlayers: 8, wolfRatio: 0.25, extras: [["ผู้หยั่งรู้",1]] },
+    classic: { label: "🌙 คลาสสิก", defaultPlayers: 12, wolfRatio: 0.25, extras: [["ผู้หยั่งรู้",1],["หมอ",1],["แม่มด",1]] },
+    "classic-plus": { label: "✨ คลาสสิก+", defaultPlayers: 18, wolfRatio: 0.24, extras: [["ผู้หยั่งรู้",1],["หมอ",1],["บอดี้การ์ด",1],["นักสืบ",1]] },
+    chaos: { label: "🎲 Chaos", defaultPlayers: 20, wolfRatio: 0.22, extras: [["ผู้หยั่งรู้",1],["หมอ",1],["แม่มด",1],["นักสืบ",1],["กามเทพ",1],["ผู้นำลัทธิ",1],["โจร",1],["นักเล่นกล",1]] },
+};
+
+function getHostPresetPlayerTarget(preset) {
+    const actualPlayers = Number(currentRoom?.players?.filter?.((p) => p && !p.isHost).length || 0);
+    if (actualPlayers > 0) return actualPlayers;
+    const maxInput = Number(document.getElementById("roomSettingsMaxPlayersInput")?.value || 0);
+    if (maxInput > 0) return Math.min(maxInput, 999);
+    return Number(HOST_PRESETS[preset]?.defaultPlayers || 8);
+}
+
+function hostRoleAvailable(role) {
+    if (!role || (Array.isArray(roles.__nonSelectableRoles) && roles.__nonSelectableRoles.includes(role))) return false;
+    const info = roles?.[role];
+    return !!info && !(info.selectable === false);
+}
+
+function buildHostPresetConfig(preset) {
+    const profile = HOST_PRESETS[preset] || HOST_PRESETS.classic;
+    const target = Math.max(1, getHostPresetPlayerTarget(preset));
+    const config = {};
+    const add = (role, count = 1) => {
+        if (!hostRoleAvailable(role) || count <= 0) return 0;
+        const available = Math.max(0, target - Object.values(config).reduce((a, b) => a + b, 0));
+        const amount = Math.min(count, available);
+        if (amount > 0) config[role] = (config[role] || 0) + amount;
+        return amount;
+    };
+    const wolfCandidates = ["หมาป่า", "ลูกหมาป่า", "หมาป่าผู้พิทักษ์", "หมาป่าดื้อรั้น"];
+    const wolfCount = Math.max(1, Math.min(6, Math.round(target * profile.wolfRatio)));
+    let remainingWolves = wolfCount;
+    wolfCandidates.forEach((role) => {
+        if (remainingWolves > 0 && hostRoleAvailable(role)) {
+            const added = add(role, Math.min(remainingWolves, role === "หมาป่า" ? remainingWolves : 1));
+            remainingWolves -= added;
+        }
+    });
+    for (const [role, count] of profile.extras) {
+        if (Object.values(config).reduce((a,b)=>a+b,0) >= target) break;
+        add(role, count);
+    }
+    add("ชาวบ้าน", target - Object.values(config).reduce((a,b)=>a+b,0));
+    return { config, target };
+}
+
+function renderHostPresetPanel() {
+    const label = document.getElementById("presetCurrentLabel");
+    if (label) label.textContent = HOST_PRESETS[activeHostPreset]?.label || "กำหนดเอง";
+    document.querySelectorAll("#hostPresetActions .preset-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.preset === activeHostPreset);
+    });
+    const target = Math.max(1, getHostPresetPlayerTarget(activeHostPreset));
+    const total = Object.values(roleConfig).reduce((a,b)=>a+b,0);
+    const wolves = Object.entries(roleConfig).filter(([role]) => roles?.[role]?.team === "wolf").reduce((a,[,n])=>a+n,0);
+    const recommendation = document.getElementById("presetRecommendation");
+    if (recommendation) {
+        const mismatch = total !== target ? ` · ตอนนี้บท ${total}/${target} ใบ` : ` · ครบ ${target} ใบ`;
+        recommendation.innerHTML = `<b>แนะนำสำหรับ ${target} คน:</b> หมาป่า ${wolves} · ชาวบ้าน/บทสนับสนุน ${Math.max(0,total-wolves)}${mismatch}`;
+    }
+}
+
+function setHostPresetCustom() {
+    if (activeHostPreset !== "custom") {
+        activeHostPreset = "custom";
+        renderHostPresetPanel();
+    }
+}
+
+function applyHostPreset(preset) {
+    if (!HOST_PRESETS[preset]) return;
+    const { config, target } = buildHostPresetConfig(preset);
+    Object.keys(roleConfig).forEach((key) => delete roleConfig[key]);
+    Object.assign(roleConfig, config);
+    activeHostPreset = preset;
+    renderRoles();
+    renderHostPresetPanel();
+    updateConfig();
+    if (target > 0 && currentRoom?.players) {
+        const live = currentRoom.players.filter((p) => p && !p.isHost).length;
+        if (live > 0 && live !== target) {
+            const status = document.getElementById("presetRecommendation");
+            if (status) status.insertAdjacentHTML("beforeend", ` <span class="preset-note">(ยึดจำนวนผู้เล่นปัจจุบัน ${live} คน)</span>`);
+        }
+    }
+}
 
 // ===== ชื่อผู้คุม (ถาวรต่อเครื่อง) =====
 // เก็บชื่อผู้คุมไว้ใน hostStorage แยกตามเครื่อง — ตั้ง/แก้ได้จากหน้าแรกของเว็บ (index.html) เท่านั้น
@@ -1408,7 +1557,7 @@ socket.on("connect", async () => {
     if (liveText) liveText.textContent = roomId ? "เชื่อมต่อแล้ว" : "พร้อมตั้งห้อง";
     await bootstrapHostAccount();
     sendHostPresence();
-    document.getElementById("connBanner").classList.add("hidden");
+    // Runtime Client จะซ่อน reconnect banner หลังได้รับการซิงค์ state เรียบร้อย
     if (roomId) wwHostRelogin(0);
 });
 
@@ -1420,6 +1569,8 @@ socket.on("connect", async () => {
 function wwHostLoginFailText(res) {
     switch (res && res.code) {
         case "ROOM_NOT_FOUND": return "🔎 ไม่พบห้องนี้แล้ว (ห้องอาจถูกปิด หรือ server ยังไม่กู้คืนข้อมูลห้องสำเร็จ) ระบบจะพากลับไปหน้าเมนู";
+        case "ROOM_FAILOVER_WAIT":
+        case "ROOM_LEASE_UNAVAILABLE": return "🔄 เซิร์ฟเวอร์กำลังส่งต่อห้องระหว่างอัปเดต ระบบจะเชื่อมกลับห้องเดิมให้อัตโนมัติ";
         case "AUTH_FAILED": return "🔒 รหัสผ่านห้องมีการเปลี่ยนแปลง ระบบจะพากลับไปหน้าเมนู";
         case "TOO_MANY_ATTEMPTS": return "⏳ ใส่รหัสผ่านห้องผิดหลายครั้งเกินไป ระบบจะพากลับไปหน้าเมนู";
         default: return "⚠️ เข้าคุมห้องเดิมไม่ได้" + (res && res.error ? " (" + res.error + ")" : "") + " ระบบจะพากลับไปหน้าเมนู";
@@ -1435,9 +1586,14 @@ function wwHostRelogin(attempt) {
         (res) => {
             if (res && res.ok) return;
 
-            const transient = !res || res.code === "SERVER_ERROR" || res.code === "ACCOUNT_PERSISTENCE_UNAVAILABLE";
-            if (transient && attempt < 5) {
-                setTimeout(() => { if (socket.connected && roomId === tryRoomId) wwHostRelogin(attempt + 1); }, 1500 + attempt * 500);
+            const transient = !res
+                || res.code === "SERVER_ERROR"
+                || res.code === "ACCOUNT_PERSISTENCE_UNAVAILABLE"
+                || res.code === "ROOM_FAILOVER_WAIT"
+                || res.code === "ROOM_LEASE_UNAVAILABLE";
+            if (transient && attempt < 20) {
+                const retryMs = Math.max(500, Math.min(4000, Number(res?.retryAfterMs) || (1000 + attempt * 250)));
+                setTimeout(() => { if (socket.connected && roomId === tryRoomId) wwHostRelogin(attempt + 1); }, retryMs);
                 return;
             }
 
@@ -1598,6 +1754,13 @@ socket.on("name_updated_by_host", (data) => {
 socket.on("room_update", (room) => {
 
     currentRoom = room;
+    if (gameRuntime) {
+        gameRuntime.setStateVersion(room.stateVersion);
+        gameRuntime.renderTimeline("gameTimeline", room.timeline);
+        const stateEl = document.getElementById("hostStateVersion");
+        if (stateEl) stateEl.textContent = `v${Number(room.stateVersion || 1)}`;
+        document.getElementById("gameTimelineCard")?.classList.toggle("hidden", !room.started && !(room.timeline || []).length);
+    }
     if (document.getElementById("roomSettingsOverlay") && !document.getElementById("roomSettingsOverlay").classList.contains("hidden")) {
         renderRoomRevealDeadRole();
     }
@@ -2192,7 +2355,7 @@ function saveRoomSettings() {
     // update_room_settings ฝั่ง server.js ชื่อแอดมินตั้งได้จากหน้าแรก index.html เท่านั้น)
     const passwordTouched = newPassword !== (passInput.dataset.initial || "");
     const joinCodeTouched = newJoinCode !== (joinCodeInput.dataset.initial || "");
-    const payload = { roomId, maxPlayers: newMaxPlayers };
+    const payload = withHostRoomState({ roomId, maxPlayers: newMaxPlayers });
     if (passwordTouched) payload.hostPassword = newPassword;
     if (joinCodeTouched) payload.joinCode = newJoinCode;
     if (revealDeadRoleTouched) payload.revealDeadRole = currentRoom.revealDeadRole !== false;
@@ -2317,7 +2480,7 @@ function reopenGameOverPopup() {
     }
 }
 
-// ปุ่ม "🔄 เริ่มต้นใหม่" ข้างปุ่มปิดห้อง — ยกเลิกเกมปัจจุบันทั้งหมด (เรียกบทคืนจากผู้เล่นทุกคน)
+// ปุ่ม "🔄 เริ่มต้นใหม่" ใน floating dock — ยกเลิกเกมปัจจุบันทั้งหมด (เรียกบทคืนจากผู้เล่นทุกคน)
 // แล้วเด้งไปการ์ด "ตั้งค่าบทบาท" ให้กดปุ่ม "เริ่มเกม" รอบใหม่ต่อได้เลย ใช้ได้ทุกเมื่อแม้เกมกำลังเล่นอยู่
 async function restartRoom() {
     if (!roomId) return;
@@ -2328,7 +2491,7 @@ async function restartRoom() {
     if (!ok) return;
 
 
-    socket.emit("restart_room", roomId);
+    socket.emit("restart_room", withHostRoomState({ roomId }), (res) => { if (res && !res.ok) return; });
     // room_update จะตามมาทาง event ปกติ แล้วค่อยเด้งไปการ์ดตั้งค่าบทบาทให้เลย
     goToRestartSetup();
 }
@@ -2340,7 +2503,7 @@ function goEditRolesAfterGameOver() {
     goToRestartSetup();
 }
 
-// ปุ่ม "🔄 เริ่มต้นใหม่" ข้างปุ่มปิดห้อง — เด้งไปการ์ด "ตั้งค่าบทบาท" ให้กดปุ่ม "เริ่มเกม" ต่อได้เลย
+// การเริ่มต้นใหม่จาก floating dock — เด้งไปการ์ด "ตั้งค่าบทบาท" ให้กดปุ่ม "เริ่มเกม" ต่อได้เลย
 // ใช้ร่วมกับ goEditRolesAfterGameOver() ด้วย (แค่ไม่ต้องปิดป๊อปอัปสรุปผลก่อน)
 function goToRestartSetup() {
     const body = document.getElementById("roleCardBody");
@@ -2569,9 +2732,9 @@ function updateNightFlowButtons(room) {
         }
     }
 
-    // ปุ่ม "เริ่มเกม" (บาร์ลอย) / "เริ่มต้นใหม่" (ข้างปุ่มปิดห้อง): โชว์แค่ทีละปุ่ม สลับกันไปมาตามสถานะห้อง —
-    // ยังไม่เริ่ม/เกมจบแล้ว (gameOver) → โชว์ "เริ่มเกม" ให้กด
-    // กำลังเล่นอยู่ (started && ยังไม่จบ) → โชว์ "เริ่มต้นใหม่" แทน (จะกด "เริ่มเกม" ซ้ำระหว่างเล่นไม่ได้)
+    // ปุ่มหลักใน Host มี renderer เดียว: "เริ่มต้นใหม่" อยู่ใน floating dock เท่านั้น
+    // เพื่อให้ยังใช้ได้ทั้งหน้าปกติและโหมดเต็มจอผู้เล่น (ซึ่งซ่อนส่วน header ด้านบน).
+    // ยังไม่เริ่ม/เกมจบแล้ว → โชว์ "เริ่มเกม"; กำลังเล่น → โชว์ "เริ่มต้นใหม่"
     const startGameBtn = document.getElementById("startGameBtn");
     const restartRoomBtn = document.getElementById("restartRoomBtn");
     const gameInProgress = !!room.started && !room.gameOver;
@@ -2581,19 +2744,21 @@ function updateNightFlowButtons(room) {
     }
     if (restartRoomBtn) {
         restartRoomBtn.classList.toggle("hidden", !gameInProgress);
-    }
-    const focusRestartBtn = document.getElementById("focusRestartBtn");
-    if (focusRestartBtn) {
-        focusRestartBtn.classList.toggle("hidden", !gameInProgress);
-        focusRestartBtn.disabled = !gameInProgress;
+        restartRoomBtn.disabled = !gameInProgress;
     }
 
-    // ปุ่ม "เริ่มกลางคืน / สรุปผลรอบนี้ / เปิดโหมดโหวต" (บาร์ลอย): ซ่อนไว้ทั้งหมดตอนเกมยังไม่เริ่ม
-    // หรือเกมจบไปแล้ว (ตรงกับตอนที่ปุ่ม "เริ่มเกม" กำลังโชว์อยู่พอดี) โผล่มาแทนที่ปุ่ม "เริ่มเกม"
-    // ทันทีที่กดเริ่มเกม แล้วซ่อนกลับตอนกดเริ่มต้นใหม่/เกมจบแล้วยังไม่กดเริ่มรอบใหม่ (gameInProgress
-    // เดียวกับที่คุม startGameBtn/restartRoomBtn ด้านบน ให้สลับพร้อมกันเป๊ะๆ ไม่หลุดจังหวะกัน)
-    if (resolveBtn) resolveBtn.classList.toggle("hidden", !gameInProgress);
-    if (startNightBtn) startNightBtn.classList.toggle("hidden", !gameInProgress);
+    // ปุ่มดำเนินเฟสต้อง mutually exclusive ตามสถานะ server จริง:
+    // - กลางวัน/ตอนเช้า: แสดง "เริ่มช่วงกลางคืน" และซ่อน "สรุปผลรอบนี้"
+    // - กลางคืน: แสดง "สรุปผลรอบนี้" และซ่อน "เริ่มช่วงกลางคืน"
+    // - ก่อนเริ่ม/เกมจบ: ซ่อนทั้งคู่
+    if (startNightBtn) {
+        const showStartNight = gameInProgress && !room.isNight;
+        startNightBtn.classList.toggle("hidden", !showStartNight);
+    }
+    if (resolveBtn) {
+        const showResolveNight = gameInProgress && !!room.isNight;
+        resolveBtn.classList.toggle("hidden", !showResolveNight);
+    }
     if (voteBtn) voteBtn.classList.toggle("hidden", !gameInProgress);
 
 
@@ -2637,11 +2802,11 @@ function updateNightFlowButtons(room) {
     }
 
     if (room.isNight) {
-        // กำลังอยู่ในคืน: ให้กด "สรุปผลรอบนี้" ได้ แต่กด "เริ่มช่วงกลางคืน" ซ้ำไม่ได้
+        // กลางคืน: มีเพียง "สรุปผลรอบนี้" เท่านั้นที่พร้อมใช้งาน
         resolveBtn.disabled = false;
         startNightBtn.disabled = true;
     } else {
-        // อยู่ช่วงประชุม/ยังไม่เคยเริ่มคืน: ต้องกด "เริ่มช่วงกลางคืน" ก่อน ถึงจะสรุปผลได้
+        // กลางวัน/ตอนเช้า: มีเพียง "เริ่มช่วงกลางคืน" เท่านั้นที่พร้อมใช้งาน
         resolveBtn.disabled = true;
         startNightBtn.disabled = false;
     }
@@ -2737,6 +2902,7 @@ function renderRoles() {
     });
 
     renderQuickAddBadges();
+    renderHostPresetPanel();
     updateHostControlChrome(currentRoom || { started:false, gameOver:false, config: roleConfig, players:[] });
 
 }
@@ -2746,6 +2912,7 @@ function renderRoles() {
 // ไม่ว่าตอนนั้นจะเพิ่ม/ลดจำนวนไพ่ไว้กี่ใบแล้วก็ตาม (ใช้ปุ่ม +/- ในรายการเพื่อปรับจำนวน)
 function toggleRole(role) {
 
+    setHostPresetCustom();
     if (roleConfig[role]) {
 
         delete roleConfig[role];
@@ -2790,6 +2957,7 @@ function changeRole(
     amount
 ) {
 
+    setHostPresetCustom();
     if (
         !roleConfig[role]
     ) return;
@@ -2820,10 +2988,10 @@ function updateConfig() {
 
     socket.emit(
         "update_config",
-        {
+        withHostRoomState({
             roomId,
             config: roleConfig
-        }
+        })
     );
 
 }
@@ -2841,7 +3009,7 @@ function startGame() {
 
     socket.emit(
         "start_game",
-        roomId
+        withHostRoomState({ roomId })
     );
 
 }
@@ -3308,8 +3476,16 @@ function setPlayerFocusMode(active) {
     syncPlayerFocusButton();
 
     if (!playerFocusMode) {
-        // ให้กริดกลับไปวัดขนาดหลังยุบ layout เพื่อไม่ทิ้ง scale จากโหมดเต็มจอ
-        if (typeof scheduleCardFit === "function") scheduleCardFit();
+        // เมื่อออกจากโหมดเต็มพื้นที่ layout เดิมอาจพก scroll position/track state จาก focus mode มาด้วย
+        // จึงบังคับให้ Host กลับมาคำนวณ player board ใหม่หนึ่งรอบหลัง CSS state เปลี่ยนจริงแล้ว
+        try { document.querySelector('.app')?.scrollTo?.({ top: 0, behavior: 'auto' }); } catch (_) {}
+        try { window.scrollTo?.({ top: 0, behavior: 'auto' }); } catch (_) {}
+        requestAnimationFrame(() => {
+            if (typeof refreshGridColsForBreakpoint === "function") refreshGridColsForBreakpoint(true);
+            if (typeof runHostLayoutRecovery === "function") runHostLayoutRecovery('player-focus-exit');
+            if (typeof scheduleHostPlayerGridStabilization === "function") scheduleHostPlayerGridStabilization('player-focus-exit');
+            if (typeof scheduleCardFit === "function") scheduleCardFit();
+        });
         return;
     }
 
@@ -3353,6 +3529,91 @@ const GRID_COLS_DEFAULTS = { mobile: null, tablet: null, "tablet-landscape-full"
 let gridColsByBreakpoint = { ...GRID_COLS_DEFAULTS };
 let currentGridBreakpoint = null;
 
+// ===== ADMIN INTERNAL BROWSER VIEWPORT RECOVERY =====
+// Tester Host can be mounted inside Admin's iframe. If the iframe is created/visible
+// during a parent layout transition, Safari can report a temporary 0×0 viewport.
+// Never let that transient measurement become the permanent grid/layout state.
+let adminFrameLayoutRecoveryFrame = 0;
+let adminFrameLayoutRecoveryToken = 0;
+
+function hostViewportMetrics() {
+    const app = document.querySelector('.app');
+    const workspace = document.querySelector('.host-workspace, .layout');
+    const rightCol = document.getElementById('rightCol');
+    const list = document.getElementById('list');
+    const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+    const rect = (el) => {
+        if (!el) return { x: 0, y: 0, right: 0, bottom: 0, width: 0, height: 0 };
+        const r = el.getBoundingClientRect?.();
+        const width = Math.max(0, Number(r?.width) || Number(el.clientWidth) || 0);
+        const height = Math.max(0, Number(r?.height) || Number(el.clientHeight) || 0);
+        const x = Number.isFinite(Number(r?.x)) ? Number(r.x) : Number(r?.left) || 0;
+        const y = Number.isFinite(Number(r?.y)) ? Number(r.y) : Number(r?.top) || 0;
+        return { x, y, right: x + width, bottom: y + height, width, height };
+    };
+    return { viewportW, viewportH, app: rect(app), workspace: rect(workspace), rightCol: rect(rightCol), list: rect(list) };
+}
+
+function runHostLayoutRecovery(reason = 'layout-recovery') {
+    if (adminFrameLayoutRecoveryFrame) cancelAnimationFrame(adminFrameLayoutRecoveryFrame);
+    const token = ++adminFrameLayoutRecoveryToken;
+    const startedAt = performance.now();
+    let attempts = 0;
+    const maxAttempts = 45;
+    const tick = () => {
+        adminFrameLayoutRecoveryFrame = 0;
+        if (token !== adminFrameLayoutRecoveryToken) return;
+        attempts += 1;
+        const metrics = hostViewportMetrics();
+        const usable = metrics.viewportW > 0 && metrics.viewportH > 0
+            && metrics.app.width > 0 && metrics.app.height > 0
+            && metrics.workspace.width > 0 && metrics.workspace.height > 0;
+        if (usable) {
+            // Do not dispatch a synthetic resize here: the resize listener itself calls this
+            // recovery routine, so doing both creates a needless synchronous feedback chain.
+            try { refreshGridColsForBreakpoint(true); } catch (_) {}
+            try { scheduleHostPlayerGridStabilization(reason); } catch (_) {}
+            try { scheduleCardFit(); } catch (_) {}
+            return;
+        }
+        if (attempts < maxAttempts && performance.now() - startedAt < 2400) {
+            adminFrameLayoutRecoveryFrame = requestAnimationFrame(tick);
+        }
+    };
+    adminFrameLayoutRecoveryFrame = requestAnimationFrame(tick);
+}
+
+(function setupAdminInternalBrowserViewportBridge() {
+    const sameOrigin = (event) => {
+        try { return event?.origin === location.origin; } catch (_) { return false; }
+    };
+    window.addEventListener('message', (event) => {
+        if (!sameOrigin(event)) return;
+        const data = event.data || {};
+        if (data.type !== 'ww-admin-browser-layout') return;
+        try {
+            const at = new URLSearchParams(location.search).get('at');
+            if (at && data.tabId && at !== String(data.tabId)) return;
+        } catch (_) {}
+        runHostLayoutRecovery(String(data.reason || 'admin-browser-layout'));
+    });
+    window.addEventListener('resize', () => runHostLayoutRecovery('window-resize'), { passive: true });
+    window.addEventListener('orientationchange', () => runHostLayoutRecovery('orientationchange'), { passive: true });
+    window.addEventListener('pageshow', () => runHostLayoutRecovery('pageshow'), { passive: true });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) runHostLayoutRecovery('visibility-visible'); });
+    window.visualViewport?.addEventListener('resize', () => runHostLayoutRecovery('visualViewport-resize'), { passive: true });
+
+    if (typeof ResizeObserver !== 'undefined') {
+        try {
+            const observer = new ResizeObserver(() => runHostLayoutRecovery('host-resize-observer'));
+            [document.querySelector('.app'), document.querySelector('.host-workspace, .layout'), document.getElementById('rightCol'), document.getElementById('list')]
+                .filter(Boolean)
+                .forEach((el) => { try { observer.observe(el, { box: 'border-box' }); } catch (_) { observer.observe(el); } });
+        } catch (_) {}
+    }
+})();
+
 function getGridBreakpoint() {
     const w = window.innerWidth;
     if (w <= 480) return "mobile";
@@ -3362,6 +3623,83 @@ function getGridBreakpoint() {
         return (landscape && roleHidden) ? "tablet-landscape-full" : "tablet";
     }
     return "desktop";
+}
+
+// ===== HOST PLAYER GRID LAYOUT CONTRACT / STABILIZER =====
+// Diagnostic และ CSS ต้องอ่านค่ากริดชุดเดียวกัน ไม่พึ่งค่าที่เขียนไว้ใน data-* แบบ stale
+// เพียงอย่างเดียว เพราะ auto-fit / manual preset ใช้ computed CSS เป็นค่าจริงของ browser
+function countComputedGridTracks(template) {
+    const text = String(template || '').trim();
+    if (!text || text === 'none') return 0;
+    // getComputedStyle().gridTemplateColumns/Rows normally returns one pixel token per track.
+    // Fallback keeps compatibility with older Safari that may serialize repeat()/minmax().
+    const repeated = text.match(/repeat\(\s*(\d+)\s*,/i);
+    if (repeated) return Math.max(0, Number(repeated[1]) || 0);
+    return text.split(/\s+/).filter(Boolean).length;
+}
+
+function publishHostGridLayoutMetrics(reason = 'grid-layout') {
+    const lists = [document.getElementById('list'), document.getElementById('listSimple')].filter(Boolean);
+    let primary = null;
+    lists.forEach((list) => {
+        const style = getComputedStyle(list);
+        const columns = countComputedGridTracks(style.gridTemplateColumns);
+        const rows = countComputedGridTracks(style.gridTemplateRows);
+        const cards = list.querySelectorAll('.player[data-id], .simple-row[data-id], .player[data-pid]').length;
+        const rect = list.getBoundingClientRect();
+        const ready = rect.width > 0 && (cards === 0 || (rect.height > 0 && columns > 0 && rows > 0));
+        list.dataset.gridColumns = String(columns);
+        list.dataset.gridRows = String(rows);
+        list.dataset.gridCardCount = String(cards);
+        list.dataset.gridLayoutReady = ready ? 'true' : 'false';
+        list.dataset.gridLayoutReason = String(reason || 'grid-layout').slice(0, 80);
+        list.dataset.gridLayoutWidth = String(Number(rect.width.toFixed(2)));
+        list.dataset.gridLayoutHeight = String(Number(rect.height.toFixed(2)));
+        if (!primary || !list.classList.contains('hidden')) primary = { list, columns, rows, cards, ready, rect };
+    });
+    return primary;
+}
+
+let hostGridStabilizationFrame = 0;
+let hostGridStabilizationToken = 0;
+function scheduleHostPlayerGridStabilization(reason = 'grid-stabilize') {
+    if (hostGridStabilizationFrame) cancelAnimationFrame(hostGridStabilizationFrame);
+    const token = ++hostGridStabilizationToken;
+    let attempts = 0;
+    const maxAttempts = 8;
+    const tick = () => {
+        hostGridStabilizationFrame = 0;
+        if (token !== hostGridStabilizationToken) return;
+        attempts += 1;
+        const list = document.getElementById('list')?.classList.contains('hidden')
+            ? document.getElementById('listSimple')
+            : document.getElementById('list');
+        if (!list) return;
+        const cards = list.querySelectorAll('.player[data-id], .simple-row[data-id], .player[data-pid]').length;
+        const rect = list.getBoundingClientRect();
+        const style = getComputedStyle(list);
+        let columns = countComputedGridTracks(style.gridTemplateColumns);
+        let rows = countComputedGridTracks(style.gridTemplateRows);
+
+        if (cards > 0 && rect.width > 0 && columns < 1) {
+            // Last-resort recovery for a layout frame where CSS has not materialized a grid track yet.
+            // Keep manual presets when available; otherwise derive a safe count from the standard 50px track.
+            const requested = currentGridBreakpoint ? gridColsByBreakpoint[currentGridBreakpoint] : null;
+            const gap = parseFloat(style.columnGap) || 0;
+            const safeAutoCols = Math.max(1, Math.min(cards, Math.floor((rect.width + gap) / (50 + gap))));
+            const effective = requested ? Math.max(1, Math.min(Number(requested) || 1, cards)) : safeAutoCols;
+            list.style.gridTemplateColumns = `repeat(${effective}, minmax(0, 1fr))`;
+            const after = getComputedStyle(list);
+            columns = countComputedGridTracks(after.gridTemplateColumns);
+            rows = countComputedGridTracks(after.gridTemplateRows);
+        }
+
+        publishHostGridLayoutMetrics(reason);
+        if (cards > 0 && (rect.width <= 0 || columns < 1 || rows < 1) && attempts < maxAttempts) {
+            hostGridStabilizationFrame = requestAnimationFrame(tick);
+        }
+    };
+    hostGridStabilizationFrame = requestAnimationFrame(tick);
 }
 
 // ขนาดมาตรฐานภายในของการ์ดผู้เล่น (canvas อ้างอิง 220×220px; กรอบภายนอกยังเป็นสี่เหลี่ยมตามพื้นที่จริง) กำหนดไว้ที่ max-width ของ .player/.simple-row
@@ -3440,7 +3778,10 @@ function scheduleCardFit() {
 // ขนาดกรอบเปลี่ยนได้จากการหมุนจอ, resize, เปิด/ปิดคอลัมน์ซ้าย หรือการเปลี่ยนจำนวนคอลัมน์
 // รวมถึงการเพิ่ม/ลบการ์ดแบบ live — observe การ์ดใหม่ทุกครั้งเพื่อไม่ต้องรีเว็บให้ scale ถูกต้อง.
 if (typeof ResizeObserver !== 'undefined') {
-    cardFitObserver = new ResizeObserver(() => scheduleCardFit());
+    cardFitObserver = new ResizeObserver(() => {
+        scheduleHostPlayerGridStabilization('card-resize');
+        scheduleCardFit();
+    });
 }
 
 function observeHostPlayerCards() {
@@ -3461,6 +3802,7 @@ if (typeof MutationObserver !== 'undefined') {
         try {
             const mo = new MutationObserver(() => {
                 observeHostPlayerCards();
+                scheduleHostPlayerGridStabilization('player-list-mutation');
                 scheduleCardFit();
             });
             mo.observe(listEl, { childList: true });
@@ -3490,6 +3832,8 @@ function applyGridCols(n) {
         if (effective) listSimple.style.gridTemplateColumns = cols;
         else listSimple.style.removeProperty("grid-template-columns");
     }
+    publishHostGridLayoutMetrics('apply-grid-cols');
+    scheduleHostPlayerGridStabilization('apply-grid-cols');
     // ย่อเนื้อหาแต่ละการ์ดให้พอดีกรอบจัตุรัสของตัวเอง (ทั้งกว้างและสูง) — ดูคอมเมนต์เต็มที่ updateAllCardFit
     scheduleCardFit();
 }
@@ -3503,9 +3847,9 @@ function syncGridColsUI(n) {
     });
 }
 
-function refreshGridColsForBreakpoint() {
+function refreshGridColsForBreakpoint(force = false) {
     const bp = getGridBreakpoint();
-    if (bp === currentGridBreakpoint) return; // จอ/แนวจอเดิม ไม่ต้องรีเซ็ตค่าที่ผู้ใช้ปรับไว้
+    if (!force && bp === currentGridBreakpoint) return; // จอ/แนวจอเดิม ไม่ต้องรีเซ็ตค่าที่ผู้ใช้ปรับไว้
     currentGridBreakpoint = bp;
     const n = gridColsByBreakpoint[bp];
     syncGridColsUI(n);
@@ -3539,16 +3883,36 @@ function onGridColsInputChange(value) {
 }
 
 refreshGridColsForBreakpoint();
-window.addEventListener("resize", refreshGridColsForBreakpoint);
-window.addEventListener("orientationchange", refreshGridColsForBreakpoint);
-window.addEventListener("resize", scheduleCardFit, { passive: true });
-window.addEventListener("orientationchange", scheduleCardFit, { passive: true });
-window.addEventListener("pageshow", scheduleCardFit, { passive: true });
-document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleCardFit(); });
+publishHostGridLayoutMetrics('startup');
+scheduleHostPlayerGridStabilization('startup');
+runHostLayoutRecovery('startup');
+window.addEventListener("resize", () => {
+    refreshGridColsForBreakpoint(true);
+    scheduleHostPlayerGridStabilization('window-resize');
+    scheduleCardFit();
+});
+window.addEventListener("orientationchange", () => {
+    refreshGridColsForBreakpoint(true);
+    scheduleHostPlayerGridStabilization('orientationchange');
+    scheduleCardFit();
+});
+window.addEventListener("pageshow", () => {
+    refreshGridColsForBreakpoint(true);
+    scheduleHostPlayerGridStabilization('pageshow');
+    scheduleCardFit();
+}, { passive: true });
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+        refreshGridColsForBreakpoint(true);
+        scheduleHostPlayerGridStabilization('visibility-visible');
+        scheduleCardFit();
+    }
+});
 
 // initial empty-state render
 renderRoles();
 updateHostControlChrome({ started:false, gameOver:false, config: roleConfig, players:[] });
+renderHostPresetPanel();
 updateNightFlowButtons({ started: false, isNight: false });
 
 // ===== CHAT PLACEMENT =====

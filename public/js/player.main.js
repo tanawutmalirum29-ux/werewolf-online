@@ -19,10 +19,31 @@ const playerSocketAuth = Object.assign(
     })()
 );
 const socket = io({ auth: playerSocketAuth });
+if (!window.__wwAccountSessionRevokedListener) {
+    socket.on("account_session_revoked", async function (info) {
+        let result = null;
+        try { result = window.wwAccount?.handleSessionRevoked(info?.reason || "session_replaced", info || {}); } catch (_) {}
+        const sameDevice = !!result?.sameDeviceReplacement;
+        window.dispatchEvent(new CustomEvent("wwAccountSessionRevoked", { detail: { reason: String(info?.reason || "session_replaced"), page: "player", sameDeviceReplacement: sameDevice, deviceId: String(info?.deviceId || ""), previousAccountToken: String(result?.previousAccountToken || "") } }));
+        if (!sameDevice || !window.wwAccount) return;
+        const replacement = await window.wwAccount.waitForSessionReplacement(result.previousAccountToken, { timeoutMs: 8000, pollMs: 120 });
+        if (!replacement.ok) {
+            window.dispatchEvent(new CustomEvent("wwAccountSessionReplacementFailed", { detail: { page: "player", code: replacement.code || "ACCOUNT_SESSION_REPLACEMENT_TIMEOUT" } }));
+            return;
+        }
+        try {
+            if (!socket.connected) socket.connect();
+            else await window.wwAccount.bootstrap(socket, { name: window.wwAccount.getName() || "", page: "player" });
+        } catch (e) {
+            window.dispatchEvent(new CustomEvent("wwAccountSessionReplacementFailed", { detail: { page: "player", code: e?.code || "ACCOUNT_SESSION_REPLACEMENT_BOOTSTRAP_FAILED" } }));
+        }
+    });
+    window.__wwAccountSessionRevokedListener = true;
+}
 
 socket.on("serverInfo", function (info) {
     if (window.wwSetServerVersion) window.wwSetServerVersion(info && info.version);
-    if (window.wwCheckClientVersion) window.wwCheckClientVersion(info && info.clientHash);
+    if (window.wwCheckClientVersion) window.wwCheckClientVersion(info && info.clientHash, info && info.deploymentState);
 });
 // แอดมินกดล้างข้อมูลเกมทั้งหมด (ดู shared.reset-guard.js) — ล้างตัวตนในเครื่องนี้แล้วกลับหน้าแรกทันที
 socket.on("force_reset", function (d) {
@@ -60,10 +81,11 @@ if (typeof window.wwImg !== "function") {
 
 function selectTarget(targetId) {
     if (!currentRoomId) return;
-    socket.emit("select_target", { roomId: currentRoomId, targetId });
+    socket.emit("select_target", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 let joined = false;
+const playerActivityRoomId = new URLSearchParams(window.location.search).get("room") || "";
 let myRole = "";
 let mySilenced = false;
 let gameOverConfirmed = false; // กดดำเนินการต่อแล้วหรือยังในรอบ gameOver นี้
@@ -134,7 +156,19 @@ let cultSacrificePendingMemberId = null; // คนที่ 1 ที่แตะ
 // (ไม่มีตัวแปรโหมดสำหรับโจร/ผู้สมรู้ร่วมคิดแล้ว — แตะการ์ดเลือกเป้าได้ตรงๆ เลย เหมือนหมอ/บอดี้การ์ด/ยายขี้โมโห
 // ไม่ต้องกดปุ่มเข้าโหมดก่อน ดู amIBanditLeader/amIBanditAccomplice ในฟังก์ชัน renderPlayerGrid)
 let suggestedRoomData = null; // ห้องล่าสุดที่เปิดอยู่ (จาก server)
-let currentRoomId = null; // ห้องที่ join อยู่ตอนนี้ ใช้ตอนเชื่อมต่อใหม่อัตโนมัติ
+let currentRoomId = playerActivityRoomId ? String(playerActivityRoomId).trim().toUpperCase() : null; // active activity URL is authoritative
+let currentMembershipId = ""; // durable room membership identity returned by the server; never use socket.id as player identity
+function getCurrentRoomPlayer(roomData) {
+    const room = roomData || lastRoomData;
+    if (!room || !Array.isArray(room.players)) return null;
+    if (currentMembershipId) {
+        const byMembership = room.players.find((p) => String(p?.membershipId || "") === currentMembershipId);
+        if (byMembership) return byMembership;
+    }
+    const bySocket = room.players.find((p) => p && p.id === socket.id);
+    if (bySocket) return bySocket;
+    return TESTER_MODE && clientToken ? room.players.find((p) => p && p.token === clientToken) || null : null;
+}
 // ห้องที่ "ส่ง join_room ไปแล้วแต่ยังไม่ได้รับ ack กลับมา" — กันบั๊กที่เน็ตสะดุด/หลุด-ต่อใหม่
 // ระหว่างรอ ack พอดี ทำให้ ack เดิมหลุดหายไปกับ socket เก่าตลอดกาล (ไม่มีวันเรียก callback แล้ว)
 // จน UI ค้างอยู่หน้า "กำลังเข้าห้อง..." ทั้งที่ server รับ join เข้าไปในห้องเรียบร้อยแล้วจริงๆ
@@ -152,17 +186,20 @@ let pendingJoinRoomId = null;
 // แต่ยังรีเฟรชหน้าในแท็บเดิมได้โดยไม่หลุด เพราะ sessionStorage อยู่รอดผ่านการรีเฟรช
 // (จะหลุดก็ตอนปิดแท็บ/หน้าต่างนั้นไปจริงๆ หรือโดนเตะ/ห้องยุบ เหมือนผู้เล่นปกติ)
 const urlParams = new URLSearchParams(window.location.search);
+const TESTER_MODE = urlParams.get("tester") === "1";
+if (!TESTER_MODE && playerActivityRoomId) {
+    try { ww_store.setItem("ww_joinedRoom", String(playerActivityRoomId).trim().toUpperCase()); ww_store.setItem("ww_lastRoom", String(playerActivityRoomId).trim().toUpperCase()); } catch (_) {}
+}
 // เช็คจาก URL อย่างเดียว (เหมือน host.html) — ห้ามเช็ค sessionStorage ประกอบด้วย
 // เพราะ sessionStorage ค้างอยู่ตลอดอายุแท็บ ทำให้พอเข้าโหมดผู้ทดสอบครั้งเดียว
 // แล้วกลับมาเปิดลิงก์ปกติ (ไม่มี ?tester=1) ในแท็บเดิมซ้ำ ก็ยังติดโหมดผู้ทดสอบอยู่ดี
 // (URL เองมี tester=1 ค้างอยู่แล้วจาก history.replaceState ด้านล่าง กรณีมือถือ discard แท็บ
 // จึงไม่จำเป็นต้องพึ่ง sessionStorage เป็น fallback อีกชั้น)
-const TESTER_MODE = urlParams.get("tester") === "1";
 // แท็บนี้คือ "จอบอทที่โฮสต์กำลังเข้าสิง" ไม่ใช่ผู้เล่นทดสอบจริง
 // ถ้าห้องปิด บอทไม่มีตัวตนที่ต้องรอห้องต่อ จึงต้องปิดแท็บกลับไปยังจอโฮสต์ทันที
 const BOT_CONTROLLED_TAB = TESTER_MODE && !!urlParams.get("jr") && !!urlParams.get("t");
 const TESTER_RETURN_URL = "admin.html";
-const ww_store = TESTER_MODE ? sessionStorage : localStorage;
+const ww_store = TESTER_MODE ? ((window.wwEmbeddedStorage && window.wwEmbeddedStorage.session) || sessionStorage) : localStorage;
 
 // ===== จำเฟสธีมห้องล่าสุดข้ามการรีโหลด =====
 // หน้า player ใช้ชายหาดตอนเช้าเป็นค่าเริ่มต้น แต่ถ้าห้องเดิมกำลังอยู่กลางคืนและ browser
@@ -194,13 +231,13 @@ function applySavedPlayerRoomTheme(id) {
     document.body.classList.toggle("is-night", night);
     document.body.classList.toggle("is-day", !night);
 }
-const initialPlayerRoomId = ww_store.getItem("ww_joinedRoom") || "";
+const initialPlayerRoomId = playerActivityRoomId || ww_store.getItem("ww_joinedRoom") || "";
 applySavedPlayerRoomTheme(initialPlayerRoomId);
 
 // ===== PREVIOUS ROOM DECISION =====
 // เมื่อเปิดหน้าใหม่หลังเคยเข้าห้อง ห้าม auto-rejoin ห้องเดิมทันที
 // ต้องตรวจสถานะจาก server แล้วให้ผู้เล่นเลือก "กลับเกมเดิม" หรือ "หาห้องใหม่" ก่อน
-let previousRoomDecisionPending = !!ww_store.getItem("ww_joinedRoom");
+let previousRoomDecisionPending = !playerActivityRoomId && !!ww_store.getItem("ww_joinedRoom");
 let previousRoomCheckInFlight = false;
 let previousRoomCheckDone = false;
 let previousRoomResumeState = null;
@@ -255,7 +292,7 @@ window.addEventListener("pagehide", (event) => {
     }
     const diagState = window.WWDiagnostic?.getState?.() || {};
     wwSendBrowserExitBeacon("/api/room/browser-exit-player", {
-        roomId:String(currentRoomId), token:String(clientToken || ""), socketId:String(socket.id || ""), source:"pagehide",
+        roomId:String(currentRoomId), token:TESTER_MODE ? String(clientToken || "") : "", accountId:String(window.wwAccount?.getIdentity?.()?.accountId || ""), membershipId:String(currentMembershipId || ""), deviceId:String(window.wwAccount?.getIdentity?.()?.deviceId || ""), socketId:String(socket.id || ""), source:"pagehide",
         clientTraceId:String(diagState.activeTrace?.id || ""), clientSessionId:String(window.WWDiagnostic?.sessionId || ""),
         pendingOperations:Array.isArray(diagState.pendingOperations) ? diagState.pendingOperations.slice(0, 12) : [],
         started:!!(lastRoomData && lastRoomData.started),
@@ -413,7 +450,7 @@ function releaseBotAndReturn() {
         if (finished) return;
         finished = true;
         // ปิด session ของแท็บนี้หลัง server รับคำสั่งแล้ว กัน auto-reconnect กลับมาแย่งบอทเดิม
-        try { sessionStorage.clear(); } catch (e) { /* เบราว์เซอร์บล็อค ไม่เป็นไร */ }
+        try { ww_store.clear(); } catch (e) { /* เบราว์เซอร์บล็อค ไม่เป็นไร */ }
         try { socket.disconnect(); } catch (e) {}
         closeBotControlTab();
     };
@@ -747,8 +784,7 @@ async function doJoin(playerName, roomCode, opts) {
         {
             roomId: roomCode,
             name: playerName,
-            token: clientToken,
-            ...(TESTER_MODE ? {} : (window.wwAccount ? window.wwAccount.payload() : {})),
+            ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})),
             code,
             isTester: TESTER_MODE,
             testerSessionId: TESTER_MODE ? (urlParams.get("ts") || "") : ""
@@ -770,6 +806,13 @@ async function doJoin(playerName, roomCode, opts) {
 
                 if (res && res.error === "room_full") {
                     if (!opts.silent) wwAlert("ห้องนี้มีผู้เล่นครบตามจำนวนสูงสุดแล้ว เข้าร่วมเพิ่มไม่ได้");
+                    return;
+                }
+
+                if (res && (res.code === "ACCOUNT_ACTIVITY_ALREADY_ACTIVE" || res.code === "ACCOUNT_ACTIVITY_CONFLICT")) {
+                    const activeRoom = String(res.roomId || res.activeActivity?.roomId || currentRoomId || "").trim().toUpperCase();
+                    if (!opts.silent && activeRoom && activeRoom === String(roomCode || "").trim().toUpperCase()) wwAlert("บัญชีนี้กำลังเล่นห้องนี้อยู่ในอีกแท็บหนึ่ง ระบบจะไม่สร้างผู้เล่นซ้ำ");
+                    else if (!opts.silent) wwAlert("บัญชีนี้กำลังทำกิจกรรมอื่นอยู่ จึงเข้าห้องใหม่พร้อมกันไม่ได้");
                     return;
                 }
 
@@ -800,7 +843,7 @@ async function doJoin(playerName, roomCode, opts) {
                 return;
             }
 
-            finalizeJoin(roomCode);
+            finalizeJoin(roomCode, res?.membershipId || "");
         }
     );
 }
@@ -815,13 +858,13 @@ function watchdogJoin(roomCode, attempt, code) {
         if (pendingJoinRoomId !== roomCode || joined) return; // สำเร็จ/ถูกแทนที่ไปแล้ว เลิกลอง
         socket.emit(
             "join_room",
-            { roomId: roomCode, name: ww_store.getItem("ww_playerName") || undefined, token: clientToken, ...(TESTER_MODE ? {} : (window.wwAccount ? window.wwAccount.payload() : {})), code, isTester: TESTER_MODE, testerSessionId: TESTER_MODE ? (urlParams.get("ts") || "") : "" },
+            { roomId: roomCode, name: ww_store.getItem("ww_playerName") || undefined, ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})), code, isTester: TESTER_MODE, testerSessionId: TESTER_MODE ? (urlParams.get("ts") || "") : "" },
             (res) => {
                 if (!res || res.error) {
                     if (pendingJoinRoomId === roomCode) pendingJoinRoomId = null;
                     return;
                 }
-                finalizeJoin(roomCode);
+                finalizeJoin(roomCode, res?.membershipId || "");
             }
         );
         watchdogJoin(roomCode, attempt + 1, code);
@@ -874,7 +917,7 @@ function applySavedPlayerRoomThemeAfterJoin(roomId) {
 // ทำให้ UI เข้าสู่สถานะ "เข้าห้องสำเร็จแล้ว" จริง ๆ — แยกออกมาจาก ack callback ของ doJoin
 // เพราะต้องเรียกได้จากอีกทาง (room_update fallback ด้านล่าง) ในกรณีที่ ack หายไประหว่างทาง
 // แต่ server รับเข้าห้องไปแล้วจริง ป้องกันบั๊ก UI ค้างที่หน้ากรอกห้องทั้งที่เข้าห้องสำเร็จแล้ว
-function finalizeJoin(roomCode) {
+function finalizeJoin(roomCode, membershipId = "") {
     if (joined && currentRoomId === roomCode) {
         pendingJoinRoomId = null;
         return; // เข้าห้องนี้อยู่แล้ว ไม่ต้องทำซ้ำ
@@ -882,6 +925,7 @@ function finalizeJoin(roomCode) {
 
     joined = true;
     currentRoomId = roomCode;
+    if (membershipId) currentMembershipId = String(membershipId).trim();
     playerBrowserExitServerClosed = false;
     playerBrowserExitRequested = false;
     playerBrowserExitSignalSent = false;
@@ -1003,7 +1047,7 @@ function checkPreviousRoomResume() {
     if (BOT_CONTROLLED_TAB || !ww_savedRoomForResume || joined || previousRoomCheckDone || previousRoomCheckInFlight) return;
     if (!socket.connected) return;
     previousRoomCheckInFlight = true;
-    socket.emit("player_resume_status", { roomId: ww_savedRoomForResume, token: clientToken }, (res) => {
+    socket.emit("player_resume_status", { roomId: ww_savedRoomForResume, ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})) }, (res) => {
         previousRoomCheckInFlight = false;
 
         // ห้ามล้าง ww_joinedRoom เมื่อเป็น SERVER_ERROR/ไม่มี ACK: ห้องเดิมอาจยังอยู่และ
@@ -1058,7 +1102,7 @@ async function abandonPreviousPlayerGame() {
     return await new Promise((resolve) => {
         // ใช้ event เดียวทั้ง lobby และ game เพราะหน้าใหม่อาจยังไม่ได้อยู่ใน socket room เดิม
         // และ server จะลบผู้เล่นจาก lobby ด้วย token ได้โดยตรง ส่วนเกมที่เริ่มแล้วจะบันทึก leave ทันที
-        socket.emit("abandon_game", { roomId, token: clientToken, reason: "new_room" }, (res) => {
+        socket.emit("abandon_game", { roomId, ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})), reason: "new_room" }, (res) => {
             abandonGameInFlight = false;
             if (res && (res.ok || res.code === "ROOM_NOT_FOUND" || res.code === "ROOM_ALREADY_ENDED" || res.code === "LEFT_LOBBY")) {
                 resolve(true);
@@ -1240,6 +1284,16 @@ socket.on("name_updated_by_host", (data) => {
 });
 
 // บัญชีจริงถูกจัดการโดย Admin จากหน้า "ผู้เล่นทั้งหมด"
+window.addEventListener("wwAccountSessionRevoked", function (event) {
+    if (event?.detail?.sameDeviceReplacement) return;
+    try { socket.disconnect(); } catch (_) {}
+    const notice = document.createElement("div");
+    notice.textContent = "เซสชันบัญชีนี้ถูกแทนที่ด้วยการเข้าสู่ระบบจากอุปกรณ์อื่น";
+    Object.assign(notice.style, { position:"fixed", inset:"0", zIndex:"99999", display:"grid", placeItems:"center", padding:"24px", background:"rgba(5,7,12,.94)", color:"#fff", textAlign:"center", fontSize:"18px", fontWeight:"700" });
+    document.body.appendChild(notice);
+    setTimeout(() => location.replace("index.html"), 450);
+});
+
 function handleManagedAccountSession(reason) {
     playerAllowIntentionalExit("managed_account_session");
     playerBrowserExitServerClosed = true;
@@ -1382,10 +1436,24 @@ function getRoleIcon(role) {
 let allRolesData = {};   // จาก roles_data event
 let openRoleDescKeys = new Set(); // เก็บว่าใบไหนกำลังเปิดคำอธิบายอยู่ (คงสถานะไว้ตอน re-render)
 let lastRoomData = null; // เก็บ roomData ล่าสุดเพื่อ re-render กริดหลังรับบท
+const gameRuntime = window.WWGameRuntime?.attach(socket, {
+    page: "player",
+    getRoom: () => lastRoomData,
+    getPlayer: () => {
+        const room = lastRoomData;
+        if (!room || !Array.isArray(room.players)) return null;
+        return getCurrentRoomPlayer(room);
+    },
+});
 
 // เฟส 1 Runtime Audit: ให้ตัวตรวจกลางอ่าน state จริงของหน้า Player โดยไม่เปิดข้อมูลลับเพิ่มเอง
 if (window.WWRuntimeAudit?.setStateProvider) {
     window.WWRuntimeAudit.setStateProvider(() => lastRoomData || null);
+}
+
+function withRoomState(payload = {}) {
+    const stateVersion = gameRuntime?.getStateVersion?.() || Number(lastRoomData?.stateVersion || 0);
+    return { ...payload, ...(stateVersion > 0 ? { stateVersion } : {}) };
 }
 
 // พรีโหลดรูปไอคอนอาชีพทั้งหมดล่วงหน้า (โหลดแอบไว้ใน cache ของเบราว์เซอร์)
@@ -1423,36 +1491,36 @@ function getGuardianShieldHTML(role) {
 
 function castVote(targetId) {
     if (!currentRoomId) return;
-    socket.emit("cast_vote", { roomId: currentRoomId, targetId });
+    socket.emit("cast_vote", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 function castWolfKill(targetId) {
     if (!currentRoomId) return;
-    socket.emit("cast_wolf_kill", { roomId: currentRoomId, targetId });
+    socket.emit("cast_wolf_kill", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 function castMurdererKill(targetId) {
     if (!currentRoomId) return;
-    socket.emit("cast_murderer_kill", { roomId: currentRoomId, targetId });
+    socket.emit("cast_murderer_kill", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // ผู้ยุยง: หลังผู้ศรัทธาทั้งสองตายแล้วเท่านั้น — ฆ่าผู้เล่นคนอื่นด้วยตัวเองได้ 1 คนต่อคืน (ดู cast_instigator_kill)
 function castInstigatorKill(targetId) {
     if (!currentRoomId) return;
-    socket.emit("cast_instigator_kill", { roomId: currentRoomId, targetId });
+    socket.emit("cast_instigator_kill", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // ส่อง (หมาป่าหยั่งรู้ / ผู้มีลาง / ผู้หยั่งรู้) — เปิดเผยผลทันที ย้อนกลับไม่ได้ ใช้ได้คนละ 1 ครั้งต่อคืน
 function scoutTarget(targetId) {
     if (!currentRoomId || !targetId) return;
-    socket.emit("scout_target", { roomId: currentRoomId, targetId });
+    socket.emit("scout_target", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // นักสืบ: เลือก 2 คนพร้อมกันเพื่อดูว่าอยู่ทีมเดียวกันไหม (=/≠) — เปิดเผยผลทันที ย้อนกลับไม่ได้
 // ใช้ได้คนละ 1 ครั้งต่อคืน (การเลือกทีละคนทำที่ฝั่ง client ผ่าน detectivePendingFirstId แล้วค่อยยิง event นี้ทีเดียวตอนครบ 2 คน)
 function detectiveScout(targetAId, targetBId) {
     if (!currentRoomId || !targetAId || !targetBId) return;
-    socket.emit("detective_scout", { roomId: currentRoomId, targetAId, targetBId });
+    socket.emit("detective_scout", withRoomState({ roomId: currentRoomId, targetAId, targetBId }));
 }
 
 // กามเทพ: เลือก 2 คนเพื่อ "เลือกไว้" (pending) — จะกลายเป็นคู่รักจริงตอนเช้า ก่อนหน้านั้นเปลี่ยนใจได้เรื่อยๆ
@@ -1525,7 +1593,7 @@ function toggleShieldMode() {
 // server.js อนุญาตให้ลูกหมาป่าเลือกได้ตลอดเวลา (ไม่บังคับเฉพาะกลางคืนเหมือนบทบาทอื่นในกลุ่มนี้)
 function castWolfCubTarget(targetId) {
     if (!currentRoomId) return;
-    socket.emit("select_target", { roomId: currentRoomId, targetId });
+    socket.emit("select_target", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // สลับโหมด "กำลังจะเลือกเป้าลากตาย" — เมื่อเปิดอยู่ การแตะชื่อผู้เล่นในกริดจะจองเป้าลากแทนที่จะโหวต/อย่างอื่น
@@ -1543,7 +1611,7 @@ function toggleWolfCubMode() {
 // server.js อนุญาตให้เลือกได้ตลอดเวลา (ยกเว้นคืนแรกของเกมที่ server จะเมินคำสั่งเฉยๆ)
 function castLoudmouthTarget(targetId) {
     if (!currentRoomId) return;
-    socket.emit("select_target", { roomId: currentRoomId, targetId });
+    socket.emit("select_target", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // สลับโหมด "กำลังจะเลือกเป้า" ของเด็กขี้โวยวาย — เหมือนลูกหมาป่าเป๊ะๆ ใช้ได้ตลอดเวลาทั้งกลางวัน/กลางคืน
@@ -1636,7 +1704,7 @@ function castBanditRecruit(targetId) {
 // แตะการ์ดเป้าตรงๆ ได้เลยเช่นกัน ไม่ต้องกดปุ่มเข้าโหมดก่อน
 function castBanditKill(targetId) {
     if (!currentRoomId) return;
-    socket.emit("cast_bandit_kill", { roomId: currentRoomId, targetId });
+    socket.emit("cast_bandit_kill", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // ศาลเตี้ย: ยิงปืน (มีนัดเดียว ใช้ได้เฉพาะตอนกลางวัน) — ยืนยันก่อนยิงทุกครั้งเพราะย้อนกลับไม่ได้
@@ -1697,7 +1765,7 @@ function togglePeekMode() {
 // ไม่ต้องเลือกเป้า — เซิร์ฟเวอร์จะฆ่าทุกคนใน illusionTargetIds ที่ยังมีชีวิตอยู่ให้เอง ยืนยันก่อนทุกครั้งเพราะย้อนกลับไม่ได้
 async function illusionKillDisguised() {
     if (!currentRoomId) return;
-    const myPlayer = lastRoomData?.players?.find(p => p.id === socket.id);
+    const myPlayer = getCurrentRoomPlayer(lastRoomData);
     const disguisedIds = Array.isArray(myPlayer?.illusionTargetIds) ? myPlayer.illusionTargetIds : [];
     const aliveDisguisedNames = disguisedIds
         .map((tid) => lastRoomData?.players?.find(p => p.id === tid))
@@ -1750,7 +1818,7 @@ async function castWitchPoison(targetId) {
         if (lastRoomData) renderPlayerGrid(lastRoomData);
         return;
     }
-    socket.emit("cast_witch_poison", { roomId: currentRoomId, targetId });
+    socket.emit("cast_witch_poison", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // สลับโหมด "กำลังจะโยนยาพิษ" — เมื่อเปิดอยู่ การแตะชื่อผู้เล่นในกริดจะปายาพิษแทนที่จะเป็นการเลือกเป้าปกติ
@@ -1773,7 +1841,7 @@ function togglePoisonMode() {
 // มีขวดเดียวตลอดเกม แต่เปลี่ยนเป้าได้ทุกคืนจนกว่าจะเคยกันการโจมตีสำเร็จจริงหนึ่งครั้ง (ดู server.js)
 function castProtect(targetId) {
     if (!currentRoomId) return;
-    socket.emit("select_target", { roomId: currentRoomId, targetId });
+    socket.emit("select_target", withRoomState({ roomId: currentRoomId, targetId }));
 }
 
 // สลับโหมด "กำลังจะเลือกยาป้องกัน" — เมื่อเปิดอยู่ การแตะชื่อผู้เล่นในกริดจะวางยาป้องกันแทนที่จะเป็นการเลือกเป้าปกติ
@@ -2301,7 +2369,7 @@ myHuntTargetId = data.huntTargetId || null;
     // ผลคือปุ่มที่ควรจาง (กลางคืน/ใช้ไปแล้ว/ตายแล้ว) กลับดูเหมือนกดได้หลังรีคอนเนกต์ — sync ซ้ำที่นี่
     // ด้วยสูตรเดียวกับใน room_update handler ด้านล่าง ให้ตรงกันเสมอไม่ว่า event ไหนจะมาถึงทีหลัง
     if (lastRoomData) {
-        const myP2 = lastRoomData.players.find((p) => p.id === socket.id);
+        const myP2 = getCurrentRoomPlayer(lastRoomData);
         if (myP2) {
             const alive2 = myP2.alive;
             if (GUARDIAN_ROLES.has(myP2.role)) {
@@ -2574,6 +2642,15 @@ function computePlayerGridLayout(W, H, count, gap, minPx, maxPx, rowGap = gap) {
         const rounded = Math.floor(size * 4) / 4;
         const fits = size >= minPx;
         const distanceFromIdeal = Math.abs(columns - idealColumns);
+        const usedWidth = columns * rounded + (columns - 1) * gap;
+        const usedHeight = rows * rounded + (rows - 1) * rowGap;
+        const widthCoverage = Math.min(1, usedWidth / Math.max(W, 1));
+        const heightCoverage = Math.min(1, usedHeight / Math.max(H, 1));
+        // When several column/row choices reach the same card size cap, prefer the
+        // composition that occupies more of the available board in either axis.
+        // This keeps 4K/ultra-wide displays from choosing a short, narrow 9x4 board
+        // when a wider 12x3 board can use much more of the center area at the same size.
+        const coverage = widthCoverage + heightCoverage;
 
         const candidate = {
             columns,
@@ -2581,6 +2658,7 @@ function computePlayerGridLayout(W, H, count, gap, minPx, maxPx, rowGap = gap) {
             size: rounded,
             fits,
             distanceFromIdeal,
+            coverage,
         };
 
         if (!best
@@ -2588,6 +2666,10 @@ function computePlayerGridLayout(W, H, count, gap, minPx, maxPx, rowGap = gap) {
             || (Math.abs(candidate.size - best.size) <= 0.01 && candidate.fits && !best.fits)
             || (Math.abs(candidate.size - best.size) <= 0.01
                 && candidate.fits === best.fits
+                && candidate.coverage > best.coverage + 0.02)
+            || (Math.abs(candidate.size - best.size) <= 0.01
+                && candidate.fits === best.fits
+                && Math.abs(candidate.coverage - best.coverage) <= 0.02
                 && candidate.distanceFromIdeal < best.distanceFromIdeal)) {
             best = candidate;
         }
@@ -2682,9 +2764,13 @@ function applyPlayerGridLayout(el, layout) {
 
 function fitPlayerGrid() {
     const MIN_PX = 50;
-    const MAX_PX = 160;
     const el = document.getElementById("players");
     if (!el) return;
+    const configuredMaxRaw = getComputedStyle(el).getPropertyValue("--player-grid-max").trim();
+    const configuredMax = /^(?:\d+(?:\.\d+)?)(?:px)?$/i.test(configuredMaxRaw) ? parseFloat(configuredMaxRaw) : NaN;
+    const viewportWidth = Number(window.visualViewport?.width || window.innerWidth || 0);
+    const responsiveMax = Math.min(340, Math.max(240, viewportWidth * 0.12));
+    const MAX_PX = Number.isFinite(configuredMax) && configuredMax >= 50 ? configuredMax : responsiveMax;
     const count = el.querySelectorAll(".player[data-pid]:not(.search-hidden)").length;
     if (count === 0) {
         el.style.removeProperty("--player-card-size");
@@ -2731,9 +2817,17 @@ function fitPlayerGrid() {
         // ถ้า viewport/page ยังใหญ่แต่ #players ถูกวัดเตี้ยผิดปกติมาก (transient flex/VisualViewport frame)
         // ห้าม commit ขนาดจิ๋ว เพราะจะทำให้การ์ดเหลือเพียงวงกลมและชื่อหาย โดยเฉพาะ iPad/Safari.
         const viewportHeight = Number(window.visualViewport?.height || window.innerHeight || 0);
-        const suspiciousCollapsedHeight = metrics.height < 120
-            && viewportHeight >= Math.max(240, metrics.height * 2.5)
-            && document.body.classList.contains("game-visible");
+        const viewportWidth = Number(window.visualViewport?.width || window.innerWidth || 0);
+        const gameCardRect = document.getElementById("playersCard")?.getBoundingClientRect();
+        const gameAppRect = document.querySelector(".app.game-visible")?.getBoundingClientRect();
+        const wideGameStage = viewportWidth >= 1080 || Number(gameAppRect?.width || 0) >= 700;
+        // WebKit/iPad can expose an intermediate #players height while the outer game card has
+        // already expanded. The old guard only flagged heights under 120px, so a transient ~200–250px
+        // measurement could still be committed as 20–40px cards and remain as the visible "dots" seen
+        // in the normal Player screenshot. Treat a large parent-vs-grid discrepancy as collapsed too.
+        const suspiciousCollapsedHeight = document.body.classList.contains("game-visible")
+            && Number(gameCardRect?.height || 0) > Math.max(metrics.height * 1.35, metrics.height + 120)
+            && metrics.height < Math.max(120, viewportHeight * (wideGameStage ? 0.55 : 0.34));
         if (suspiciousCollapsedHeight || playerGridSmallFitStreak < 3) {
             el.style.removeProperty("--player-card-size");
             el.style.removeProperty("--player-grid-template");
@@ -2883,7 +2977,8 @@ function renderPlayerGrid(roomData) {
     const players = document.getElementById("players");
     if (!players) return "normal";
 
-    const me = socket.id;
+    const myPlayer = getCurrentRoomPlayer(roomData);
+    const me = myPlayer?.id || socket.id;
     const selected = roomData?.selectedTargets?.[me];
     const amIWolf = allWolfRoles.includes(myRole);
     const sourcePlayers = Array.isArray(roomData?.players)
@@ -4059,10 +4154,18 @@ socket.on("room_update", (roomData) => {
         updateChatUnreadTotal();
     }
 
-    const me = socket.id;
+    const myPlayer = getCurrentRoomPlayer(roomData);
 
     // อัพเดทสถานะมีชีวิตของตัวเอง
-    const myPlayer = roomData.players.find(p => p.id === me);
+
+    if (gameRuntime) {
+        gameRuntime.setStateVersion(roomData.stateVersion);
+        gameRuntime.renderTimeline("gameTimeline", roomData.timeline);
+        gameRuntime.renderSpectator(roomData, myPlayer, "spectatorCard");
+        const stateEl = document.getElementById("playerStateVersion");
+        if (stateEl) stateEl.textContent = `v${Number(roomData.stateVersion || 1)}`;
+        document.getElementById("gameTimelineCard")?.classList.toggle("hidden", !roomData.started);
+    }
 
     // โหมดผู้ทดสอบ: sync ว่าจอนี้กำลังเข้าสิงบอทอยู่จริงไหม (ใช้เช็คใน dblclick listener ของ #players
     // ด้านบนที่คืนความเป็นบอท) เช็คทุกครั้งที่ room_update มา เพราะ myPlayer.id เปลี่ยนได้ตลอด แต่ isBot ไม่เคยเปลี่ยน
@@ -4406,8 +4509,7 @@ socket.on("room_update", (roomData) => {
     // ===== GAME OVER SUMMARY =====
     if (roomData.gameOver && roomData.gameResult) {
         // fallback: ถ้า socket.id ใหม่หลัง reconnect หา myPlayer ไม่เจอ ให้ลองหาจาก token
-        const myPlayerForResult = myPlayer
-            || (roomData.players || []).find(p => p.token === clientToken);
+        const myPlayerForResult = myPlayer || getCurrentRoomPlayer(roomData);
         showGameOverOverlay(roomData, myPlayerForResult);
     } else {
         hideGameOverOverlay();
@@ -4534,15 +4636,13 @@ function confirmContinue() {
     document.getElementById("gameOverContinueBtn").classList.add("hidden");
     document.getElementById("gameOverWaiting").classList.remove("hidden");
 
-    socket.emit("confirm_continue", { roomId: currentRoomId });
+    socket.emit("confirm_continue", withRoomState({ roomId: currentRoomId }));
 }
 
-// DISCONNECT — ตามที่ตกลงกันไว้ ไม่ต้องการให้ผู้เล่นเห็นสถานะ "หลุด/กำลังเชื่อมต่อใหม่" อีกต่อไป
-// (เดิมโชว์แบนเนอร์ตรงนี้ แต่บางคนปิดจอไว้แป๊บเดียวเพื่อกันคนข้างๆ แอบดูบท แล้วโดนมองว่าหลุด
-// พอเปิดจอกลับมาก็เจอแบนเนอร์/ต้องรอเหมือนโหลดใหม่ น่ารำคาญ) socket.io จะพยายามเชื่อมต่อใหม่
-// และ auto-rejoin ด้วย token เดิมให้เองอยู่เบื้องหลังเงียบๆ โดยไม่ต้องแจ้งอะไรผู้เล่นเลย
+// DISCONNECT — Runtime Client เป็นเจ้าของ reconnect banner และจะแสดงเฉพาะช่วงเชื่อมต่อใหม่จริง
+// การ auto-rejoin ด้วย token เดิมยังทำงานที่ handler ด้านล่างตามปกติ
 socket.on("disconnect", () => {
-    // เจตนาปล่อยว่าง — ไม่แสดงแบนเนอร์ใดๆ ให้ผู้เล่นเห็น
+    // Runtime Client ดัก event นี้และแสดงสถานะกำลังเชื่อมต่อใหม่
 });
 
 // CONNECT — เรียกทั้งตอนเชื่อมต่อครั้งแรก และทุกครั้งที่ socket.io เชื่อมต่อใหม่สำเร็จ
@@ -4552,8 +4652,6 @@ socket.on("disconnect", () => {
 socket.on("connect", async () => {
     await bootstrapPlayerAccount();
     sendPlayerPresence();
-    document.getElementById("connBanner").classList.add("hidden");
-
     if (!joined && !pendingJoinRoomId && !BOT_CONTROLLED_TAB) {
         checkPreviousRoomResume();
     }
@@ -4574,6 +4672,8 @@ socket.on("connect", async () => {
 function wwRejoinFailMessage(res) {
     switch (res && res.code) {
         case "ROOM_NOT_FOUND": return "ไม่พบห้องนี้แล้ว หรือเซิร์ฟเวอร์ยังไม่สามารถกู้คืนห้องได้";
+        case "ROOM_FAILOVER_WAIT":
+        case "ROOM_LEASE_UNAVAILABLE": return "🔄 เซิร์ฟเวอร์กำลังส่งต่อห้องระหว่างอัปเดต ระบบกำลังเชื่อมกลับให้อัตโนมัติ";
         case "AUTH_FAILED": return "รหัสห้องไม่ตรง — กรุณากรอกรหัสห้องใหม่";
         case "TOO_MANY_ATTEMPTS": return "ลองผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่";
         case "ROOM_STARTED": return "เกมในห้องนี้เริ่มไปแล้ว เข้าร่วมกลางเกมไม่ได้";
@@ -4588,16 +4688,27 @@ function wwRejoinRoom(rejoinRoomId, attempt) {
         {
             roomId: rejoinRoomId,
             name: ww_store.getItem("ww_playerName") || undefined,
-            token: clientToken,
-            ...(TESTER_MODE ? {} : (window.wwAccount ? window.wwAccount.payload() : {})),
+            ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})),
             isTester: TESTER_MODE, // แค่ "คำขอ" — server ตัดสินสิทธิ์ผู้ทดสอบเองจากบัตรผ่าน (ค่านี้ปลอมแล้วไม่ได้สิทธิ์อะไร)
             testerSessionId: TESTER_MODE ? (urlParams.get("ts") || "") : ""
         },
         (res) => {
             if (res && res.error) {
-                // server error ชั่วคราว: ห้องยังอาจอยู่ → อย่ารีเซ็ตจอ ลองใหม่ (สูงสุด 3 ครั้ง ห่างกัน 3 วิ) — ไม่เด้งข้อความอะไรให้ผู้เล่นตกใจ
-                if (res.code === "SERVER_ERROR" && attempt < 3 && pendingJoinRoomId === rejoinRoomId) {
-                    setTimeout(() => { if (socket.connected && pendingJoinRoomId === rejoinRoomId) wwRejoinRoom(rejoinRoomId, attempt + 1); }, 3000);
+                // During an Immutable handoff the socket can land on the new instance before the
+                // old instance has released its room. Treat these responses as transient recovery
+                // states, never as a deleted room. Keep the durable account/membership identity and
+                // retry for a bounded period instead of sending the player back to the lobby.
+                const transientFailover = [
+                    "SERVER_ERROR",
+                    "ACCOUNT_PERSISTENCE_UNAVAILABLE",
+                    "ROOM_FAILOVER_WAIT",
+                    "ROOM_LEASE_UNAVAILABLE",
+                ].includes(String(res.code || ""));
+                if (transientFailover && attempt < 20 && pendingJoinRoomId === rejoinRoomId) {
+                    const retryMs = Math.max(500, Math.min(4000, Number(res.retryAfterMs) || (1200 + attempt * 250)));
+                    setTimeout(() => {
+                        if (socket.connected && pendingJoinRoomId === rejoinRoomId) wwRejoinRoom(rejoinRoomId, attempt + 1);
+                    }, retryMs);
                     return;
                 }
                 // ห้องหายจริง/เข้าไม่ได้ระหว่างที่เราหลุดการเชื่อมต่อ (เช่น โฮสต์ปิดห้อง แอดมินปิดเซิร์ฟเวอร์ หรือระบบ recovery ยังไม่พร้อม)
@@ -4616,7 +4727,7 @@ function wwRejoinRoom(rejoinRoomId, attempt) {
                 // ในโหมดทดลอง ห้องหาย = จอทดลองจบ ไม่ใช่ให้บอท/ผู้ทดสอบค้างหน้า "รอเข้าห้อง"
                 if (TESTER_MODE) {
                     try { socket.disconnect(); } catch (e) {}
-                    try { sessionStorage.clear(); } catch (e) {}
+                    try { ww_store.clear(); } catch (e) {}
                     returnFromTesterPlayer();
                     return;
                 }
@@ -4625,7 +4736,7 @@ function wwRejoinRoom(rejoinRoomId, attempt) {
             }
             // ถ้าสำเร็จ: finalizeJoin เผื่อไว้กรณียังไม่เคย join สำเร็จมาก่อน (เคส 2)
             // ส่วนกรณี (1) ที่ join อยู่แล้ว room_update / your_role จะตามมาทาง event ปกติ
-            finalizeJoin(rejoinRoomId);
+            finalizeJoin(rejoinRoomId, res?.membershipId || "");
         }
     );
 }
@@ -4645,7 +4756,7 @@ document.addEventListener("visibilitychange", () => {
     // ตรงจากเซิร์ฟเวอร์ทุกครั้งที่กลับมาเห็นจอ เพื่อให้ข้อมูล (บทบาท/ตำแหน่ง/แชท) ตรงกับความจริง
     // ของเซิร์ฟเวอร์เสมอ ไม่ต้องพึ่ง state เก่าที่ client จำไว้เอง
     if (document.visibilityState === "visible" && joined && currentRoomId) {
-        socket.emit("request_sync", { roomId: currentRoomId, token: clientToken });
+        socket.emit("request_sync", { roomId: currentRoomId, ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})) });
     }
     // ถ้าสลับออกไประหว่างอนิเมชั่นเปิดเผยบทกำลังเล่นอยู่ ให้ปิด overlay ทิ้งไปเลยทันที
     // ไม่งั้น setTimeout ของอนิเมชั่นที่เหลือจะถูก throttle ค้างกลางทาง ทำให้กลับมาเจอจอ
@@ -4700,6 +4811,8 @@ function resetToJoinScreen(message) {
     document.getElementById("joinCard").classList.remove("hidden");
     document.getElementById("playersCard").classList.add("hidden");
     document.getElementById("chatCard").classList.add("hidden");
+    document.getElementById("spectatorCard")?.classList.add("hidden");
+    document.getElementById("gameTimelineCard")?.classList.add("hidden");
     document.getElementById("rolesPanelCard").classList.add("hidden");
     document.getElementById("bottomBar").classList.add("hidden");
     document.getElementById("bottomBar").classList.remove("bar-visible");
@@ -4761,7 +4874,7 @@ function leaveRoomViaBack() {
     if (currentRoomId) {
         // ส่งแบบมี ack แต่ไม่รอผลลัพธ์นาน (เผื่อเน็ตช้า/หลุด) — ยังไงก็จะพาไปหน้าแรกอยู่ดี ฝั่งเซิร์ฟเวอร์
         // เองก็มีกลไก disconnect ตามหลังมาเก็บกวาดซ้ำอีกชั้นถ้า leave_room ไปไม่ถึงจริงๆ
-        socket.emit("leave_room", { roomId: currentRoomId, token: clientToken });
+        socket.emit("leave_room", { roomId: currentRoomId, ...(TESTER_MODE ? { token: clientToken } : (window.wwAccount ? window.wwAccount.payload() : {})) });
     }
 
     ww_store.removeItem("ww_token");
@@ -4813,7 +4926,7 @@ socket.on("room_closed", () => {
     // และถ้าโฮสต์แท็บหายไปแล้ว ให้กลับหน้าแอดมินแทน ไม่เข้า index.html ของเกมจริง
     if (BOT_CONTROLLED_TAB) {
         try { socket.disconnect(); } catch (e) {}
-        try { sessionStorage.clear(); } catch (e) {}
+        try { ww_store.clear(); } catch (e) {}
         returnFromTesterPlayer();
         return;
     }
@@ -4822,7 +4935,7 @@ socket.on("room_closed", () => {
 
     if (TESTER_MODE) {
         try { socket.disconnect(); } catch (e) {}
-        try { sessionStorage.clear(); } catch (e) {}
+        try { ww_store.clear(); } catch (e) {}
         returnFromTesterPlayer();
         return;
     }

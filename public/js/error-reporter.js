@@ -2,7 +2,7 @@
     "use strict";
 
     // ========================================================================
-    // WEREWOLF DIAGNOSTICS v16
+    // WEREWOLF DIAGNOSTICS v21
     // - ผู้เล่นเห็น Error แบบเดิม: สั้น กระชับ ไม่ทำให้เกมหยุด
     // - Admin copy จะได้ Full Diagnostic Report: trace/session, breadcrumb,
     //   request, socket event, state และ stack โดยอัตโนมัติ
@@ -10,6 +10,7 @@
     // ========================================================================
     if (window.__WW_ERROR_REPORTER__) return;
     window.__WW_ERROR_REPORTER__ = true;
+    window.__WW_ERROR_REPORTER_VERSION__ = "21";
 
     var PAGE = (document.body && document.body.dataset && document.body.dataset.page) ||
         (location.pathname.match(/\/([^/]+?)(?:\.html)?$/) || [])[1] ||
@@ -135,6 +136,18 @@
         try { keys.forEach(function(k){ out[k] = { local: localStorage.getItem(k) != null, session: sessionStorage.getItem(k) != null }; }); } catch (_) {}
         return out;
     }
+    function getGameSignals() {
+        var out = {};
+        try {
+            out.pageMode = getSafeClientMode();
+            out.roomIdPresent = !!extractRoomId();
+            out.adminPhase2PlayerCount = Array.isArray(window.__WW_ADMIN_PHASE2_PLAYERS) ? Math.min(200, window.__WW_ADMIN_PHASE2_PLAYERS.length) : 0;
+            out.gamePhase = typeof window.__WW_GAME_PHASE__ === "string" ? window.__WW_GAME_PHASE__.slice(0, 40) : "";
+            out.revealDeadRole = typeof window.__WW_REVEAL_DEAD_ROLE__ === "boolean" ? window.__WW_REVEAL_DEAD_ROLE__ : null;
+        } catch (_) {}
+        return out;
+    }
+
     function getState() {
         var state = {
             online: !!navigator.onLine,
@@ -149,31 +162,74 @@
             mode: getSafeClientMode(),
             storagePresence: getStoragePresence(),
             activeTrace: activeTrace ? { id: activeTrace.id, action: activeTrace.action, ageMs: Date.now() - activeTrace.startedAt } : null,
-            pendingOperations: Object.keys(diagnosticOperations).slice(0, 20)
+            pendingOperations: Object.keys(diagnosticOperations).slice(0, 20),
+            gameSignals: getGameSignals()
         };
         try { state.socket = !!(window.WW_DIAG_SOCKET_CONNECTED || false); } catch (_) {}
         return state;
     }
 
+    function diagnosticByteLength(text) {
+        try { return new Blob([String(text || "")]).size; }
+        catch (_) { return String(text || "").length; }
+    }
+
+    function buildDiagnosticBody(payload) {
+        // Keep a generous margin below Express' 64kb parser ceiling. This is
+        // deliberately byte-based (not JS character-based), because UTF-8 Thai
+        // text and stack/context data can occupy more bytes than body.length.
+        var safePayload = Object.assign({}, payload);
+        safePayload.breadcrumbs = Array.isArray(payload.breadcrumbs) ? payload.breadcrumbs.slice(-40) : [];
+        if (safePayload.state && safePayload.state.userAgent) {
+            safePayload.state = Object.assign({}, safePayload.state, { userAgent: String(safePayload.state.userAgent).slice(0, 320) });
+        }
+
+        var body = JSON.stringify(safePayload);
+        if (diagnosticByteLength(body) <= 18000) return body;
+
+        safePayload.breadcrumbs = safePayload.breadcrumbs.slice(-24);
+        if (safePayload.stack) safePayload.stack = String(safePayload.stack).slice(0, 5000);
+        body = JSON.stringify(safePayload);
+        if (diagnosticByteLength(body) <= 18000) return body;
+
+        safePayload.breadcrumbs = safePayload.breadcrumbs.slice(-10);
+        safePayload.context = compactDetail(safePayload.context || {});
+        body = JSON.stringify(safePayload);
+        if (diagnosticByteLength(body) <= 18000) return body;
+
+        // Final deterministic fallback: retain the fields that are most useful
+        // for root-cause correlation and strip bulky optional diagnostic state.
+        safePayload.stack = String(safePayload.stack || "").slice(0, 2500);
+        safePayload.breadcrumbs = safePayload.breadcrumbs.slice(-6);
+        safePayload.context = compactDetail(safePayload.context || {});
+        safePayload.state = {
+            online: !!(payload.state && payload.state.online),
+            visibility: String(payload.state && payload.state.visibility || "").slice(0, 30),
+            readyState: String(payload.state && payload.state.readyState || "").slice(0, 30),
+            page: String(payload.state && payload.state.page || "").slice(0, 48),
+            screen: payload.state && payload.state.screen ? payload.state.screen : undefined,
+            socket: !!(payload.state && payload.state.socket)
+        };
+        body = JSON.stringify(safePayload);
+
+        // If an unusual custom context is still too large, progressively drop
+        // optional fields rather than ever sending a parser-rejected request.
+        if (diagnosticByteLength(body) > 18000) {
+            delete safePayload.state;
+            delete safePayload.context;
+            safePayload.stack = String(safePayload.stack || "").slice(0, 1200);
+            safePayload.breadcrumbs = safePayload.breadcrumbs.slice(-3);
+            body = JSON.stringify(safePayload);
+        }
+        return body;
+    }
+
     function send(payload) {
         if (!allowedToSend()) return;
         var body;
-        try {
-            var safePayload = Object.assign({}, payload);
-            safePayload.breadcrumbs = Array.isArray(payload.breadcrumbs) ? payload.breadcrumbs.slice(-40) : [];
-            if (safePayload.state && safePayload.state.userAgent) safePayload.state = Object.assign({}, safePayload.state, { userAgent: String(safePayload.state.userAgent).slice(0, 320) });
-            body = JSON.stringify(safePayload);
-            if (body.length > 18000) {
-                safePayload.breadcrumbs = safePayload.breadcrumbs.slice(-24);
-                if (safePayload.stack) safePayload.stack = String(safePayload.stack).slice(0, 5000);
-                body = JSON.stringify(safePayload);
-            }
-            if (body.length > 22000) {
-                safePayload.breadcrumbs = safePayload.breadcrumbs.slice(-10);
-                safePayload.context = compactDetail(safePayload.context || {});
-                body = JSON.stringify(safePayload);
-            }
-        } catch (_) { return; }
+        try { body = buildDiagnosticBody(payload); }
+        catch (_) { return; }
+        if (diagnosticByteLength(body) > 18000) return;
 
         try {
             if (navigator.sendBeacon) {
@@ -323,17 +379,39 @@
     window.addEventListener("online", function () { pushBreadcrumb("network", "online", {}, currentTraceId(false)); });
     window.addEventListener("offline", function () { pushBreadcrumb("network", "offline", {}, currentTraceId(false)); });
 
+    function isIgnorableResourceError(target, resourceUrl) {
+        var tag = target && target.tagName ? String(target.tagName).toLowerCase() : "";
+        return tag === "img" && resourceUrl === "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
+    }
+
     window.addEventListener("error", function (event) {
         var target = event && event.target;
-        var isResource = target && target !== window && (target.src || target.href);
-        report(isResource ? "resource_error" : "javascript_error", {
+        var resourceUrl = target && (target.currentSrc || target.src || target.href) || "";
+        if (isIgnorableResourceError(target, resourceUrl)) return;
+        var isResource = target && target !== window && resourceUrl;
+        var resourceTag = target && target.tagName ? String(target.tagName).toLowerCase() : "";
+        var resourceRel = target && target.getAttribute ? String(target.getAttribute("rel") || "") : "";
+        var resourceAs = target && target.getAttribute ? String(target.getAttribute("as") || "") : "";
+        var detail = {
             message: event && event.message || (isResource ? "Resource failed to load" : "Unknown JavaScript error"),
             stack: event && event.error && event.error.stack || "",
-            file: event && event.filename || (target && (target.src || target.href)) || "",
+            file: event && event.filename || resourceUrl || "",
             line: event && event.lineno,
             column: event && event.colno,
             action: activeTrace && activeTrace.action
-        });
+        };
+        if (isResource) {
+            detail.context = {
+                resourceError: true,
+                resourceTag: resourceTag,
+                resourceUrl: sanitizePath(resourceUrl),
+                resourceRel: resourceRel.slice(0, 80),
+                resourceAs: resourceAs.slice(0, 80),
+                currentSrc: sanitizePath(target.currentSrc || resourceUrl),
+                sourceFile: sanitizePath(event && event.filename || "")
+            };
+        }
+        report(isResource ? "resource_error" : "javascript_error", detail);
     }, true);
 
     window.addEventListener("unhandledrejection", function (event) {
@@ -390,6 +468,51 @@
         return data;
     }
 
+    function configResourceTiming(endpoint, startedPerfMs) {
+        try {
+            if (!window.performance || typeof performance.getEntriesByType !== "function") return null;
+            var now = performance.now();
+            var clean = sanitizePath(endpoint || "");
+            try { clean = new URL(clean, location.href).pathname; } catch (_) {}
+            var entries = performance.getEntriesByType("resource") || [];
+            var best = null;
+            for (var i = entries.length - 1; i >= 0; i--) {
+                var e = entries[i];
+                var entryPath = "";
+                try { entryPath = new URL(String(e && e.name || ""), location.href).pathname; } catch (_) { entryPath = sanitizePath(e && e.name || ""); }
+                if (!e || entryPath !== clean) continue;
+                if (startedPerfMs != null && Number(e.startTime || 0) + 50 < Number(startedPerfMs) - 100) continue;
+                if (Number(e.startTime || 0) > now + 50) continue;
+                best = e;
+                break;
+            }
+            if (!best) return null;
+            return {
+                name: sanitizePath(best.name || ""),
+                startTime: Number(best.startTime || 0),
+                duration: Number(best.duration || 0),
+                fetchStart: Number(best.fetchStart || 0),
+                responseStart: Number(best.responseStart || 0),
+                responseEnd: Number(best.responseEnd || 0),
+                transferSize: Number(best.transferSize || 0),
+                encodedBodySize: Number(best.encodedBodySize || 0),
+                decodedBodySize: Number(best.decodedBodySize || 0),
+                nextHopProtocol: String(best.nextHopProtocol || "").slice(0, 40),
+                redirectCount: Number(best.redirectCount || 0) || 0
+            };
+        } catch (_) { return null; }
+    }
+
+    function classifyFetchFailure(err) {
+        var name = String(err && err.name || "").toLowerCase();
+        var message = String(err && err.message || "").toLowerCase();
+        if (/timeout|timed out/.test(message) || name === "timeouterror") return "NETWORK_TIMEOUT";
+        if (/cors|cross[- ]origin|access-control-allow-origin/.test(message)) return "CORS_FAILURE";
+        if (/name[_ ]?not[_ ]?resolved|dns|err_name_not_resolved|getaddrinfo/.test(message)) return "DNS_FAILURE";
+        if (/err_connection|econnreset|econnrefused|connection.*(reset|refused|closed)/.test(message)) return "CONNECTION_FAILURE";
+        return "NETWORK_ERROR";
+    }
+
     try {
         var originalFetch = window.fetch;
         if (typeof originalFetch === "function") {
@@ -404,32 +527,58 @@
                 if (sanitizePath(endpoint).indexOf("/api/diagnostics/") !== -1) return originalFetch.apply(this, rawArgs);
 
                 var traceId = currentTraceId(false);
-                var requestId = makeRequestId(sanitizePath(endpoint).indexOf("/api/config") !== -1 ? "cfg" : "req");
                 var startedAt = Date.now();
+                var perfStartedAt = null;
+                try { perfStartedAt = typeof performance !== "undefined" && performance.now ? performance.now() : null; } catch (_) {}
                 var fetchThis = this;
-                pushBreadcrumb("http", "request.start", { method: method, endpoint: sanitizePath(endpoint), requestId: requestId }, traceId);
+                var requestId = "";
+                var configRetryManaged = false;
                 try {
                     var init = rawArgs[1] || {};
                     var headers = new Headers(init.headers || (rawArgs[0] && rawArgs[0].headers) || undefined);
+                    requestId = String(headers.get("X-WW-Client-Request-Id") || "").slice(0, 120) || makeRequestId(sanitizePath(endpoint).indexOf("/api/config") !== -1 ? "cfg" : "req");
+                    configRetryManaged = sanitizePath(endpoint) === "/api/config" && headers.get("X-WW-Config-Retry-Managed") === "1";
                     headers.set("X-WW-Diagnostic-Trace-Id", traceId);
                     headers.set("X-WW-Client-Session-Id", sessionId);
                     headers.set("X-WW-Client-Request-Id", requestId);
                     headers.set("X-WW-Diagnostic-Action", String((activeTrace && activeTrace.action) || "").slice(0, 120));
                     rawArgs[1] = Object.assign({}, init, { headers: headers });
-                } catch (_) {}
+                } catch (_) {
+                    requestId = requestId || makeRequestId(sanitizePath(endpoint).indexOf("/api/config") !== -1 ? "cfg" : "req");
+                }
+                pushBreadcrumb("http", "request.start", { method: method, endpoint: sanitizePath(endpoint), requestId: requestId, configRetryManaged: configRetryManaged }, traceId);
 
                 return originalFetch.apply(this, rawArgs).then(function (res) {
                     var responseTraceId = "";
                     var responseRequestId = "";
                     var serverClientRequestId = "";
                     var serverInstance = "";
+                    var configAttempt = "";
+                    var configLogicalId = "";
+                    var responseType = "";
+                    var responseUrl = "";
+                    var responseRedirected = false;
+                    var cdnEvidence = {};
                     try {
                         responseTraceId = res.headers.get("X-WW-Diagnostic-Trace-Id") || "";
-                        responseRequestId = res.headers.get("X-WW-Config-Request-Id") || "";
+                        responseRequestId = res.headers.get("X-WW-Config-Request-Id") || res.headers.get("X-WW-Server-Request-Id") || "";
                         serverClientRequestId = res.headers.get("X-WW-Client-Request-Id") || "";
                         serverInstance = res.headers.get("X-WW-Server-Instance") || "";
+                        configAttempt = res.headers.get("X-WW-Config-Attempt") || "";
+                        configLogicalId = res.headers.get("X-WW-Config-Logical-Id") || "";
+                        cdnEvidence = {
+                            xCache: res.headers.get("X-Cache") || "",
+                            via: res.headers.get("Via") || "",
+                            age: res.headers.get("Age") || "",
+                            serverTiming: res.headers.get("Server-Timing") || "",
+                            cfRay: res.headers.get("CF-RAY") || "",
+                            cfCacheStatus: res.headers.get("CF-Cache-Status") || ""
+                        };
+                        responseType = String(res.type || "");
+                        responseUrl = sanitizePath(res.url || endpoint);
+                        responseRedirected = !!res.redirected;
                     } catch (_) {}
-                    pushBreadcrumb("http", "request.response", { method: method, endpoint: sanitizePath(endpoint), status: res.status, durationMs: Date.now() - startedAt, requestId: responseRequestId || requestId, serverInstance: serverInstance }, responseTraceId || traceId);
+                    pushBreadcrumb("http", "request.response", { method: method, endpoint: sanitizePath(endpoint), status: res.status, durationMs: Date.now() - startedAt, requestId: responseRequestId || requestId, serverClientRequestId: serverClientRequestId, serverInstance: serverInstance, configAttempt: configAttempt, configLogicalId: configLogicalId, responseType: responseType, responseUrl: responseUrl, redirected: responseRedirected, cdn: cdnEvidence, resourceTiming: configResourceTiming(endpoint, perfStartedAt) }, responseTraceId || traceId);
                     if (!res.ok) {
                         try {
                             res.clone().text().then(function(bodyText){
@@ -438,7 +587,7 @@
                                 pushBreadcrumb("http", "request.response.body", { status:res.status, endpoint:sanitizePath(endpoint), requestId:responseRequestId||requestId, responseCode:parsed&&parsed.code||"", responseError:parsed&&parsed.error||"", body:parsed?compactDetail(parsed):trimmed }, responseTraceId||traceId);
                             }).catch(function(){});
                         } catch (_) {}
-                        report("http_error", {
+                        if (!configRetryManaged) report("http_error", {
                             message: "HTTP " + res.status,
                             status: res.status,
                             endpoint: endpoint,
@@ -451,7 +600,14 @@
                                 serverRequestId: responseRequestId,
                                 serverClientRequestId: serverClientRequestId,
                                 serverTraceId: responseTraceId,
-                                serverInstance: serverInstance
+                                serverInstance: serverInstance,
+                                configAttempt: configAttempt,
+                                configLogicalId: configLogicalId,
+                                responseType: responseType,
+                                responseUrl: responseUrl,
+                                redirected: responseRedirected,
+                                cdn: cdnEvidence,
+                                resourceTiming: configResourceTiming(endpoint, perfStartedAt)
                             })
                         });
                     }
@@ -476,7 +632,7 @@
                     // changes race the fetch, even when the origin has already completed the request.
                     // Retry once before creating an Admin diagnostic. This prevents false positives while
                     // still reporting a real failure when the retry also fails.
-                    if (isConfigGet && !isAbort && navigator.onLine !== false) {
+                    if (isConfigGet && !configRetryManaged && !isAbort && navigator.onLine !== false) {
                         pushBreadcrumb("http", "request.retry.start", { method: method, endpoint: cleanEndpoint, reason: err && err.message || "network request failed" }, traceId);
                         try {
                             var retryInit = Object.assign({}, rawArgs[1] || {});
@@ -494,7 +650,7 @@
                                     retryTraceId = retryRes.headers.get("X-WW-Diagnostic-Trace-Id") || "";
                                     retryResponseRequestId = retryRes.headers.get("X-WW-Config-Request-Id") || "";
                                 } catch (_) {}
-                                pushBreadcrumb("http", "request.retry.response", { method: method, endpoint: cleanEndpoint, status: retryRes.status, requestId: retryResponseRequestId || retryRequestId }, retryTraceId || traceId);
+                                pushBreadcrumb("http", "request.retry.response", { method: method, endpoint: cleanEndpoint, status: retryRes.status, requestId: retryResponseRequestId || retryRequestId, resourceTiming: configResourceTiming(endpoint, perfStartedAt) }, retryTraceId || traceId);
                                 if (!retryRes.ok) {
                                     report("http_error", {
                                         message: "HTTP " + retryRes.status + " after config retry",
@@ -541,9 +697,11 @@
                         }
                     }
 
+                    var networkCode = isAbort ? "FETCH_ABORTED" : classifyFetchFailure(err);
                     var kind = isAbort ? "fetch_aborted" : "network_error";
-                    pushBreadcrumb("http", "request.failed", { method: method, endpoint: cleanEndpoint, durationMs: Date.now() - startedAt, errorName: err && err.name || "", message: err && err.message || "" }, traceId);
-                    report(kind, {
+                    var terminalContext = requestContext(endpoint, requestId, startedAt, { method: method, errorName: err && err.name || "", causeCode: networkCode, resourceTiming: configResourceTiming(endpoint, perfStartedAt), configRetryManaged: configRetryManaged });
+                    pushBreadcrumb("http", "request.failed", { method: method, endpoint: cleanEndpoint, durationMs: Date.now() - startedAt, errorName: err && err.name || "", message: err && err.message || "", causeCode: networkCode, resourceTiming: terminalContext.resourceTiming || null }, traceId);
+                    if (!configRetryManaged) report(kind, {
                         message: err && err.message || "network request failed",
                         stack: err && err.stack || "",
                         endpoint: endpoint,
@@ -551,7 +709,10 @@
                         requestId: requestId,
                         action: activeTrace && activeTrace.action,
                         roomId: extractRoomId(),
-                        context: requestContext(endpoint, requestId, startedAt, { method: method, errorName: err && err.name || "" })
+                        causeCode: networkCode,
+                        causeConfidence: networkCode === "NETWORK_ERROR" ? "medium" : "high",
+                        failureStage: networkCode === "NETWORK_TIMEOUT" ? "browser.transport" : "browser.transport",
+                        context: terminalContext
                     });
                     throw err;
                 });
@@ -571,21 +732,110 @@
         } catch (_) { return []; }
     }
 
+    function addDiagnosticSocketAuth(authValue) {
+        // Socket.IO supports both object-form and callback-form auth. The callback
+        // form is required by Admin because its tab-scoped credential can be
+        // created/replaced after the Socket object itself has been constructed.
+        // Never flatten a function with Object.assign(), or adminToken/adminTabId
+        // will silently disappear before the CONNECT packet is built.
+        if (typeof authValue === "function") {
+            if (authValue.__wwDiagAuthWrapper === true && authValue.__wwDiagAuthSessionId === sessionId) return authValue;
+            var originalAuth = authValue;
+            var wrappedAuth = function (cb) {
+                return originalAuth(function (payload) {
+                    var base = (payload && typeof payload === "object") ? payload : {};
+                    try {
+                        window.__WW_DIAG_LAST_SOCKET_AUTH__ = {
+                            testerPassPresented: !!base.testerPass,
+                            hasDiagSession: !!base.wwDiagSessionId,
+                            hasRoomIdentity: !!(base.roomId && base.token),
+                            hasAdminIntent: base.admin === true,
+                            hasAdminToken: !!base.adminToken,
+                            hasAdminTabId: !!base.adminTabId
+                        };
+                    } catch (_) {}
+                    cb(Object.assign({}, base, { wwDiagSessionId: sessionId }));
+                });
+            };
+            try {
+                Object.defineProperty(wrappedAuth, "__wwDiagAuthWrapper", { value: true });
+                Object.defineProperty(wrappedAuth, "__wwDiagAuthSessionId", { value: sessionId });
+            } catch (_) {
+                wrappedAuth.__wwDiagAuthWrapper = true;
+                wrappedAuth.__wwDiagAuthSessionId = sessionId;
+            }
+            return wrappedAuth;
+        }
+        var baseObject = (authValue && typeof authValue === "object") ? authValue : {};
+        var result = Object.assign({}, baseObject, { wwDiagSessionId: sessionId });
+        try {
+            window.__WW_DIAG_LAST_SOCKET_AUTH__ = {
+                testerPassPresented: !!result.testerPass,
+                hasDiagSession: !!result.wwDiagSessionId,
+                hasRoomIdentity: !!(result.roomId && result.token),
+                hasAdminIntent: result.admin === true,
+                hasAdminToken: !!result.adminToken,
+                hasAdminTabId: !!result.adminTabId
+            };
+        } catch (_) {}
+        return result;
+    }
+
     function instrumentSocket(socket) {
         if (!socket || socket.__wwDiagInstrumented) return socket;
         socket.__wwDiagInstrumented = true;
-        try { socket.auth = Object.assign({}, socket.auth || {}, { wwDiagSessionId: sessionId }); } catch (_) {}
+        // Keep the actual Socket object's auth contract intact. In particular,
+        // do not Object.assign() a callback into an object.
+        try { socket.auth = addDiagnosticSocketAuth(socket.auth); } catch (_) {}
         try {
-            socket.on("connect", function () { var authPresence={}; try{var a=socket.io&&socket.io.opts&&socket.io.opts.auth||{}; authPresence={testerPassPresented:!!a.testerPass,hasDiagSession:!!a.wwDiagSessionId,hasRoomIdentity:!!(a.roomId&&a.token),hasAdminIntent:a.admin===true};}catch(_){} window.WW_DIAG_SOCKET_CONNECTED = true; pushBreadcrumb("socket", "connect", { id: socket.id || "", authPresence:authPresence }, currentTraceId(false)); });
+            socket.on("connect", function () {
+                var authPresence={};
+                try {
+                    var saved = window.__WW_DIAG_LAST_SOCKET_AUTH__;
+                    if (saved && typeof saved === "object") authPresence = Object.assign({}, saved);
+                    var a=socket.io&&socket.io.opts&&socket.io.opts.auth;
+                    if (a && typeof a === "object") authPresence = Object.assign({}, authPresence, {
+                        testerPassPresented:!!a.testerPass,
+                        hasDiagSession:!!a.wwDiagSessionId,
+                        hasRoomIdentity:!!(a.roomId&&a.token),
+                        hasAdminIntent:a.admin===true,
+                        hasAdminToken:!!a.adminToken,
+                        hasAdminTabId:!!a.adminTabId
+                    });
+                } catch(_){}
+                window.WW_DIAG_SOCKET_CONNECTED = true;
+                pushBreadcrumb("socket", "connect", { id: socket.id || "", authPresence:authPresence }, currentTraceId(false));
+            });
             socket.on("disconnect", function (reason) {
                 window.WW_DIAG_SOCKET_CONNECTED = false;
-                Object.keys(diagnosticOperations).forEach(function(id){ if (diagnosticOperations[id]) diagnosticOperations[id].lastDisconnectReason = String(reason || ""); });
-                pushBreadcrumb("socket", "disconnect", { reason:String(reason || ""), pendingOperations:Object.keys(diagnosticOperations).length }, currentTraceId(false));
+                var disconnectReason = String(reason || "");
+                var cancelled = [];
+                Object.keys(diagnosticOperations).forEach(function(id){
+                    var operation = diagnosticOperations[id];
+                    if (!operation) return;
+                    operation.lastDisconnectReason = disconnectReason;
+                    if (!operation.done && operation.timer) {
+                        operation.done = true;
+                        clearTimeout(operation.timer);
+                        delete diagnosticOperations[id];
+                        cancelled.push({ operationId:operation.id, eventName:operation.eventName, elapsedMs:Date.now()-operation.startedAt });
+                    }
+                });
+                pushBreadcrumb("socket", "disconnect", { reason:disconnectReason, pendingOperations:cancelled.length }, currentTraceId(false));
+                cancelled.forEach(function(item){
+                    pushBreadcrumb("socket", "ack.cancelled", { operationId:item.operationId, eventName:item.eventName, elapsedMs:item.elapsedMs, reason:"socket_disconnected_before_ack" }, currentTraceId(false));
+                });
             });
             socket.on("connect_error", function (err) {
                 var traceId = currentTraceId(false);
                 pushBreadcrumb("socket", "connect_error", { message:err && err.message || String(err || ""), name:err && err.name || "" }, traceId);
-                if (String(err && err.message || "") !== "server_closed") report("socket_connect_error", { message:err && err.message || String(err || "socket connection error"), stack:err && err.stack || "", traceId:traceId, failureStage:"socket.connect", causeCode:"SOCKET_CONNECT_ERROR", causeConfidence:"high" });
+                var connectErrorMessage = String(err && err.message || "");
+                // Elastic Beanstalk deliberately rejects new Socket.IO handshakes while an
+                // instance is draining for deployment. This is an expected lifecycle event,
+                // not a player-visible network failure and should not pollute Diagnostics.
+                if (connectErrorMessage !== "server_closed" && connectErrorMessage !== "server_draining") {
+                    report("socket_connect_error", { message:err && err.message || String(err || "socket connection error"), stack:err && err.stack || "", traceId:traceId, failureStage:"socket.connect", causeCode:"SOCKET_CONNECT_ERROR", causeConfidence:"high" });
+                }
             });
             socket.on("error", function (err) { report("socket_error", { message:err && err.message || String(err || "socket error"), stack:err && err.stack || "", failureStage:"socket.runtime", causeCode:"SOCKET_ERROR", causeConfidence:"high" }); });
             if (typeof socket.onAny === "function") {
@@ -650,24 +900,25 @@
         try {
             var baseIo = window.io;
             if (typeof baseIo !== "function") return false;
-            if (baseIo.__wwInstrumentedV16) return true;
+            if (baseIo.__wwInstrumentedV20) return true;
             var instrumentedIo = function () {
                 var args = Array.prototype.slice.call(arguments);
                 try {
                     var optionsIndex = (args.length >= 2 && typeof args[1] === "object") ? 1 : (args.length >= 1 && typeof args[0] === "object" ? 0 : -1);
                     if (optionsIndex >= 0) {
                         var opts = args[optionsIndex] || {};
-                        var auth = Object.assign({}, opts.auth || {}, { wwDiagSessionId: sessionId });
+                        var originalAuth = opts.auth;
+                        var auth = addDiagnosticSocketAuth(originalAuth);
                         args[optionsIndex] = Object.assign({}, opts, { auth: auth });
                     } else {
-                        args.push({ auth: { wwDiagSessionId: sessionId } });
+                        args.push({ auth: addDiagnosticSocketAuth({}) });
                     }
                 } catch (_) {}
                 var socket = baseIo.apply(this, args);
                 return instrumentSocket(socket);
             };
             Object.keys(baseIo).forEach(function (key) { try { instrumentedIo[key] = baseIo[key]; } catch (_) {} });
-            instrumentedIo.__wwInstrumentedV16 = true;
+            instrumentedIo.__wwInstrumentedV20 = true;
             window.io = instrumentedIo;
             socketIoInstalled = true;
             return true;
@@ -680,8 +931,14 @@
         }, 100);
     }
 
+    window.__WW_DIAG_SESSION_ID__ = sessionId;
+    window.__WW_DIAG_REPORT_CONFIG_FAILURE__ = function (detail) {
+        detail = detail || {};
+        report(String(detail.kind || "network_error"), detail);
+    };
+
     window.WWDiagnostic = {
-        version: "16",
+        version: "20",
         sessionId: sessionId,
         beginTrace: beginTrace,
         breadcrumb: function (label, detail) { return pushBreadcrumb("manual", label, detail || {}, currentTraceId(false)); },
@@ -690,5 +947,5 @@
         getState: getState
     };
     window.WWReportError = report;
-    pushBreadcrumb("lifecycle", "page_loaded", { page: PAGE, reporter: "v16" }, "");
+    pushBreadcrumb("lifecycle", "page_loaded", { page: PAGE, reporter: "v20" }, "");
 })();

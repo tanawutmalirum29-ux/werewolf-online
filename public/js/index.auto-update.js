@@ -10,22 +10,14 @@
     // baseline: การเปิด index ครั้งแรกสุดของเครื่อง (ยังไม่มี baseline) ไม่ถือว่ามีอัปเดต → บันทึก baseline เงียบๆ ไม่ขึ้น overlay
     // version ไม่ผูกกับเวลาบูต/instance (ดู computeServerVersion ใน server.js) → Node restart ที่ไฟล์เหมือนเดิม หรือ Android/iOS ที่ได้ instance
     // คนละตัว จะเห็น version เดียวกัน ไม่เกิด overlay หลอก/วนลูป
-    var WW_KNOWN_VERSION_KEY = "ww_update_known_version";
-    var WW_LEGACY_PENDING_KEY = "ww_update_pending_version"; // ของระบบเก่าที่ host/player เคยเขียนไว้ — ไม่ใช้แล้ว ล้างทิ้งกันค้างในเครื่อง
-
-    var wwKnownVersion = null;
-    try {
-        wwKnownVersion = localStorage.getItem(WW_KNOWN_VERSION_KEY);
-        localStorage.removeItem(WW_LEGACY_PENDING_KEY);
-    } catch (e) {}
-
+    // Version comparison is centralized in shared.update-check.js. This file owns only
+    // Index-specific overlay, asset refresh, and navigation-gate behavior.
     var wwOverlayShown = false;
     var wwApplyVersion = null; // version ที่ overlay กำลังจะพาไปอัปเดตเป็น เมื่อผู้ใช้กดปุ่ม
     var wwApplying = false;
 
     function wwSaveKnownVersion(v) {
-        wwKnownVersion = v;
-        try { localStorage.setItem(WW_KNOWN_VERSION_KEY, v); } catch (e) {}
+        try { return window.WWUpdateDetector?.setKnownVersion?.(v) ?? null; } catch (e) { return null; }
     }
 
     // แสดง overlay เต็มจอ — เรียกครั้งเดียวพอ (ถ้าโชว์อยู่แล้วไม่ต้องทำซ้ำ)
@@ -90,26 +82,17 @@
     var wwCheckVersionPending = null;
 
     function wwCheckVersion() {
-        if (wwOverlayShown) return; // overlay ขึ้นแล้ว รอผู้ใช้กดเอง ไม่ต้องเช็คซ้ำ
+        if (wwOverlayShown) return Promise.resolve();
         if (wwCheckVersionPending) return wwCheckVersionPending;
-        wwCheckVersionPending = window.wwGetConfig({})
-            .then(function (data) {
-                if (!data) return;
+        if (typeof window.WWUpdateDetector?.check !== "function") return Promise.resolve();
+
+        wwCheckVersionPending = window.WWUpdateDetector.check()
+            .then(function (result) {
+                if (!result) return;
+                var data = result.data || null;
                 var badge = document.getElementById("wwVersionBadge");
-                if (badge && data.appVersion) badge.textContent = data.appVersion;
-                if (typeof data.version !== "string" || !data.version) return; // ไม่มีค่า version → ไม่ตัดสินอะไร
-
-                // ครั้งแรกสุดที่เครื่องนี้เปิด index (ยังไม่เคยมี baseline เลย) — ตั้ง baseline เงียบ ๆ
-                // ไม่ถือเป็นการเจออัปเดต (กัน popup โผล่ทันทีตั้งแต่เปิดใช้งานครั้งแรก)
-                if (wwKnownVersion === null) {
-                    wwSaveKnownVersion(data.version);
-                    return;
-                }
-
-                // version ปัจจุบันของ server ไม่ตรงกับรุ่นที่เครื่องนี้เคยใช้งานล่าสุด → มีรุ่นใหม่ → โชว์ overlay ให้ผู้ใช้กดเอง
-                if (data.version !== wwKnownVersion) {
-                    wwShowUpdateOverlay(data.version);
-                }
+                if (badge && data && data.appVersion) badge.textContent = data.appVersion;
+                if (result.state === "update") wwShowUpdateOverlay(result.version);
             })
             .catch(function () { /* เน็ตหลุดชั่วคราว/โหลดไม่ติด ไม่ต้องทำอะไร ลองใหม่รอบหน้า */ })
             .then(function () { wwCheckVersionPending = null; });
@@ -145,15 +128,14 @@
     //   • รุ่นเดิม/เช็คไม่สำเร็จ (เน็ตมีปัญหาชั่วคราว) → เข้าเกมได้เลยตามปกติ ไม่บล็อกผู้เล่นเพราะเน็ตสะดุด
     // index.main.js เรียกผ่าน window.wwGateBeforeNav(goFn) ก่อน location.href ไปหน้า host.html/player.html
     function wwGateBeforeNav(cb) {
-        if (wwOverlayShown) return; // overlay ขึ้นอยู่แล้วจากเช็คก่อนหน้า — บล็อกไปเลย ไม่ต้องเช็คซ้ำ/ไม่พาไปไหน
-        window.wwGetConfig({})
-            .then(function (data) {
-                if (!data || typeof data.version !== "string" || !data.version) { cb(); return; }
-                if (wwKnownVersion === null) { wwSaveKnownVersion(data.version); cb(); return; }
-                if (data.version !== wwKnownVersion) { wwShowUpdateOverlay(data.version); return; }
-                cb();
+        if (wwOverlayShown) return;
+        if (typeof window.WWUpdateDetector?.check !== "function") { cb(); return; }
+        window.WWUpdateDetector.check()
+            .then(function (result) {
+                if (!result || result.state !== "update") { cb(); return; }
+                wwShowUpdateOverlay(result.version);
             })
-            .catch(cb); // เน็ตหลุดชั่วคราว/เช็คไม่สำเร็จ — ปล่อยเข้าเกมตามปกติ ไม่บล็อกผู้เล่นเพราะเรื่องนี้
+            .catch(cb);
     }
     window.wwGateBeforeNav = wwGateBeforeNav;
 })();
