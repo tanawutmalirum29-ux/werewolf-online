@@ -3875,17 +3875,15 @@ body.host-game-mode .seal-actions + .seal-actions .btn-close-room{ grid-column:1
     body:not(.setup-mode) .host-workspace #leftCol{ order:2; }
 }
 
-/* In active game, keep restart/close together; secondary room actions follow. */
+/* In active game, keep the room close/new/settings actions compact; restart lives in the floating dock. */
 @media (max-width:700px){
     body.host-game-mode .seal-actions + .seal-actions{ grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
     body.host-game-mode .seal-actions + .seal-actions .btn-close-room,
-    body.host-game-mode .seal-actions + .seal-actions .btn-restart-room,
     body.host-game-mode .seal-actions + .seal-actions .btn-new-room,
     body.host-game-mode .seal-actions + .seal-actions #roomSettingsBtn{ grid-column:auto !important; }
     body.host-game-mode .seal-actions + .seal-actions .btn-close-room{ order:1; }
-    body.host-game-mode .seal-actions + .seal-actions .btn-restart-room{ order:2; }
-    body.host-game-mode .seal-actions + .seal-actions .btn-new-room{ order:3; }
-    body.host-game-mode .seal-actions + .seal-actions #roomSettingsBtn{ order:4; }
+    body.host-game-mode .seal-actions + .seal-actions .btn-new-room{ order:2; }
+    body.host-game-mode .seal-actions + .seal-actions #roomSettingsBtn{ order:3; }
 }
 
 /* Desktop active-game room actions stay as a compact inline group. */
@@ -3898,7 +3896,6 @@ body.host-game-mode .seal-actions + .seal-actions .btn-close-room{ grid-column:1
         flex-wrap:wrap;
     }
     body.host-game-mode .seal-actions + .seal-actions .btn-close-room,
-    body.host-game-mode .seal-actions + .seal-actions .btn-restart-room,
     body.host-game-mode .seal-actions + .seal-actions .btn-new-room,
     body.host-game-mode .seal-actions + .seal-actions #roomSettingsBtn{
         grid-column:auto !important;
@@ -4006,6 +4003,11 @@ body{
     .layout:not(.role-hidden) #rightCol,
     .layout.role-hidden #rightCol{
         grid-template-columns:minmax(0,1fr) minmax(236px,var(--fluid-host-chat));
+    }
+    /* In an active game, the player board is the primary control surface on compact widths;
+       put chat below it instead of shrinking the board into a narrow side rail. */
+    .layout.role-hidden #rightCol{
+        grid-template-columns:minmax(0,1fr);
     }
 
     body.setup-mode #leftCol{
@@ -4295,13 +4297,13 @@ body.host-player-focus .floating-bar .setup-only{
 body.host-player-focus .floating-bar .btn{
     min-height:42px;
 }
-body.host-player-focus #focusRestartBtn{
+body.host-player-focus #restartRoomBtn{
     order:1;
 }
 body.host-player-focus #startNightBtn,
 body.host-player-focus #resolveBtn,
 body.host-player-focus #voteBtn,
-body.host-player-focus #focusRestartBtn,
+body.host-player-focus #restartRoomBtn,
 body.host-player-focus #reopenGameOverBtn,
 body.host-player-focus #reopenPopupBtn,
 body.host-player-focus #startGameBtn{
@@ -4690,3 +4692,488 @@ body.is-day .ww-toast{
     box-shadow:0 12px 35px rgba(8,74,96,.20);
 }
 body.is-day .ww-toast-info{ border-color:rgba(14,116,144,.30); }
+
+
+/* HOST FLOATING DOCK — daytime readability + single restart action
+   The dock sits outside .app, so its text must have an explicit day palette.
+   Keep the context readable even when the bright beach surface is active. */
+.floating-context{
+    min-height:42px;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    overflow:hidden;
+}
+.floating-context-kicker{
+    line-height:1.25;
+    text-shadow:0 1px 0 rgba(0,0,0,.10);
+}
+.floating-context-copy{
+    line-height:1.4;
+}
+body.is-day .floating-context-kicker{
+    color:#06303c !important;
+    font-weight:800;
+    text-shadow:0 1px 0 rgba(255,255,255,.72);
+}
+body.is-day .floating-context-copy{
+    color:#245463 !important;
+    font-weight:600;
+    text-shadow:0 1px 0 rgba(255,255,255,.65);
+}
+body.is-day .floating-bar{
+    color:#08323f;
+}
+body.is-day .floating-bar .btn-ghost{
+    color:#08323f !important;
+    border-color:rgba(8,74,96,.24);
+    background:rgba(255,255,255,.54);
+    box-shadow:none;
+}
+body.is-day .floating-bar .btn-ghost:hover{
+    color:#06303c !important;
+    border-color:#0c6b85;
+    background:rgba(255,255,255,.84);
+}
+
+/* ============================================================================
+   ACTIVE GAME / SMALL-VIEWPORT GRID PRIORITY PASS
+   ---------------------------------------------------------------------------
+   At iPad Split View / compact tablet widths the old room identity block could
+   consume the entire first viewport before #list. The grid itself was healthy,
+   but all 29 cards were below the fold and the audit reported them as outside.
+   Keep the room code + essential commands visible while collapsing secondary
+   facts and redundant helper text so the player grid gets first-viewport space.
+   ============================================================================ */
+@media (max-width:1080px){
+    body.host-game-mode .seal-wrap{
+        gap:5px;
+        margin-bottom:7px;
+    }
+    body.host-game-mode .host-heading-row{
+        gap:8px;
+        min-height:30px;
+    }
+    body.host-game-mode .host-title{
+        font-size:19px;
+        line-height:1.05;
+    }
+    body.host-game-mode .host-live-pill{
+        min-height:28px;
+        padding:5px 8px;
+        gap:5px;
+        font-size:10px;
+    }
+    body.host-game-mode .host-live-dot{
+        width:7px;
+        height:7px;
+    }
+    body.host-game-mode .host-room-shell{
+        grid-template-columns:minmax(0,1fr);
+        gap:5px;
+    }
+    body.host-game-mode .seal{
+        min-height:56px;
+        padding:7px 12px;
+        border-radius:16px;
+        gap:3px;
+        align-items:flex-start;
+        justify-content:center;
+    }
+    body.host-game-mode .seal-code{
+        font-size:27px;
+        letter-spacing:.12em;
+    }
+    body.host-game-mode .seal-copy-hint,
+    body.host-game-mode .seal-hint{
+        display:none !important;
+    }
+    body.host-game-mode .host-room-facts{
+        display:grid !important;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:4px;
+    }
+    body.host-game-mode .host-fact{
+        min-height:46px;
+        padding:5px 6px;
+        border-radius:10px;
+    }
+    body.host-game-mode .host-fact-icon{
+        width:22px;
+        height:22px;
+        font-size:12px;
+    }
+    body.host-game-mode .host-fact b{ font-size:12px; }
+    body.host-game-mode .host-fact small{ font-size:8px; }
+    body.host-game-mode .seal-actions{
+        gap:5px;
+        margin-top:0;
+    }
+    body.host-game-mode .seal-actions .btn{
+        min-height:31px;
+        padding:6px 8px;
+        border-radius:9px;
+        font-size:11px;
+        line-height:1.1;
+    }
+    body.host-game-mode .seal-actions{
+        display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr));
+    }
+    body.host-game-mode .seal-actions + .seal-actions{
+        display:grid;
+        grid-template-columns:repeat(3,minmax(0,1fr));
+        align-items:stretch;
+        justify-content:stretch;
+    }
+    body.host-game-mode .seal-actions + .seal-actions .btn-close-room,
+    body.host-game-mode .seal-actions + .seal-actions .btn-new-room,
+    body.host-game-mode .seal-actions + .seal-actions #roomSettingsBtn{
+        grid-column:auto !important;
+        order:initial;
+        width:100%;
+        min-width:0;
+    }
+
+    body.host-game-mode .host-player-card{
+        min-height:0;
+    }
+    body.host-game-mode .host-player-card-head{
+        align-items:center;
+        gap:7px;
+        margin-bottom:2px;
+    }
+    body.host-game-mode .host-card-kicker,
+    body.host-game-mode .host-player-card-head .sub{
+        display:none !important;
+    }
+    body.host-game-mode .host-player-title-wrap h2{
+        margin:0;
+        font-size:20px;
+        line-height:1.1;
+    }
+    body.host-game-mode .player-focus-btn{
+        min-height:34px;
+        padding:6px 9px;
+        font-size:11px;
+        border-radius:10px;
+    }
+    body.host-game-mode .player-toolbar{
+        display:flex;
+        flex-wrap:nowrap;
+        align-items:center;
+        gap:4px;
+        margin:4px 0 6px;
+        min-width:0;
+    }
+    body.host-game-mode .grid-cols-control{
+        flex:1 1 auto;
+        min-width:0;
+        width:auto;
+        gap:3px;
+    }
+    body.host-game-mode .grid-cols-label{
+        flex:0 0 0;
+        width:0;
+        min-width:0;
+        overflow:hidden;
+        font-size:0;
+    }
+    body.host-game-mode .grid-cols-presets{
+        gap:2px;
+        overflow:visible;
+        max-width:none;
+    }
+    body.host-game-mode .gridColsBtn{
+        min-width:24px;
+        padding:5px 4px;
+        font-size:10px;
+        line-height:1;
+        border-radius:7px;
+    }
+    body.host-game-mode .grid-cols-input{
+        width:50px;
+        min-width:50px;
+        padding:6px 5px;
+        font-size:10px;
+    }
+    body.host-game-mode .player-filter-chips,
+    body.host-game-mode .view-toggle-btns{
+        flex:0 0 auto;
+        gap:3px;
+        min-width:0;
+    }
+    body.host-game-mode .filterChip,
+    body.host-game-mode .viewModeBtn{
+        min-height:30px;
+        padding:6px 7px;
+        font-size:10px;
+        line-height:1;
+        border-radius:8px;
+        white-space:nowrap;
+    }
+    body.host-game-mode .view-toggle-btns{ grid-column:auto; }
+    body.host-game-mode #list,
+    body.host-game-mode #listSimple{
+        margin-top:0;
+    }
+}
+
+@media (max-width:480px){
+    body.host-game-mode .app{
+        padding-top:7px;
+    }
+    body.host-game-mode .host-title{ font-size:17px; }
+    body.host-game-mode .host-live-pill{ font-size:9px; padding:4px 7px; }
+    body.host-game-mode .seal{ min-height:52px; padding:6px 10px; }
+    body.host-game-mode .seal-code{ font-size:24px; }
+    body.host-game-mode .host-room-facts{ display:none !important; }
+    body.host-game-mode .seal-actions .btn{ font-size:10px; min-height:29px; padding:5px 6px; }
+    body.host-game-mode .host-player-card-head .host-player-title-wrap h2{ font-size:18px; }
+    body.host-game-mode .player-focus-btn{ min-height:32px; padding:5px 7px; font-size:10px; }
+    body.host-game-mode .player-toolbar{
+        flex-wrap:wrap;
+        gap:4px;
+    }
+    body.host-game-mode .grid-cols-control{
+        flex:1 1 100%;
+        width:100%;
+        max-width:100%;
+    }
+    body.host-game-mode .grid-cols-presets{ flex:1 1 auto; }
+    body.host-game-mode .player-filter-chips,
+    body.host-game-mode .view-toggle-btns{
+        flex:1 1 0;
+    }
+    body.host-game-mode .filterChip,
+    body.host-game-mode .viewModeBtn{ padding:5px 5px; font-size:9px; }
+}
+
+/* ============================================================================
+   COMPACT LANDSCAPE / FIRST-VIEWPORT PRIORITY v2
+   ---------------------------------------------------------------------------
+   Incident: on iPad/compact landscape (for example 696×601) the room header
+   could still stack vertically in tester mode. #list then started around the
+   bottom edge of the first viewport even though the grid itself was healthy.
+   Keep the Host control surface usable in the first viewport by turning the
+   room header into a compact two-column strip, hiding repeated helper copy,
+   and putting tester/room commands on one compact row.
+   ---------------------------------------------------------------------------
+   This is intentionally scoped to active-game landscape. Portrait keeps the
+   more spacious stacked layout for touch accessibility.
+   ============================================================================ */
+@media (max-width:1080px) and (orientation:landscape) and (max-height:760px){
+    body.host-game-mode .app{
+        padding-top:6px;
+        padding-bottom:calc(88px + env(safe-area-inset-bottom,0px));
+    }
+
+    body.host-game-mode .seal-wrap{
+        margin-bottom:6px;
+        gap:4px;
+    }
+
+    body.host-game-mode .host-heading-row{
+        min-height:28px;
+        gap:6px;
+        align-items:center;
+    }
+    body.host-game-mode .eyebrow{
+        display:none !important;
+    }
+    body.host-game-mode .host-title{
+        font-size:18px;
+        line-height:1;
+        white-space:nowrap;
+    }
+    body.host-game-mode .host-live-pill{
+        min-height:24px;
+        padding:4px 7px;
+        gap:4px;
+        font-size:9px;
+    }
+    body.host-game-mode .host-live-dot{
+        width:6px;
+        height:6px;
+        box-shadow:0 0 0 3px rgba(52,211,153,.12);
+    }
+
+    /* Keep code + facts side-by-side in landscape: stacking these was the
+       biggest vertical-space consumer in the reported 696×601 incident. */
+    body.host-game-mode .host-room-shell{
+        grid-template-columns:minmax(120px,155px) minmax(0,1fr) !important;
+        gap:5px;
+        min-height:0;
+    }
+    body.host-game-mode .seal{
+        min-height:50px;
+        height:50px;
+        padding:5px 8px;
+        border-radius:13px;
+        gap:0;
+        align-items:center;
+    }
+    body.host-game-mode .seal::before{
+        inset:4px;
+        border-radius:10px;
+    }
+    body.host-game-mode .seal-label{
+        font-size:7px;
+        line-height:1;
+    }
+    body.host-game-mode .seal-code{
+        font-size:22px;
+        line-height:.95;
+    }
+    body.host-game-mode .seal-copy-hint,
+    body.host-game-mode .seal-hint{
+        display:none !important;
+    }
+
+    body.host-game-mode .host-room-facts{
+        display:grid !important;
+        grid-template-columns:repeat(4,minmax(0,1fr));
+        gap:3px;
+        min-height:50px;
+    }
+    body.host-game-mode .host-fact{
+        min-height:50px;
+        padding:4px 5px;
+        gap:4px;
+        border-radius:9px;
+    }
+    body.host-game-mode .host-fact-icon{
+        width:18px;
+        height:18px;
+        border-radius:6px;
+        font-size:10px;
+    }
+    body.host-game-mode .host-fact b{
+        font-size:10px;
+        line-height:1;
+    }
+    body.host-game-mode .host-fact small{
+        margin-top:1px;
+        font-size:7px;
+        line-height:1;
+    }
+
+    /* Flatten both command groups into the same five-column grid. Keeping the
+       grid on .seal-wrap is important: display:contents on the two action
+       wrappers then lets all five buttons share one real row instead of
+       creating a second/third vertical action stack. */
+    body.host-game-mode .seal-wrap{
+        display:grid !important;
+        grid-template-columns:repeat(5,minmax(0,1fr));
+        grid-template-areas:
+            "heading heading heading heading heading"
+            "room room room room room"
+            "actions actions actions actions actions";
+        gap:4px;
+        align-items:stretch;
+    }
+    body.host-game-mode .host-heading-row{ grid-area:heading; }
+    body.host-game-mode .host-room-shell{ grid-area:room; }
+    body.host-game-mode .seal-actions{
+        display:contents !important;
+    }
+    body.host-game-mode .seal-actions .btn{
+        min-height:27px;
+        min-width:0;
+        width:100%;
+        margin:0 !important;
+        padding:4px 4px;
+        border-radius:7px;
+        font-size:9px;
+        line-height:1;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+
+    /* The player panel starts immediately after the compact header and its
+       own controls are kept to one low-height row. */
+    body.host-game-mode .host-player-card{
+        padding:8px;
+    }
+    body.host-game-mode .host-player-card-head{
+        gap:5px;
+        margin-bottom:3px;
+    }
+    body.host-game-mode .host-player-title-wrap h2{
+        font-size:17px;
+        line-height:1;
+    }
+    body.host-game-mode .player-focus-btn{
+        min-height:28px;
+        padding:4px 7px;
+        border-radius:8px;
+        font-size:9px;
+        line-height:1;
+    }
+    body.host-game-mode .player-toolbar{
+        flex-wrap:nowrap;
+        gap:3px;
+        margin:3px 0 4px;
+        min-height:29px;
+    }
+    body.host-game-mode .gridColsBtn{
+        min-width:22px;
+        min-height:26px;
+        padding:4px 3px;
+        font-size:9px;
+    }
+    body.host-game-mode .grid-cols-input{
+        width:42px;
+        min-width:42px;
+        padding:4px 4px;
+        font-size:9px;
+    }
+    body.host-game-mode .filterChip,
+    body.host-game-mode .viewModeBtn{
+        min-height:26px;
+        padding:4px 5px;
+        font-size:9px;
+    }
+
+    body.host-game-mode #list,
+    body.host-game-mode #listSimple{
+        margin-top:0;
+    }
+}
+
+
+
+/* Runtime action / state UX + host presets */
+.runtime-action-status{
+    position:fixed;
+    top:clamp(10px,1.2vh,16px);
+    left:50%;
+    transform:translateX(-50%);
+    z-index:1200;
+    max-width:min(92vw,680px);
+    padding:9px 14px;
+    border-radius:12px;
+    border:1px solid rgba(255,255,255,.12);
+    background:rgba(16,20,28,.94);
+    color:#fff;
+    box-shadow:0 10px 28px rgba(0,0,0,.22);
+    font-size:13px;
+    font-weight:600;
+    backdrop-filter:blur(10px);
+}
+.runtime-action-status.pending{border-color:rgba(255,196,96,.45)}
+.runtime-action-status.success{border-color:rgba(91,214,142,.42)}
+.runtime-action-status.error{border-color:rgba(255,112,112,.52)}
+.runtime-card{overflow:hidden}
+.runtime-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.runtime-card-head h3{margin:2px 0 0;font-size:16px}
+.runtime-kicker{display:block;font-size:10px;letter-spacing:.12em;font-weight:800;opacity:.58}
+.runtime-state-pill,.preset-current{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.08);font-size:11px;font-weight:800;white-space:nowrap}
+.runtime-timeline{display:grid;gap:7px;max-height:260px;overflow:auto;padding-right:2px}
+.runtime-timeline-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:start;gap:8px;padding:8px 9px;border-radius:10px;background:rgba(255,255,255,.035)}
+.runtime-timeline-icon{font-size:16px;text-align:center}.runtime-timeline-main{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}.runtime-state-version{font:800 9px/1 JetBrains Mono,monospace;opacity:.55}.runtime-timeline-detail{font-size:11px;opacity:.68;margin-top:2px}.runtime-timeline-item time{font:500 9px/1.2 JetBrains Mono,monospace;opacity:.48;white-space:nowrap}.runtime-empty-note{padding:12px;text-align:center;font-size:12px;opacity:.55}
+.host-preset-panel{margin:0 0 14px;padding:12px;border-radius:14px;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025)}
+.host-preset-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-preset-head h3{margin:3px 0 2px;font-size:15px}.host-preset-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}.preset-btn{min-height:36px;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.035);color:inherit;font:700 11px/1.2 inherit;cursor:pointer}.preset-btn:hover{background:rgba(255,255,255,.07)}.preset-btn.active{border-color:rgba(255,205,110,.65);background:rgba(255,205,110,.1);box-shadow:inset 0 0 0 1px rgba(255,205,110,.18)}.preset-recommendation{margin-top:9px;padding:8px 9px;border-radius:9px;background:rgba(255,255,255,.035);font-size:11px;line-height:1.45;opacity:.82}.preset-note{opacity:.6}
+@media (max-width:700px){.runtime-action-status{top:8px;font-size:12px;padding:8px 11px}.host-preset-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-timeline-item{grid-template-columns:24px minmax(0,1fr)}.runtime-timeline-item time{grid-column:2}.host-preset-head{align-items:center}}
+@media (min-width:1300px){.runtime-timeline{max-height:320px}.host-preset-panel{padding:14px}.preset-btn{min-height:40px}}

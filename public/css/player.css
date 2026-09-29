@@ -34,15 +34,15 @@
        - chat min-height กันกรณีกริดผู้เล่นมีหลายแถวไม่ให้แชทถูกบีบเหลือไม่กี่พิกเซล
        - ผู้เล่นเป็นส่วนที่ยอม scroll เมื่อพื้นที่แนวตั้งไม่พอ เพราะจำนวนคนเป็นตัวแปรที่ไม่รู้ล่วงหน้า
     */
-    --game-chat-width:clamp(240px, 28vw, 380px);
+    --game-chat-width:clamp(260px, 22vw, 320px);
     --game-chat-min-height:clamp(148px, 27svh, 230px);
     --game-bottom-clearance:calc(56px + env(safe-area-inset-bottom, 0px));
-    /* ความกว้างแผง "บทในเกมรอบนี้" ฝั่งซ้ายสุด — โผล่คู่กับแชทตั้งแต่จอ ≥900px (ดู @media (min-width:900px)
+    /* ความกว้างแผง "บทในเกมรอบนี้" ฝั่งซ้ายสุด — โผล่คู่กับแชทตั้งแต่จอ ≥1080px (ดู @media (min-width:1080px)
        ท้ายไฟล์) ใช้ clamp แบบเดียวกับ --game-chat-width เพื่อไม่มีรอยต่อตอนลาก resize
-       ขยายจากเดิม clamp(160px, 14vw, 260px) (iPad แนวนอน 1180px ได้แค่ ~165px ชื่อบท/ป้าย ×N/ลูกศรดูคำอธิบาย
-       อัดกันแน่น คำอธิบายที่กางออกก็แคบจนอ่านยาก) เป็น clamp(220px, 22vw, 330px): 1180px ได้ ~260px
-       ส่วนที่เพิ่มมาหักจากพื้นที่กริดผู้เล่นตรงกลางเอง (.app.game-visible คำนวณความกว้างจากตัวแปรนี้) */
-    --game-roles-width:clamp(220px, 22vw, 330px);
+       ลดจากเดิม clamp(160px, 14vw, 260px) ซึ่งกินพื้นที่กริดมากเกินไปใน Player แนวนอน เป็น clamp(200px, 17vw, 250px):
+       1180px ได้ค่าขั้นต่ำ 200px และจอใหญ่สุดไม่เกิน 250px เพื่อคืนพื้นที่กริดผู้เล่นตรงกลาง
+       โดยยังเหลือพื้นที่พอสำหรับชื่อบท/ป้าย ×N/ลูกศรดูคำอธิบาย (.app.game-visible คำนวณจากตัวแปรนี้) */
+    --game-roles-width:clamp(200px, 17vw, 250px);
 
     /* ===== KEYBOARD MODE (VisualViewport) =====
        ค่าเริ่มต้นเฉยๆ กันไว้เผื่อ #chatCard.keyboard-mode ถูก apply ก่อน JS เซ็ตค่าจริง — ตามปกติ
@@ -585,6 +585,10 @@ body.is-day .day-night-badge{
     cursor:pointer;
     min-width:0;
     min-height:0;
+    width:var(--player-card-fit, 88px);
+    height:var(--player-card-fit, 88px);
+    max-width:none;
+    max-height:none;
     aspect-ratio:1/1;
     display:flex;
     flex-direction:column;
@@ -1249,7 +1253,7 @@ body.is-resizing .player{
 
    ตำแหน่ง/ขนาดจริง (top/left/width/height) ถูกเซ็ตเป็น inline style จาก player.main.js ทุกครั้งที่อัปเดต
    (อ่านจาก visualViewport.offsetTop/offsetLeft/width/height โดยตรง) ไม่ใช่ผ่านตัวแปร --vv-* ด้านบน
-   เพราะ inline style ชนะทุก breakpoint ของ #chatCard (660px/900px) แน่นอนโดยไม่ต้องพึ่ง !important
+   เพราะ inline style ชนะทุก breakpoint ของ #chatCard (660px/1080px) แน่นอนโดยไม่ต้องพึ่ง !important
    หรือไล่เพิ่ม specificity แข่งกับ media query เดิม — ค่า --vv-* ยังถูกเซ็ตไว้คู่กันเผื่อส่วนอื่นต้องใช้ */
 /* สาเหตุที่เดิม "ไม่ขึ้นเต็ม visual viewport" (root cause จริงจากโค้ด):
    (1) กฎ @media(min-width:660px) ".app.game-visible #chatCard" (specificity 1,2,0) ชนะ "#chatCard.keyboard-mode"
@@ -2576,9 +2580,9 @@ body{
 /*
    Wide layout: ตั้งแต่พื้นที่ที่มีที่พอสำหรับ "ผู้เล่น + แชท" เป็นต้นไป ให้แชทปักขวาเสมอ
    และใช้ความกว้างแบบ clamp แทน 300px ตายตัว. ผลคือการลาก Split View/Stage Manager
-   จะค่อย ๆ เพิ่ม/ลดพื้นที่ทั้งสองฝั่งโดยไม่สลับดีไซน์ที่ 660/900/1279px.
+   จะค่อย ๆ เพิ่ม/ลดพื้นที่ทั้งสองฝั่งโดยไม่สลับดีไซน์ที่ 660/1080px.
 
-   --game-chat-width มีขั้นต่ำ 240px เพื่อให้แท็บแชทและช่องพิมพ์ยังใช้งานได้จริง และมีเพดาน 380px
+   --game-chat-width มีขั้นต่ำ 260px เพื่อให้แท็บแชทและช่องพิมพ์ยังใช้งานได้จริง และมีเพดาน 320px
    เพื่อไม่ให้จอ desktop กว้างมากไปกินพื้นที่กริดเกินจำเป็น. กริดผู้เล่นจึงได้พื้นที่ที่เหลือทั้งหมด.
    ความสูงแชทใช้ top/bottom แบบ fixed ต่อ viewport เพราะจุดประสงค์ของโหมดนี้คือแชทไม่ไหลตามความสูง
    ของกริด; ถ้ากริดมีหลายแถว ให้ scroll ที่ #players แทน.
@@ -2645,11 +2649,11 @@ body{
    ย้ายไปอยู่ใต้แชทฝั่งขวาแทนที่จะลอยกึ่งกลางใต้กริด — ใช้ความกว้างเดียวกับแชทพอดี
    ใช้ --game-bottom-clearance เดิมของ #chatCard เป็นที่เว้นให้บาร์นี้อยู่แล้ว จึงไม่ต้องปรับ #chatCard เพิ่ม
 
-   ต่ำกว่า breakpoint นี้ (660–899px): #rolesPanelCard ถูกซ่อนไปเลย (ดูด้านล่างไฟล์นี้) แทนที่จะปล่อยให้
+   ต่ำกว่า breakpoint นี้ (660–1079px): #rolesPanelCard ถูกซ่อนไปเลย (ดูด้านล่างไฟล์นี้) แทนที่จะปล่อยให้
    เป็น .card ปกติลอยเต็มความกว้างเหนือกริดผู้เล่น (ผู้ใช้รายงานว่าดันพื้นที่ผู้เล่นลงจนมองไม่เห็น) —
-   ช่วงความกว้างนั้นดูบทในเกมผ่านป๊อปอัปเดิม (ปุ่ม 🎭) แทน จนกว่าจอจะกว้างพอมีคอลัมน์ที่ 3 จริงๆ
+   ช่วงความกว้างนั้นดูบทในเกมผ่านป๊อปอัปเดิม (ปุ่ม 🎭) แทน จนกว่าพื้นที่จริงจะกว้างพอสำหรับคอลัมน์ที่ 3 โดยไม่บีบกริดผู้เล่น
 */
-@media (min-width:900px){
+@media (min-width:1080px){
     .app.game-visible{
         margin-left:var(--game-roles-width);
         width:calc(100% - var(--game-roles-width) - var(--game-chat-width));
@@ -2672,9 +2676,9 @@ body{
     /* (บาร์สกิลใต้แชทฝั่งขวา: ย้ายไปกำหนดที่บล็อก min-width:660px ด้านบนแล้ว ใช้กับทุกจอ ≥ 660px) */
 }
 
-/* ต่ำกว่า 900px: ยังไม่มีที่พอสำหรับคอลัมน์ที่ 3 — ซ่อน #rolesPanelCard ไปเลยแทนที่จะปล่อยให้มันเป็น
+/* ต่ำกว่า 1080px: ยังไม่มีที่พอสำหรับคอลัมน์ที่ 3 — ซ่อน #rolesPanelCard ไปเลยแทนที่จะปล่อยให้มันเป็น
    .card ปกติในโฟลว์ปกติ (ซึ่งจะลอยเต็มความกว้างเหนือกริดผู้เล่นและดันผู้เล่นลงจนมองไม่เห็น) */
-@media (max-width:899px){
+@media (max-width:1079px){
     #rolesPanelCard{
         display:none !important;
     }
@@ -4709,12 +4713,13 @@ body.lobby-beach .playerRoomPickerBox{
    เฉพาะการเปลี่ยนโครงสร้างที่จำเป็นจริง ๆ; width/gap/clearance เป็นค่าต่อเนื่อง.
    ============================================================================ */
 :root{
-    --fluid-game-chat-width:var(--game-chat-width,clamp(232px,28vw,380px));
-    --fluid-game-roles-width:var(--game-roles-width,clamp(220px,22vw,330px));
+    --fluid-game-chat-width:var(--game-chat-width,clamp(260px,22vw,320px));
+    --fluid-game-roles-width:var(--game-roles-width,clamp(200px,17vw,250px));
     --fluid-game-gap:10px;
     --fluid-game-edge:10px;
     --fluid-game-bottom-clearance:var(--game-bottom-clearance,64px);
     --player-grid-min:50px;
+    --player-grid-max:240px;
 }
 
 html,
@@ -4751,7 +4756,7 @@ body{
     }
 }
 
-@media (min-width:900px){
+@media (min-width:1080px){
     .app.game-visible{
         margin-left:var(--fluid-game-roles-width);
         width:calc(100% - var(--fluid-game-roles-width) - var(--fluid-game-chat-width));
@@ -4763,7 +4768,7 @@ body{
 
 /* Container-query layer: Split View/Stage Manager ที่ app ถูกวางในพื้นที่แคบ
    จะใช้ "พื้นที่ของเกม" เป็นตัวตัดสิน ไม่ใช่ความละเอียดเครื่อง/จอทั้งหมด */
-@container player-viewport (max-width:899px){
+@container player-viewport (max-width:1079px){
     .app.game-visible #rolesPanelCard{
         display:none !important;
     }
@@ -4812,3 +4817,361 @@ body.is-resizing .player{
 @media (prefers-reduced-motion:reduce){
     body.is-resizing .player{ animation:none !important; }
 }
+
+
+/* ============================================================================
+   PLAYER WIDE WORKSPACE — desktop / large-screen composition
+   ----------------------------------------------------------------------------
+   เป้าหมาย: ให้จอใหญ่เป็น "พื้นที่เกม" จริง ไม่ใช่การ์ดกลางแคบ ๆ ลอยอยู่บนผืนว่าง.
+   - 660–1279px: ผู้เล่น + แชท (ไม่เปิดแผงบท เพื่อไม่บีบกริดบน iPad/หน้าต่างแคบ)
+   - 1280px+: 3 โซนจริง = บท | ผู้เล่น | แชท
+   - 1800px+: แผงข้างขยายต่อเนื่องตามพื้นที่ แต่ยังมีเพดาน
+   - กริดผู้เล่นจัดกึ่งกลางพื้นที่และเพิ่มขนาดสูงสุดเป็น 240px เมื่อมีพื้นที่จริง
+   - แชทอยู่เต็มคอลัมน์ขวา และแถบความสามารถอยู่เป็น dock ใต้แชท ไม่ทับกริดกลาง
+   ============================================================================ */
+@media (min-width:660px) and (max-width:1279px){
+    .app.game-visible{
+        margin-left:0 !important;
+        margin-right:var(--fluid-game-chat-width);
+        width:calc(100% - var(--fluid-game-chat-width));
+        max-width:none;
+    }
+
+    .app.game-visible #rolesPanelCard{
+        display:none !important;
+    }
+}
+
+
+
+@media (min-width:660px) and (max-width:1279px){
+    .app.game-visible ~ #bottomBar{
+        left:auto;
+        right:0;
+        width:var(--fluid-game-chat-width);
+        max-width:none;
+        height:64px;
+        min-height:64px;
+        padding:6px 8px;
+        gap:8px;
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        overflow-y:hidden;
+        scrollbar-width:none;
+        transform:translateY(8px);
+    }
+
+    .app.game-visible ~ #bottomBar::-webkit-scrollbar{ display:none; }
+    .app.game-visible ~ #bottomBar > *{ flex:0 0 auto; }
+    .app.game-visible ~ #bottomBar #barRoleText{ flex:0 0 clamp(110px,14vw,155px); }
+
+    /* Match the compact 64px command dock rather than the older fluid 52–82px clearance. */
+    .app.game-visible #chatCard{
+        bottom:64px;
+    }
+}
+
+@media (max-width:659px){
+    :root{ --player-grid-max:160px; }
+
+    .app.game-visible{
+        padding-bottom:calc(64px + env(safe-area-inset-bottom,0px));
+    }
+
+    .app.game-visible ~ #bottomBar{
+        left:0;
+        right:0;
+        width:100%;
+        max-width:none;
+        height:64px;
+        min-height:64px;
+        padding:6px 8px;
+        gap:8px;
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        overflow-y:hidden;
+        scrollbar-width:none;
+        transform:translateY(8px);
+    }
+
+    .app.game-visible ~ #bottomBar::-webkit-scrollbar{ display:none; }
+    .app.game-visible ~ #bottomBar > *{ flex:0 0 auto; }
+    .app.game-visible ~ #bottomBar #barRoleText{ flex:0 0 132px; }
+}
+
+@media (min-width:660px) and (max-width:1279px) and (orientation:portrait){
+    :root{ --player-grid-max:220px; }
+
+    .app.game-visible{
+        display:flex;
+        flex-direction:column;
+        margin:0 !important;
+        width:100% !important;
+        max-width:none !important;
+        height:100svh;
+        min-height:0;
+        padding:8px max(8px, env(safe-area-inset-left,0px)) calc(var(--player-portrait-dock-height,64px) + env(safe-area-inset-bottom,0px));
+        gap:clamp(6px,1vw,10px);
+        overflow:hidden;
+    }
+
+    .app.game-visible #rolesPanelCard{
+        display:none !important;
+    }
+
+    .app.game-visible #playersCard{
+        width:100% !important;
+        max-width:none !important;
+        min-height:0;
+        flex:1.65 1 0;
+        margin:0 !important;
+    }
+
+    .app.game-visible #chatCard{
+        position:relative;
+        top:auto;
+        left:auto;
+        right:auto;
+        bottom:auto;
+        width:100% !important;
+        max-width:none !important;
+        min-height:220px;
+        flex:0 1 clamp(220px,29svh,340px);
+        margin:0 !important;
+        border-radius:var(--r-lg);
+    }
+
+    .app.game-visible ~ #bottomBar{
+        left:0;
+        right:0;
+        width:100%;
+        max-width:none;
+        height:var(--player-portrait-dock-height,64px);
+        min-height:var(--player-portrait-dock-height,64px);
+        padding:6px 8px;
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        overflow-y:hidden;
+        scrollbar-width:none;
+        transform:translateY(8px);
+    }
+
+    .app.game-visible ~ #bottomBar::-webkit-scrollbar{ display:none; }
+
+    .app.game-visible ~ #bottomBar > *{ flex:0 0 auto; }
+    .app.game-visible ~ #bottomBar #barRoleText{ flex:0 0 clamp(120px,28vw,180px); }
+    .app.game-visible ~ #dayNightBadge{ right:16px; }
+}
+
+@media (min-width:1280px){
+    :root{
+        /* Card ceiling grows only on genuinely large displays; actual stage height/width
+           still determines the final card size, so 1280/1440 layouts do not balloon. */
+        --player-grid-max:clamp(240px,12vw,340px);
+        --player-wide-roles-width:clamp(210px,16vw,420px);
+        --player-wide-chat-width:clamp(280px,20vw,520px);
+        --player-wide-gap:clamp(8px,.75vw,16px);
+        --player-wide-edge:clamp(8px,.65vw,16px);
+        --player-wide-dock-height:64px;
+    }
+
+    .app.game-visible{
+        display:grid;
+        grid-template-columns:var(--player-wide-roles-width) minmax(0,1fr) var(--player-wide-chat-width);
+        grid-template-rows:minmax(0,1fr);
+        column-gap:var(--player-wide-gap);
+        row-gap:0;
+        width:100% !important;
+        max-width:none !important;
+        height:100svh;
+        min-height:0;
+        margin:0 !important;
+        padding:var(--player-wide-edge) 0 0;
+        overflow:hidden;
+        align-items:stretch;
+    }
+
+    /* selectInfo เป็น HUD ลอย ไม่ควรสร้าง implicit grid row */
+    .app.game-visible > #selectInfo{
+        position:absolute;
+        left:calc(var(--player-wide-roles-width) + var(--player-wide-gap));
+        top:var(--player-wide-edge);
+        width:min(46%, 700px);
+        z-index:35;
+        margin:8px 0 0;
+    }
+
+    .app.game-visible #rolesPanelCard,
+    .app.game-visible #playersCard,
+    .app.game-visible #chatCard{
+        grid-row:1;
+        min-width:0;
+        min-height:0;
+        width:auto !important;
+        max-width:none !important;
+        height:auto !important;
+        margin:0 !important;
+        align-self:stretch;
+    }
+
+    .app.game-visible #rolesPanelCard{
+        grid-column:1;
+        position:relative;
+        display:flex;
+        flex-direction:column;
+        overflow:hidden auto;
+        padding:clamp(12px,1.1vw,18px);
+        border-radius:var(--r-lg);
+        z-index:50;
+    }
+
+    .app.game-visible #rolesPanelCard h3{
+        flex:0 0 auto;
+        margin:0 0 12px;
+        padding:0 0 10px;
+        font-size:clamp(14px,1.15vw,18px);
+        line-height:1.25;
+        border-bottom:1px solid rgba(255,255,255,.10);
+    }
+
+    .app.game-visible #rolesInGamePanel{
+        flex:1 1 auto;
+        min-height:0;
+        overflow:auto;
+        padding-right:2px;
+    }
+
+    .app.game-visible #playersCard{
+        grid-column:2;
+        display:flex;
+        flex-direction:column;
+        overflow:hidden;
+        padding:clamp(8px,.75vw,14px);
+        border-radius:var(--r-lg);
+    }
+
+    .app.game-visible #playersCard .players-card-head{
+        flex:0 0 auto;
+        min-height:42px;
+        padding:2px 4px 4px;
+    }
+
+    .app.game-visible #playersCard .players-card-head h3{
+        font-size:clamp(14px,1.15vw,18px);
+        line-height:1.25;
+    }
+
+    .app.game-visible #playersCard .filterChip{
+        font-size:clamp(10px,.72vw,12px);
+        padding:4px 9px;
+    }
+
+    .app.game-visible #playersCard > #playersSub{
+        flex:0 0 auto;
+        min-height:16px;
+        margin:0 4px 6px;
+        font-size:clamp(10px,.72vw,12px);
+    }
+
+    .app.game-visible #players{
+        flex:1 1 0;
+        min-width:0;
+        min-height:0;
+        width:100%;
+        padding:clamp(6px,.6vw,12px);
+        justify-content:center;
+        align-content:center;
+        overflow:hidden;
+    }
+
+    .app.game-visible #chatCard{
+        grid-column:3;
+        position:relative;
+        top:auto;
+        right:auto;
+        bottom:auto;
+        z-index:50;
+        height:calc(100% - var(--player-wide-dock-height) - var(--player-wide-gap)) !important;
+        padding:clamp(8px,.7vw,12px);
+        border-radius:var(--r-lg);
+        overflow:hidden;
+    }
+
+    .app.game-visible #chatCard .chatTabs{
+        flex:0 0 auto;
+    }
+
+    .app.game-visible ~ #bottomBar{
+        left:auto;
+        right:0;
+        bottom:0;
+        width:var(--player-wide-chat-width);
+        max-width:none;
+        height:var(--player-wide-dock-height);
+        min-height:var(--player-wide-dock-height);
+        margin:0;
+        border-radius:var(--r-lg) var(--r-lg) 0 0;
+        padding:6px clamp(8px,.7vw,14px);
+        gap:clamp(6px,.55vw,10px);
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        overflow-y:hidden;
+        scrollbar-width:none;
+        transform:translateY(8px);
+    }
+
+    .app.game-visible ~ #bottomBar::-webkit-scrollbar{ display:none; }
+
+    .app.game-visible ~ #bottomBar > *{
+        flex:0 0 auto;
+    }
+
+    .app.game-visible ~ #bottomBar #barRoleText{
+        flex:0 0 clamp(110px,8vw,155px);
+        min-width:0;
+    }
+
+    .app.game-visible ~ #bottomBar.bar-visible{
+        left:auto;
+        right:0;
+        transform:translateY(0);
+    }
+
+    .app.game-visible ~ #dayNightBadge{
+        right:calc(var(--player-wide-chat-width) + var(--player-wide-gap) + 10px);
+    }
+}
+
+@media (min-width:1800px){
+    .app.game-visible #playersCard .players-card-head{
+        min-height:48px;
+    }
+
+    .app.game-visible #playersCard .players-card-head h3{
+        font-size:clamp(16px,1vw,20px);
+    }
+
+    .app.game-visible #rolesPanelCard{
+        padding:clamp(16px,1vw,22px);
+    }
+
+    .app.game-visible #chatCard{
+        padding:clamp(10px,.8vw,16px);
+    }
+}
+
+@media (prefers-reduced-motion:reduce){
+    .app.game-visible #playersCard,
+    .app.game-visible #rolesPanelCard,
+    .app.game-visible #chatCard{
+        transition:none !important;
+    }
+}
+
+
+/* Runtime action feedback / spectator / timeline */
+.runtime-action-status{position:fixed;top:clamp(10px,1.2vh,16px);left:50%;transform:translateX(-50%);z-index:1200;max-width:min(92vw,680px);padding:9px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(16,20,28,.94);color:#fff;box-shadow:0 10px 28px rgba(0,0,0,.22);font-size:13px;font-weight:600;backdrop-filter:blur(10px)}
+.runtime-action-status.pending{border-color:rgba(255,196,96,.45)}.runtime-action-status.success{border-color:rgba(91,214,142,.42)}.runtime-action-status.error{border-color:rgba(255,112,112,.52)}
+.runtime-card{overflow:hidden}.runtime-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.runtime-card-head h3{margin:2px 0 0;font-size:16px}.runtime-kicker{display:block;font-size:10px;letter-spacing:.12em;font-weight:800;opacity:.58}.runtime-state-pill,.runtime-spectator-badge{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.08);font-size:11px;font-weight:800;white-space:nowrap}.runtime-timeline{display:grid;gap:7px;max-height:260px;overflow:auto;padding-right:2px}.runtime-timeline-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:start;gap:8px;padding:8px 9px;border-radius:10px;background:rgba(255,255,255,.035)}.runtime-timeline-icon{font-size:16px;text-align:center}.runtime-timeline-main{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}.runtime-state-version{font:800 9px/1 JetBrains Mono,monospace;opacity:.55}.runtime-timeline-detail{font-size:11px;opacity:.68;margin-top:2px}.runtime-timeline-item time{font:500 9px/1.2 JetBrains Mono,monospace;opacity:.48;white-space:nowrap}.runtime-empty-note{padding:12px;text-align:center;font-size:12px;opacity:.55}
+.runtime-spectator-badge{background:rgba(150,130,255,.12);border:1px solid rgba(150,130,255,.2)}.runtime-spectator-copy{margin:0 0 10px;font-size:12px;line-height:1.5;opacity:.76}.runtime-spectator-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.runtime-spectator-stats span{display:grid;gap:2px;padding:9px;border-radius:10px;background:rgba(255,255,255,.035);text-align:center}.runtime-spectator-stats b{font-size:17px}.runtime-spectator-stats small{font-size:10px;opacity:.58}.runtime-spectator-latest{margin-top:9px;font-size:11px;opacity:.65;line-height:1.6}
+@media (max-width:700px){.runtime-action-status{top:8px;font-size:12px;padding:8px 11px}.runtime-timeline-item{grid-template-columns:24px minmax(0,1fr)}.runtime-timeline-item time{grid-column:2}.runtime-spectator-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.runtime-spectator-stats span{padding:7px 5px}}

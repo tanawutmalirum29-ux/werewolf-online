@@ -1,28 +1,631 @@
-
 /* ============================================================
-   ADMIN SHELL — real Index surface + command/context controls
+   ADMIN CONTROL CENTER V2
+   Layout-first shell: persistent navigation, single workspace,
+   responsive mobile navigation.
    ============================================================ */
-body.admin-shell-enabled{padding:10px 10px 22px;background:linear-gradient(180deg,#070a12,#090d16 45%,#080b13);overflow-x:hidden}
-body.admin-shell-enabled .admin-wrap{max-width:none;margin:0 auto}
-body.admin-shell-enabled .admin-hero{margin:0 0 10px;border-radius:20px;padding:12px 14px;position:relative;z-index:20}
-body.admin-shell-enabled .admin-hero h1{font-size:clamp(18px,2vw,25px)}
-body.admin-shell-enabled .admin-hero .sub{font-size:11px;margin-top:6px;max-width:100%}
-body.admin-shell-enabled .admin-hero .copy-command-btn{display:none}
-body.admin-shell-enabled .admin-tabs{display:none}
-body.admin-shell-enabled>.admin-wrap>.tab-panel#tab-overview{display:none!important}
-.admin-shell-root{display:grid;grid-template-columns:72px minmax(0,1fr) 220px;gap:10px;min-height:calc(100dvh - 108px);align-items:stretch}
-.admin-shell-rail,.admin-shell-context{border:1px solid rgba(255,255,255,.09);border-radius:20px;background:rgba(11,15,27,.91);backdrop-filter:blur(18px);box-shadow:0 14px 50px rgba(0,0,0,.23)}
-.admin-shell-rail{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 7px;position:sticky;top:10px;height:calc(100dvh - 128px)}
-.admin-shell-brand,.admin-shell-quick{width:56px;min-height:52px;border:0;border-radius:15px;background:transparent;color:#9ca7c2;font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;-webkit-tap-highlight-color:transparent}
-.admin-shell-brand{font-size:22px;margin-bottom:5px;background:rgba(124,92,255,.12);color:#fff}
-.admin-shell-quick{font-size:18px}.admin-shell-quick span{font-size:9px;font-weight:800}.admin-shell-quick:hover{background:rgba(255,255,255,.05);color:#fff}.admin-shell-quick:active{transform:scale(.97)}
-.admin-shell-main{min-width:0;display:flex;flex-direction:column;gap:10px}.admin-shell-index{min-height:0;flex:1;position:relative;border:1px solid rgba(255,255,255,.09);border-radius:22px;overflow:hidden;background:#0b0f18;box-shadow:0 18px 60px rgba(0,0,0,.30);isolation:isolate}
-#adminGameSurface{display:block;width:100%;height:min(760px,calc(100dvh - 172px));min-height:560px;border:0;background:#fff}
-.admin-shell-index-status{position:absolute;left:12px;bottom:10px;padding:6px 10px;border-radius:999px;background:rgba(7,10,17,.80);color:#cbd4ea;font-size:10px;pointer-events:none;opacity:.9}
-.admin-shell-status-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.admin-shell-status-strip>div{min-width:0;padding:10px 12px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(11,15,27,.86)}.admin-shell-status-strip span{display:block;color:#73809b;font-size:9px}.admin-shell-status-strip b{display:block;margin-top:3px;color:#eef2ff;font:700 12px/1.2 "JetBrains Mono",monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.admin-shell-context{padding:14px;min-width:0;position:sticky;top:10px;height:calc(100dvh - 128px);overflow:auto}.admin-shell-context-empty{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#8994af}.admin-shell-context-empty span{font-size:32px;margin-bottom:10px}.admin-shell-context-empty b{color:#d9e0f4;font-size:13px}.admin-shell-context-empty p{font-size:10.5px;line-height:1.5;margin:7px 0 0}.admin-shell-context-kicker{font:800 9px/1 "JetBrains Mono",monospace;letter-spacing:.14em;color:#a99aff}.admin-shell-context h3{font-size:18px;margin:8px 0 10px;word-break:break-word}.admin-shell-context-meta{font-size:10.5px;line-height:1.7;color:#aeb8d2;padding:10px;border-radius:12px;background:#0d1220;border:1px solid rgba(255,255,255,.07)}.admin-shell-context-actions{display:grid;gap:7px;margin-top:10px}.admin-shell-context-actions button{min-height:40px;border:1px solid rgba(255,255,255,.09);border-radius:10px;background:rgba(255,255,255,.03);color:#dfe5f7;font:700 11px inherit;cursor:pointer}
-.admin-shell-palette{position:fixed;inset:0;z-index:200500;display:flex;align-items:flex-start;justify-content:center;padding:11vh 16px 20px}.admin-shell-palette.hidden{display:none}.admin-shell-palette-backdrop{position:absolute;inset:0;background:rgba(3,6,12,.62);backdrop-filter:blur(5px)}.admin-shell-palette-card{position:relative;width:min(720px,96vw);max-height:min(76vh,720px);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(124,92,255,.24);border-radius:22px;background:linear-gradient(180deg,rgba(18,23,38,.99),rgba(9,13,23,.99));box-shadow:0 30px 110px rgba(0,0,0,.55)}.admin-shell-palette-head{display:flex;align-items:center;justify-content:space-between;padding:15px 16px 10px}.admin-shell-kicker{font:800 9px/1 "JetBrains Mono",monospace;letter-spacing:.14em;color:#a99aff}.admin-shell-palette-head h2{margin:5px 0 0;font-size:19px}.admin-shell-close{width:34px;height:34px;border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.03);color:#aab3c7;font:22px/1 inherit;cursor:pointer}.admin-shell-palette-search{display:flex;align-items:center;gap:8px;margin:0 14px 10px;padding:0 12px;min-height:46px;border:1px solid rgba(124,92,255,.22);border-radius:13px;background:#0d1220}.admin-shell-palette-search span{font-size:20px;color:#8290ad}.admin-shell-palette-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#eef2ff;font:14px inherit}.admin-shell-command-list{overflow:auto;padding:0 10px 10px}.admin-shell-command-group{padding:9px 7px 5px;color:#71809d;font:800 9px/1 "JetBrains Mono",monospace;letter-spacing:.12em;text-transform:uppercase}.admin-shell-command{display:flex;align-items:center;gap:10px;width:100%;min-height:52px;padding:7px 9px;border:0;border-radius:11px;background:transparent;color:#dae1f4;text-align:left;font:inherit;cursor:pointer}.admin-shell-command:hover,.admin-shell-command:focus-visible{background:rgba(124,92,255,.11);outline:none}.admin-shell-command-icon{flex:0 0 30px;font-size:18px;text-align:center}.admin-shell-command-copy{min-width:0;flex:1}.admin-shell-command-copy b{display:block;font-size:12px}.admin-shell-command-copy small{display:block;color:#6f7b95;font:9px/1.4 "JetBrains Mono",monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.admin-shell-command-risk{font-size:8px;font-weight:800;text-transform:uppercase;padding:4px 6px;border-radius:999px;background:rgba(255,177,73,.10);color:#ffc775;border:1px solid rgba(255,177,73,.18)}.admin-shell-empty{padding:26px;text-align:center;color:#78849c;font-size:11px}.admin-shell-palette-hint{padding:9px 14px;border-top:1px solid rgba(255,255,255,.06);color:#66738c;font-size:9px}.admin-shell-palette-hint kbd{padding:2px 5px;border:1px solid rgba(255,255,255,.1);border-radius:4px;background:#0d1220;color:#b5bfd4;font:9px "JetBrains Mono",monospace}
-body.admin-shell-palette-open{overflow:hidden}
-@media(max-width:1100px){.admin-shell-root{grid-template-columns:66px minmax(0,1fr)}.admin-shell-context{display:none}}
-@media(max-width:720px){body.admin-shell-enabled{padding:6px 6px 10px}.admin-shell-root{grid-template-columns:1fr;min-height:calc(100dvh - 86px)}.admin-shell-rail{position:fixed;z-index:100;left:7px;right:7px;bottom:max(7px,env(safe-area-inset-bottom));top:auto;height:auto;flex-direction:row;justify-content:space-around;padding:5px;border-radius:17px}.admin-shell-brand{display:none}.admin-shell-quick{width:auto;flex:1;min-height:46px}.admin-shell-main{padding-bottom:66px}.admin-shell-status-strip{grid-template-columns:repeat(4,minmax(0,1fr))}.admin-shell-index{border-radius:18px}#adminGameSurface{height:calc(100dvh - 176px);min-height:520px}.admin-shell-index-status{font-size:9px}.admin-shell-quick span{font-size:8.5px}}
-@media(max-width:430px){.admin-shell-status-strip{gap:5px}.admin-shell-status-strip>div{padding:8px 7px}.admin-shell-status-strip span{font-size:8px}.admin-shell-status-strip b{font-size:10px}.admin-shell-palette{padding:6vh 7px 10px}.admin-shell-palette-card{max-height:82dvh;border-radius:18px}.admin-shell-command{min-height:50px}}
+:root{
+  --admin-bg:#080b13;
+  --admin-surface:#0d1220;
+  --admin-surface-2:#111827;
+  --admin-surface-3:#151c2d;
+  --admin-line:rgba(255,255,255,.08);
+  --admin-line-strong:rgba(255,255,255,.13);
+  --admin-text:#edf1fb;
+  --admin-muted:#8792a9;
+  --admin-muted-2:#66728b;
+  --admin-primary:#7c5cff;
+  --admin-primary-2:#5b3df0;
+  --admin-primary-soft:rgba(124,92,255,.14);
+  --admin-success:#22c55e;
+  --admin-success-soft:rgba(34,197,94,.12);
+  --admin-warning:#fbbf24;
+  --admin-warning-soft:rgba(251,191,36,.12);
+  --admin-danger:#ef4444;
+  --admin-danger-soft:rgba(239,68,68,.12);
+  --admin-info:#60a5fa;
+  --admin-info-soft:rgba(96,165,250,.12);
+  --admin-sidebar:248px;
+  --admin-page-max:3200px;
+  --admin-topbar:72px;
+  --admin-radius:16px;
+}
+
+html{background:var(--admin-bg);scroll-behavior:smooth;height:100%;}
+
+body[data-page="admin"]{
+  min-height:100dvh;
+  height:100dvh;
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  background:
+    radial-gradient(900px 460px at 8% -10%,rgba(124,92,255,.13),transparent 62%),
+    radial-gradient(760px 420px at 96% 0%,rgba(34,197,94,.055),transparent 58%),
+    linear-gradient(180deg,#070a11 0%,#090d16 50%,#080b13 100%);
+}
+body[data-page="admin"] .admin-wrap{max-width:none;width:100%;margin:0;padding:0;}
+body.admin-shell-enabled{padding:0 !important;}
+
+/* Internal Browser focus mode: the game/tester canvas is the primary workspace.
+   The normal Admin navigation is removed from the layout while a small, explicit
+   "back to Admin" control remains inside the browser chrome. */
+body.admin-browser-open{--admin-topbar:48px;}
+body.admin-browser-open .admin-layout-grid{
+  grid-template-columns:minmax(0,1fr);
+}
+body.admin-browser-open .admin-sidebar{display:none !important;}
+body.admin-browser-open{
+  overflow:hidden !important;
+}
+body.admin-browser-open .admin-topbar{
+  display:none !important;
+}
+body.admin-browser-open .admin-brand-copy,
+body.admin-browser-open .admin-live-status,
+body.admin-browser-open .admin-command-trigger,
+body.admin-browser-open .admin-topbar-meta .copy-command-btn,
+body.admin-browser-open .admin-topbar-meta .viewport-chip{display:none !important;}
+body.admin-browser-open .admin-brand-mark{
+  width:34px;
+  height:34px;
+  flex-basis:34px;
+  border-radius:10px;
+  font-size:17px;
+}
+body.admin-browser-open .admin-topbar-actions{margin-left:auto;gap:6px;}
+body.admin-browser-open .admin-topbar-meta .version-chip{
+  min-height:30px;
+  padding:0 8px;
+  font-size:8px;
+}
+body.admin-browser-open .admin-account-trigger{
+  min-height:32px;
+  padding:0 8px;
+  border-radius:9px;
+  font-size:9px;
+}
+body.admin-browser-open .admin-workspace{padding:0;}
+
+/* iPad/WebKit-safe browser-focus fallback. The class is normally supplied by
+   admin-browser.js, but :has() also keys the shell directly off the visible
+   browser surface. This prevents the old three-column shell from stealing
+   width when the browser tab is active on iPad/Chrome iOS. */
+body[data-page="admin"]:has(#adminBrowserView.is-active) .admin-layout-grid{
+  grid-template-columns:minmax(0,1fr) !important;
+}
+body[data-page="admin"]:has(#adminBrowserView.is-active) .admin-sidebar{
+  display:none !important;
+}
+body[data-page="admin"]:has(#adminBrowserView.is-active) .admin-workspace{
+  min-width:0;
+  width:100%;
+  padding:0 !important;
+}
+
+.admin-app-shell{height:100dvh;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+.admin-topbar{
+  position:relative;
+  flex:0 0 var(--admin-topbar);
+  height:var(--admin-topbar);
+  min-height:var(--admin-topbar);
+  display:flex;align-items:center;justify-content:space-between;gap:18px;
+  padding:10px 18px;
+  z-index:80;
+  box-sizing:border-box;
+  border-bottom:1px solid var(--admin-line);
+  background:rgba(7,10,17,.88);
+  backdrop-filter:blur(18px);
+  box-shadow:0 8px 32px rgba(0,0,0,.16);
+}
+.admin-brand{display:flex;align-items:center;gap:11px;min-width:0;}
+.admin-brand-mark{
+  width:42px;height:42px;display:grid;place-items:center;flex:0 0 42px;
+  border:1px solid rgba(124,92,255,.3);border-radius:13px;
+  background:linear-gradient(145deg,rgba(124,92,255,.24),rgba(124,92,255,.08));
+  color:#fff;font-size:21px;cursor:pointer;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+}
+.admin-brand-copy{display:flex;flex-direction:column;min-width:0;line-height:1.08;}
+.admin-brand-copy strong{font-size:14px;letter-spacing:.07em;white-space:nowrap;}
+.admin-brand-copy span{margin-top:4px;color:var(--admin-muted-2);font:800 8.5px/1 "JetBrains Mono",monospace;letter-spacing:.16em;white-space:nowrap;}
+.admin-topbar-actions{display:flex;align-items:center;gap:9px;min-width:0;}
+/* Admin overlay boundary: modal surfaces must start below the fixed shell header.
+   Raising z-index alone only hides the header; it does not reserve its space. */
+body[data-page="admin"]{
+  --admin-overlay-top:var(--admin-topbar,72px);
+}
+body.admin-browser-open,
+body[data-page="admin"]:has(#adminBrowserView.is-active){
+  --admin-overlay-top:0px;
+}
+body[data-page="admin"] .overlay{
+  inset:var(--admin-overlay-top) 0 0 0;
+  z-index:120;
+  box-sizing:border-box;
+  min-height:0;
+  padding:18px;
+  padding-bottom:max(18px,env(safe-area-inset-bottom));
+}
+body[data-page="admin"] .overlay > .modal-box{
+  max-height:calc(100% - 20px);
+}
+body[data-page="admin"] .overlay > .overlay-close-float{
+  top:calc(var(--admin-overlay-top) + 12px);
+  z-index:121;
+}
+
+.admin-command-trigger{
+  min-height:40px;display:flex;align-items:center;gap:8px;padding:0 11px;
+  border:1px solid rgba(124,92,255,.28);border-radius:11px;
+  background:rgba(124,92,255,.075);color:#e8e4ff;font:600 12px inherit;cursor:pointer;
+  transition:.16s ease;
+}
+.admin-command-trigger:hover{border-color:rgba(124,92,255,.55);background:rgba(124,92,255,.12);transform:translateY(-1px);}
+.command-trigger-icon{font-size:18px;line-height:1;color:#bcaeff;}
+.command-trigger-label{white-space:nowrap;}
+.admin-command-trigger kbd{padding:3px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.1);background:#0c1120;color:#afb9ce;font:700 9px/1 "JetBrains Mono",monospace;}
+.admin-live-status{display:flex;align-items:center;gap:5px;}
+.admin-status-item{display:flex;align-items:center;gap:7px;min-width:0;padding:6px 8px;border:1px solid var(--admin-line);border-radius:10px;background:rgba(12,17,29,.72);}
+.admin-status-icon{font-size:8px;color:#70809d;}
+.admin-status-item>div{min-width:0;line-height:1.1;}
+.admin-status-item>div>span{display:block;color:#6f7a92;font-size:8px;}
+.admin-status-item b{display:block;margin-top:3px;color:#e9eefb;font:700 10px/1.1 "JetBrains Mono",monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:78px;}
+.admin-topbar-meta{display:flex;align-items:center;gap:6px;min-width:0;}
+.admin-topbar-meta .version-chip,.admin-topbar-meta .viewport-chip{margin:0;min-height:34px;padding:0 9px;font-size:9px;}
+.admin-topbar-meta .copy-command-btn{min-height:34px;padding:7px 9px;font-size:10px;}
+.admin-topbar-meta .copy-command-btn{display:inline-flex;}
+.admin-account-trigger{min-height:40px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--admin-line);border-radius:10px;background:rgba(255,255,255,.025);color:#dce3f5;font:700 11px inherit;cursor:pointer;}
+.admin-account-trigger:hover{border-color:var(--admin-line-strong);background:rgba(255,255,255,.05);}
+
+.admin-layout-grid{
+  width:100%;display:grid;grid-template-columns:var(--admin-sidebar) minmax(0,1fr);
+  height:calc(100dvh - var(--admin-topbar));
+  min-height:0;
+  overflow:hidden;
+}
+.admin-sidebar{
+  min-width:0;
+  min-height:0;
+  height:100%;
+  box-sizing:border-box;
+  padding:18px 12px;
+  position:relative;
+  border-right:1px solid var(--admin-line);
+  background:rgba(8,12,21,.78);
+  backdrop-filter:blur(16px);
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+}
+.admin-sidebar-head{padding:2px 10px 12px;}
+.admin-sidebar-kicker{color:#9587ef;font:800 8px/1 "JetBrains Mono",monospace;letter-spacing:.16em;margin-bottom:7px;}
+.admin-sidebar-head strong{font-size:13px;}
+.admin-sidebar-nav{display:grid;gap:4px;}
+.admin-nav-item{
+  width:100%;display:flex;align-items:center;gap:11px;min-height:52px;padding:7px 9px;
+  border:1px solid transparent;border-radius:12px;background:transparent;color:#8f9ab2;text-align:left;font:inherit;cursor:pointer;
+  transition:.16s ease;position:relative;
+}
+.admin-nav-item:hover{background:rgba(255,255,255,.035);color:#e7ebf7;}
+.admin-nav-item.active{color:#fff;background:linear-gradient(90deg,rgba(124,92,255,.15),rgba(124,92,255,.07));border-color:rgba(124,92,255,.18);}
+.admin-nav-item.active::before{content:"";position:absolute;left:-13px;top:9px;bottom:9px;width:3px;border-radius:0 4px 4px 0;background:var(--admin-primary);}
+.admin-nav-icon{width:30px;flex:0 0 30px;height:30px;display:grid;place-items:center;border-radius:9px;background:rgba(255,255,255,.035);font-size:16px;}
+.admin-nav-item.active .admin-nav-icon{background:rgba(124,92,255,.17);}
+.admin-nav-copy{min-width:0;display:flex;flex-direction:column;line-height:1.2;}
+.admin-nav-copy strong{font-size:12px;display:flex;align-items:center;gap:5px;}
+.admin-nav-count{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border:1px solid rgba(124,92,255,.24);border-radius:999px;background:rgba(124,92,255,.1);color:#bcaeff;font:800 8px/1 "JetBrains Mono",monospace;}
+.admin-nav-copy small{margin-top:3px;color:#68748b;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.admin-nav-item.active .admin-nav-copy small{color:#8c91ae;}
+.admin-sidebar-section{margin-top:20px;padding-top:16px;border-top:1px solid var(--admin-line);}
+.admin-sidebar-section-title{padding:0 10px 8px;color:#66728a;font:800 8px/1 "JetBrains Mono",monospace;letter-spacing:.13em;}
+.admin-sidebar-quick{width:100%;display:flex;align-items:center;gap:9px;min-height:39px;padding:7px 10px;border:0;border-radius:9px;background:transparent;color:#8d98af;font:600 11px inherit;cursor:pointer;text-align:left;}
+.admin-sidebar-quick:hover{background:rgba(255,255,255,.035);color:#e8edf9;}
+.quick-icon{width:24px;text-align:center;font-size:14px;}
+.admin-sidebar-footer{margin-top:auto;padding:16px 10px 4px;display:flex;flex-direction:column;gap:5px;color:#5f6a80;font-size:8.5px;}
+
+/* Workspace is the only primary content column. Keep every child shrinkable so
+   controls wrap inside the available width instead of painting underneath one another. */
+.admin-workspace{
+  min-width:0;
+  min-height:0;
+  width:100%;
+  max-width:100%;
+  height:100%;
+  box-sizing:border-box;
+  padding:0 clamp(16px,3vw,34px) 38px;
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+  scrollbar-gutter:stable;
+  outline:none;
+}
+.admin-workspace *{min-width:0;}
+.admin-page-header,.admin-page-stack{box-sizing:border-box;min-width:0;max-width:100%;}
+.admin-page-header{
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:18px;
+  width:min(100%,var(--admin-page-max));
+  max-width:none;
+  box-sizing:border-box;
+  margin:0 auto 18px;
+  padding:24px 0 18px;
+  position:sticky;
+  top:0;
+  z-index:40;
+  background:linear-gradient(180deg,rgba(8,11,19,.99) 0%,rgba(8,11,19,.97) 78%,rgba(8,11,19,0) 100%);
+  backdrop-filter:blur(10px);
+}
+.admin-page-heading{min-width:0;}
+.admin-page-kicker{color:#a093f1;font:800 8.5px/1 "JetBrains Mono",monospace;letter-spacing:.18em;margin-bottom:8px;}
+.admin-page-header h1{margin:0;font-size:clamp(22px,2.2vw,30px);line-height:1.1;letter-spacing:.005em;}
+.admin-page-header p{margin:8px 0 0;max-width:74ch;color:#8b96ad;font-size:12px;line-height:1.6;}
+.admin-page-actions{display:flex;align-items:flex-start;gap:7px;flex:0 1 auto;min-width:0;flex-wrap:wrap;justify-content:flex-end;}
+.admin-page-stack{width:min(100%,var(--admin-page-max));max-width:none;margin:0 auto;min-width:0;}
+.admin-page-stack>.tab-panel{display:none;}
+.admin-page-stack>.tab-panel.active{display:block;animation:adminPageIn .16s ease-out;}
+@keyframes adminPageIn{from{opacity:.55;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+/* Shared content refinements inside the new workspace. */
+.admin-page-stack .toolbar{position:sticky;top:var(--admin-page-header-height,106px);z-index:20;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0 13px;margin:0 0 10px;background:linear-gradient(180deg,rgba(9,13,22,.98),rgba(9,13,22,.91),rgba(9,13,22,0));}
+.admin-page-stack .stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:18px;}
+.admin-page-stack .stat-box{min-width:0;padding:13px 14px;border:1px solid var(--admin-line);border-radius:14px;background:linear-gradient(180deg,rgba(18,24,39,.97),rgba(12,17,28,.97));box-shadow:0 9px 24px rgba(0,0,0,.16);}
+.admin-page-stack .stat-box .num{font:700 22px/1 "JetBrains Mono",monospace;color:#f1f4fb;}
+.admin-page-stack .stat-box .label{margin-top:7px;color:#78849b;font-size:9.5px;line-height:1.35;}
+.admin-page-stack .tool-card,.admin-page-stack .manage-card,.admin-page-stack .room-group,.admin-page-stack .empty,.admin-page-stack .search-box,.admin-page-stack .player-account-group,.admin-page-stack .diag-event,.admin-page-stack .diag-kpi{border-color:var(--admin-line);}
+.admin-page-stack .tool-card{box-shadow:0 9px 26px rgba(0,0,0,.14);}
+.admin-page-stack .tool-actions{display:flex;flex-wrap:wrap;gap:7px;}
+.admin-page-stack .btn{min-height:40px;border-radius:10px;}
+.admin-page-stack .search-box{margin-bottom:12px;}
+.admin-page-stack .directory-head{align-items:center;}
+.admin-page-stack .account-grid{gap:9px;}
+.admin-page-stack .manage-card{transition:border-color .16s,background .16s,transform .16s;}
+.admin-page-stack .manage-card:hover{transform:translateY(-1px);}
+.admin-page-stack .tool-card.danger{border-color:rgba(239,68,68,.24);background:linear-gradient(180deg,rgba(43,17,24,.84),rgba(22,13,20,.84));}
+
+
+/* Command palette */
+.admin-shell-palette{position:fixed;inset:0;z-index:200500;display:flex;align-items:flex-start;justify-content:center;padding:10vh 16px 20px;}
+.admin-shell-palette.hidden{display:none;}
+.admin-shell-palette-backdrop{position:absolute;inset:0;background:rgba(2,5,11,.64);backdrop-filter:blur(7px);}
+.admin-shell-palette-card{position:relative;width:min(760px,96vw);max-height:min(78vh,740px);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(124,92,255,.24);border-radius:20px;background:linear-gradient(180deg,rgba(18,24,40,.995),rgba(8,12,20,.995));box-shadow:0 32px 120px rgba(0,0,0,.56);}
+.admin-shell-palette-head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px 11px;}
+.admin-shell-kicker{font:800 8px/1 "JetBrains Mono",monospace;letter-spacing:.16em;color:#a496f3;}
+.admin-shell-palette-head h2{margin:5px 0 0;font-size:18px;}
+.admin-shell-close{width:34px;height:34px;border:1px solid var(--admin-line);border-radius:9px;background:rgba(255,255,255,.025);color:#a9b4c9;font:22px/1 inherit;cursor:pointer;}
+.admin-shell-close:hover{border-color:rgba(124,92,255,.4);color:#fff;}
+.admin-shell-palette-search{display:flex;align-items:center;gap:8px;margin:0 14px 9px;padding:0 12px;min-height:48px;border:1px solid rgba(124,92,255,.24);border-radius:12px;background:#0b1020;}
+.admin-shell-palette-search span{font-size:20px;color:#7f8ca6;}
+.admin-shell-palette-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#eef2ff;font:13px inherit;}
+.admin-shell-palette-search input::placeholder{color:#69758c;}
+.admin-shell-command-list{overflow:auto;padding:0 9px 10px;}
+.admin-shell-command-group{padding:9px 7px 5px;color:#66728a;font:800 8px/1 "JetBrains Mono",monospace;letter-spacing:.13em;text-transform:uppercase;}
+.admin-shell-command{display:flex;align-items:center;gap:10px;width:100%;min-height:52px;padding:7px 9px;border:0;border-radius:10px;background:transparent;color:#dbe2f1;text-align:left;font:inherit;cursor:pointer;outline:none;}
+.admin-shell-command:hover,.admin-shell-command:focus-visible,.admin-shell-command.active{background:rgba(124,92,255,.10);}
+.admin-shell-command-icon{flex:0 0 30px;font-size:17px;text-align:center;}
+.admin-shell-command-copy{min-width:0;flex:1;}
+.admin-shell-command-copy b{display:block;font-size:11.5px;}
+.admin-shell-command-copy small{display:block;margin-top:2px;color:#6d7890;font:8.5px/1.4 "JetBrains Mono",monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.admin-shell-command-risk{font-size:7px;font-weight:800;text-transform:uppercase;padding:4px 6px;border-radius:999px;background:var(--admin-warning-soft);color:#ffc972;border:1px solid rgba(251,191,36,.18);}
+.admin-shell-command-shortcut{padding:3px 5px;border-radius:5px;border:1px solid rgba(255,255,255,.08);background:#0b1020;color:#65728b;font:8px "JetBrains Mono",monospace;}
+.admin-shell-empty{padding:26px;text-align:center;color:#748198;font-size:10.5px;}
+.admin-shell-palette-hint{padding:9px 14px;border-top:1px solid rgba(255,255,255,.06);color:#66738a;font-size:8.5px;}
+.admin-shell-palette-hint kbd{padding:2px 5px;border:1px solid rgba(255,255,255,.08);border-radius:4px;background:#0b1020;color:#aeb8cb;font:8px "JetBrains Mono",monospace;}
+body.admin-shell-palette-open{overflow:hidden;}
+
+/* Player + Room details occupy the full Admin workspace; they are not overlays/drawers. */
+.admin-list-view.hidden,.admin-detail-workspace.hidden{display:none !important;}
+.admin-detail-workspace{width:100%;min-width:0;min-height:0;}
+.admin-detail-breadcrumb{display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#6f7a90;font-size:10px;line-height:1.3;}
+.admin-detail-breadcrumb strong{color:#dce2ef;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.admin-detail-header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin:0 0 16px;padding:0 0 14px;border-bottom:1px solid var(--admin-line);}
+.admin-detail-header-copy{min-width:0;flex:1 1 auto;}
+.admin-detail-kicker{display:block;color:#9d90ed;font:800 8px/1 "JetBrains Mono",monospace;letter-spacing:.17em;margin-bottom:7px;}
+.admin-detail-header h2{margin:0;font-size:clamp(20px,2vw,28px);line-height:1.15;overflow-wrap:anywhere;}
+.admin-detail-header-copy p{margin:6px 0 0;color:#78849b;font-size:11px;line-height:1.5;overflow-wrap:anywhere;}
+.admin-detail-header-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;min-width:0;}
+.admin-detail-header-meta > span:empty{display:none;}
+.admin-detail-header-meta > span:first-child:not(:empty){color:#738099;font:9px/1.35 "JetBrains Mono",monospace;overflow-wrap:anywhere;word-break:break-all;}
+.admin-detail-header-meta .room-inspector-status{margin:0;}
+.admin-detail-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex:0 1 auto;flex-wrap:wrap;}
+.admin-detail-header-actions .btn{min-height:38px;white-space:nowrap;}
+.admin-detail-body{width:100%;min-width:0;}
+.admin-detail-body > .hist-empty{min-height:180px;display:grid;place-items:center;}
+.account-detail-content-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:stretch;}
+.account-detail-content-grid .account-detail-section,.account-detail-action-panel{margin:0;min-width:0;}
+.account-detail-action-panel{background:#0d1220;border:1px solid var(--line);border-radius:11px;padding:10px 12px;}
+.account-detail-action-panel::before{content:"การจัดการ";display:block;margin:0 0 7px;color:var(--ink-dim);font-size:12px;font-weight:700;}
+.account-detail-action-panel .account-detail-actions{margin-top:0;}
+.account-detail-actions{grid-template-columns:1fr;}
+.account-detail-actions .action-primary{grid-column:auto;}
+.account-detail-actions .btn{min-height:40px;}
+.account-history-view{width:100%;max-width:none;}
+.room-inspector-content-grid{display:grid;grid-template-columns:minmax(250px,.72fr) minmax(360px,1.28fr);gap:10px;align-items:stretch;margin-bottom:10px;}
+.room-inspector-content-grid .room-inspector-section{margin:0;min-height:100%;}
+.room-inspector-players-section{min-width:0;}
+.room-inspector-list{max-height:none;overflow:visible;}
+.room-inspector-secondary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+.room-inspector-secondary-grid .room-inspector-detail{margin:0;min-width:0;}
+.room-inspector-footer{display:none;}
+.room-inspector-error{padding:8px 0;}
+.admin-detail-inline-actions{display:flex;justify-content:flex-start;gap:7px;flex-wrap:wrap;}
+
+@media(max-width:1180px){
+  .account-detail-content-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .account-detail-action-panel{grid-column:1 / -1;}
+  .room-inspector-content-grid{grid-template-columns:minmax(230px,.55fr) minmax(340px,1.45fr);}
+}
+
+@media(max-width:720px){
+  .admin-detail-header{align-items:flex-start;flex-direction:column;gap:10px;}
+  .admin-detail-header-actions{width:100%;justify-content:flex-start;}
+  .admin-detail-header-actions .btn{flex:1 1 140px;}
+  .account-detail-content-grid,.room-inspector-content-grid,.room-inspector-secondary-grid{grid-template-columns:1fr;}
+  .account-detail-action-panel{grid-column:auto;}
+  .room-inspector-list{max-height:none;overflow:visible;}
+}
+
+@media(max-width:430px){
+  .admin-detail-header-actions .btn{flex:1 1 100%;} 
+  .admin-detail-header-actions .btn.btn-danger{flex-basis:100%;}
+}
+
+@media(min-width:1440px){
+  /* Wide-screen Admin workspace: do not leave the center content frozen at
+     the old 1180px cap once there is substantially more room available. */
+  .admin-page-stack .stat-grid{
+    grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  }
+}
+
+@media(max-width:1220px){
+  .admin-layout-grid{grid-template-columns:224px minmax(0,1fr);}
+  .admin-live-status .admin-status-item:nth-child(4){display:none;}
+  .admin-topbar-meta .viewport-chip{display:none;}
+}
+@media(max-width:930px){
+  .admin-layout-grid{grid-template-columns:224px minmax(0,1fr);}
+  .admin-topbar{padding:9px 12px;gap:10px;}
+  .admin-brand-copy span{display:none;}
+  .admin-topbar-meta .copy-command-btn{display:none;}
+  .admin-status-item{padding:6px;}
+  .admin-status-item>div>span{display:none;}
+  .admin-status-item b{margin:0;max-width:65px;}
+  .admin-page-stack .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:720px){
+  /* On phones the shell already switches to a bottom navigation bar. Keep that
+     mobile navigation contract in browser-focus mode instead of forcing the
+     desktop icon rail rules above it. The content canvas remains edge-to-edge. */
+  body.admin-browser-open .admin-workspace{padding:0;}
+}
+
+@media(max-width:720px){
+  :root{--admin-topbar:60px;}
+  .admin-topbar{min-height:60px;}
+  .admin-brand-mark{width:36px;height:36px;flex-basis:36px;font-size:18px;border-radius:11px;}
+  .admin-brand-copy strong{font-size:11px;}
+  .admin-command-trigger{min-height:36px;padding:0 9px;}
+  .command-trigger-label{display:none;}
+  .admin-command-trigger kbd{display:none;}
+  .admin-live-status{display:none;}
+  .admin-account-trigger{min-height:36px;padding:0 9px;}
+  .admin-layout-grid{display:block;height:calc(100dvh - var(--admin-topbar));min-height:0;overflow:hidden;}
+  .admin-sidebar{
+    position:fixed;left:7px;right:7px;bottom:max(7px,env(safe-area-inset-bottom));top:auto;z-index:100;
+    width:auto;height:auto;padding:5px;border:1px solid rgba(255,255,255,.11);border-radius:17px;background:rgba(7,10,17,.92);box-shadow:0 16px 46px rgba(0,0,0,.4);
+    backdrop-filter:blur(18px);overflow:hidden;
+  }
+  .admin-sidebar-head,.admin-sidebar-section,.admin-sidebar-footer{display:none;}
+  .admin-sidebar-nav{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:3px;}
+  .admin-nav-item{min-width:0;min-height:47px;padding:4px 2px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:12px;}
+  .admin-nav-item.active::before{left:7px;right:7px;top:auto;bottom:2px;width:auto;height:2px;border-radius:4px;}
+  .admin-nav-icon{width:auto;height:auto;background:transparent;font-size:16px;}
+  .admin-nav-copy{display:block;max-width:100%;}
+  .admin-nav-copy strong{display:flex;font-size:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;align-items:center;justify-content:center;gap:2px;}
+  .admin-nav-count{min-width:14px;height:14px;padding:0 3px;font-size:7px;}
+  .admin-nav-copy small{display:none;}
+  .admin-workspace{height:100%;padding:0 10px 86px;}
+  .admin-page-header{align-items:flex-start;margin-bottom:13px;padding:18px 0 13px;}
+  .admin-page-header h1{font-size:21px;}
+  .admin-page-header p{font-size:10.5px;}
+  .admin-page-actions .btn{min-height:36px;padding:7px 10px;font-size:10px;}
+  .admin-page-stack .toolbar{top:var(--admin-page-header-height,84px);padding-top:7px;}
+  .admin-page-stack .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+  .admin-page-stack .stat-box{padding:11px 12px;}
+  .admin-page-stack .stat-box .num{font-size:19px;}
+  .admin-page-stack .tool-card{padding:14px;}
+  .admin-page-stack .tool-actions .btn{flex:1 1 170px;}
+  .admin-shell-palette{padding:5vh 7px 90px;}
+  .admin-shell-palette-card{max-height:82dvh;border-radius:18px;}
+}
+@media(max-width:430px){
+  .admin-page-header{gap:8px;}
+  .admin-page-actions .btn{font-size:0;min-width:36px;width:36px;padding:0;}
+  .admin-page-actions .btn::after{content:"↻";font-size:16px;}
+  .admin-page-stack .stat-box .label{font-size:8.5px;}
+  .admin-sidebar{left:4px;right:4px;bottom:max(4px,env(safe-area-inset-bottom));}
+  .admin-nav-item{min-height:45px;}
+  .admin-nav-icon{font-size:15px;}
+  .admin-nav-copy strong{font-size:7.5px;}
+}
+
+/* Independent scroll regions
+   - topbar: fixed-size shell chrome, never scrolls
+   - sidebar: its own vertical scroll container on desktop
+   - workspace: its own vertical scroll container; page header sticks inside it
+*/
+/* Accessibility + account menu */
+.admin-skip-link{position:fixed;left:14px;top:10px;z-index:300000;transform:translateY(-180%);padding:8px 11px;border:1px solid rgba(124,92,255,.42);border-radius:9px;background:#0d1220;color:#fff;font-size:11px;text-decoration:none;box-shadow:0 12px 32px rgba(0,0,0,.32);transition:transform .15s ease;}
+.admin-skip-link:focus{transform:translateY(0);outline:2px solid rgba(124,92,255,.55);outline-offset:2px;}
+.admin-account-wrap{position:relative;flex:0 0 auto;}
+.admin-account-trigger{position:relative;}
+.admin-account-dot{font-size:8px;color:var(--admin-success);}
+.admin-account-chevron{color:#73809a;font-size:13px;line-height:1;transition:transform .15s ease;}
+.admin-account-trigger[aria-expanded="true"] .admin-account-chevron{transform:rotate(180deg);}
+.admin-account-menu{position:absolute;right:0;top:calc(100% + 8px);z-index:3000;width:240px;padding:9px;border:1px solid var(--admin-line-strong);border-radius:13px;background:rgba(12,17,29,.985);box-shadow:0 20px 60px rgba(0,0,0,.42);backdrop-filter:blur(18px);}
+.admin-account-menu.hidden{display:none;}
+.admin-account-menu-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 7px 9px;border-bottom:1px solid var(--admin-line);color:#68748b;font:800 8px/1.2 "JetBrains Mono",monospace;letter-spacing:.11em;}
+.admin-account-menu-head b{color:#aab4c7;font-weight:700;letter-spacing:0;}
+.admin-account-menu-line{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 7px;color:#748199;font-size:10px;}
+.admin-account-menu-line strong{color:#dce4f4;font-size:10px;}
+.admin-account-logout{width:100%;min-height:39px;padding:7px 9px;border:1px solid rgba(239,68,68,.18);border-radius:9px;background:rgba(239,68,68,.07);color:#ffc2c2;text-align:left;font:700 10px inherit;cursor:pointer;}
+.admin-account-logout:hover,.admin-account-logout:focus-visible{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.32);outline:none;}
+
+@media(max-width:720px){
+  .admin-account-menu{position:fixed;right:7px;top:calc(var(--admin-topbar) + 7px);width:min(260px,calc(100vw - 14px));}
+}
+
+@media(max-width:720px){
+  /* 2026-09-27 mobile page-header correction: the selected Admin section must
+     leave most of the viewport for its actual content. Keep the title readable,
+     but compress the sticky chrome and move long tab-specific tools into one
+     horizontally scrollable row instead of stacking multiple rows vertically. */
+  .admin-page-header{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
+    gap:6px 8px;
+    margin-bottom:8px;
+    padding:9px 0 8px;
+  }
+  .admin-page-heading{
+    min-width:0;
+    width:auto;
+  }
+  .admin-page-kicker{
+    margin-bottom:4px;
+    font-size:7px;
+    letter-spacing:.15em;
+  }
+  .admin-page-header h1{
+    font-size:18px;
+    line-height:1.12;
+  }
+  .admin-page-header p{
+    margin-top:3px;
+    max-width:100%;
+    font-size:9px;
+    line-height:1.35;
+    display:-webkit-box;
+    -webkit-box-orient:vertical;
+    -webkit-line-clamp:2;
+    overflow:hidden;
+  }
+  .admin-page-actions{
+    min-width:0;
+    width:auto;
+    justify-content:flex-end;
+    align-items:center;
+    gap:5px;
+    flex-wrap:nowrap;
+  }
+  .admin-page-actions > [data-shell-refresh-current]{
+    min-width:32px;
+    width:32px;
+    min-height:32px;
+    height:32px;
+    padding:0;
+    font-size:0;
+    flex:0 0 32px;
+  }
+  .admin-page-actions > [data-shell-refresh-current]::after{
+    content:"↻";
+    font-size:15px;
+    line-height:1;
+  }
+
+  /* Diagnostics / Operations have secondary quick-jump controls. Their
+     controls remain available, but occupy one compact horizontal strip. */
+  body[data-admin-tab="tools"] .admin-page-header,
+  body[data-admin-tab="diagnostics"] .admin-page-header{
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
+  }
+  body[data-admin-tab="tools"] .admin-page-heading,
+  body[data-admin-tab="diagnostics"] .admin-page-heading{
+    grid-column:1;
+    grid-row:1;
+    width:auto;
+  }
+  body[data-admin-tab="tools"] .admin-page-actions,
+  body[data-admin-tab="diagnostics"] .admin-page-actions{
+    grid-column:2;
+    grid-row:1;
+    width:auto;
+    justify-content:flex-end;
+  }
+  body[data-admin-tab="tools"] .admin-operations-header-tools,
+  body[data-admin-tab="diagnostics"] .admin-diagnostics-header-tools{
+    grid-column:1 / -1;
+    grid-row:2;
+    width:100%;
+    max-width:none;
+    flex-direction:row;
+    align-items:center;
+    gap:5px;
+    min-width:0;
+    overflow-x:auto;
+    overflow-y:hidden;
+    scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+    padding-bottom:1px;
+  }
+  body[data-admin-tab="tools"] .admin-operations-header-tools::-webkit-scrollbar,
+  body[data-admin-tab="diagnostics"] .admin-diagnostics-header-tools::-webkit-scrollbar{
+    display:none;
+  }
+  body[data-admin-tab="tools"] .ops-header-section-jump,
+  body[data-admin-tab="diagnostics"] .diag-header-section-jump{
+    flex:0 0 auto;
+    width:max-content;
+    max-width:none;
+  }
+  body[data-admin-tab="diagnostics"] .admin-diagnostics-github-line,
+  body[data-admin-tab="diagnostics"] .admin-diagnostics-header-actions{
+    flex:0 0 auto;
+    width:auto;
+    max-width:none;
+  }
+  body[data-admin-tab="diagnostics"] .admin-diagnostics-header-actions{
+    overflow:visible;
+    padding-bottom:0;
+  }
+  body[data-admin-tab="tools"] .ops-header-section-jump,
+  body[data-admin-tab="diagnostics"] .diag-header-section-jump{
+    justify-content:flex-start;
+  }
+
+  /* Keep the jump targets aligned with the now-shorter sticky header. */
+  #bugReplayCard,#diagPermissions,#diagEvents{
+    scroll-margin-top:calc(var(--admin-page-header-height,84px) + 8px);
+  }
+}
+
+@media(prefers-reduced-motion:reduce){
+  .admin-page-stack>.tab-panel.active,.admin-command-trigger,.admin-nav-item,.admin-skip-link,.admin-account-chevron{animation:none;transition:none;}
+  html{scroll-behavior:auto;}
+}
+
+/* Embedded Admin document: the whole Admin Control Center lives inside an Internal Browser iframe.
+   Keep the inner shell self-contained and allow its own workspace scrolling without creating
+   an extra body gutter. The parent Admin Browser owns the outer viewport. */
+html.admin-embedded-document,
+html.admin-embedded-document body[data-admin-embedded="1"] {
+  width:100%;
+  min-width:0;
+  min-height:100%;
+}
+body[data-page="admin"][data-admin-embedded="1"] {
+  padding-bottom:0;
+  overflow:hidden;
+}
+body[data-page="admin"][data-admin-embedded="1"] .wrap {
+  width:100%;
+  max-width:none;
+  margin:0;
+  padding:0;
+}

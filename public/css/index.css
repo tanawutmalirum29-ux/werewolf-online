@@ -1184,3 +1184,786 @@ body::before{
     .account-profile-row{font-size:11.5px;}
     .account-id-value{max-width:67%;}
 }
+
+
+/* ==========================================================================
+   INDEX LOBBY REDESIGN — responsive shell + docked desktop profile
+   --------------------------------------------------------------------------
+   Layout rule: the page changes composition with available space, not device
+   names. On wide/high viewports the profile becomes a permanent right dock;
+   on smaller viewports the same profile stays a modal.
+   ========================================================================== */
+
+:root{
+    --lobby-page-max:1440px;
+    --lobby-panel:rgba(7,18,31,.72);
+    --lobby-panel-strong:rgba(7,17,29,.88);
+    --lobby-line:rgba(255,255,255,.10);
+    --lobby-line-soft:rgba(255,255,255,.055);
+    --lobby-text:#fff8ec;
+    --lobby-muted:#c6c0c2;
+    --lobby-accent:#5eead4;
+    --lobby-accent-deep:#0f8f86;
+    --lobby-gold:#f8cf73;
+    --lobby-danger:#f87171;
+}
+
+html{
+    min-height:100%;
+    background:#080b17;
+}
+
+body{
+    min-height:100vh;
+    min-height:100svh;
+    display:block;
+    padding:0;
+    overflow:auto;
+    background:
+        radial-gradient(circle 130px at 82% 18%, rgba(255,244,210,.98) 0 11%, rgba(255,213,137,.44) 26%, transparent 72%),
+        radial-gradient(ellipse 850px 260px at 50% 69%, rgba(255,255,255,.065), transparent 72%),
+        radial-gradient(ellipse 1200px 520px at 50% 112%, rgba(13,14,28,.60), transparent 72%),
+        linear-gradient(180deg,
+            #090b1b 0%,
+            #17142d 20%,
+            #3c2150 43%,
+            #6f3d61 61%,
+            #59404a 75%,
+            #262536 100%);
+    background-attachment:fixed;
+}
+
+body::before{
+    background-image:
+        radial-gradient(1px 1px at 14% 18%, rgba(255,255,255,.48), transparent 45%),
+        radial-gradient(1px 1px at 31% 11%, rgba(255,255,255,.34), transparent 45%),
+        radial-gradient(1.2px 1.2px at 63% 17%, rgba(255,255,255,.40), transparent 45%),
+        radial-gradient(1px 1px at 90% 13%, rgba(255,255,255,.26), transparent 45%),
+        radial-gradient(ellipse 280px 14px at 50% 72%, rgba(255,255,255,.09), transparent 70%),
+        radial-gradient(ellipse 440px 18px at 22% 78%, rgba(255,255,255,.055), transparent 70%),
+        radial-gradient(ellipse 400px 18px at 82% 81%, rgba(255,255,255,.045), transparent 70%);
+    opacity:.86;
+}
+
+.lobby-page{
+    position:relative;
+    z-index:1;
+    width:min(var(--lobby-page-max), calc(100vw - 40px));
+    min-height:100vh;
+    min-height:100svh;
+    margin:0 auto;
+    padding:20px 0 24px;
+    display:flex;
+    flex-direction:column;
+}
+
+.lobby-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:18px;
+    min-height:42px;
+    padding:0 6px 14px;
+    color:rgba(255,255,255,.82);
+}
+
+.lobby-header-brand{
+    min-width:0;
+    display:flex;
+    align-items:center;
+    gap:9px;
+}
+
+.lobby-header-wolf{
+    width:31px;
+    height:31px;
+    display:grid;
+    place-items:center;
+    border:1px solid rgba(255,255,255,.09);
+    border-radius:10px;
+    background:rgba(7,18,31,.44);
+    box-shadow:0 8px 24px rgba(0,0,0,.18);
+    font-size:16px;
+    flex-shrink:0;
+}
+
+.lobby-header-title{
+    font:600 10px/1 "JetBrains Mono",monospace;
+    letter-spacing:.22em;
+    white-space:nowrap;
+}
+
+.lobby-header-caption{display:none;}
+
+.lobby-layout{
+    flex:1;
+    min-width:0;
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:14px 0 20px;
+}
+
+.card{
+    width:min(100%, 900px);
+    max-width:none;
+    min-width:0;
+    display:grid;
+    grid-template-columns:minmax(250px,.90fr) minmax(320px,1.10fr);
+    gap:12px;
+    padding:0;
+    overflow:hidden;
+    text-align:left;
+    border:1px solid var(--lobby-line);
+    border-radius:28px;
+    background:
+        linear-gradient(145deg, rgba(18,31,49,.84), rgba(6,18,31,.80)),
+        var(--lobby-panel);
+    box-shadow:
+        0 34px 90px rgba(0,0,0,.32),
+        inset 0 1px 0 rgba(255,255,255,.035);
+    backdrop-filter:blur(20px) saturate(115%);
+}
+
+.lobby-brand-block{
+    position:relative;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    align-items:flex-start;
+    padding:58px 46px;
+    background:
+        radial-gradient(circle 180px at 30% 23%, rgba(94,234,212,.10), transparent 70%),
+        linear-gradient(160deg, rgba(10,27,44,.62), rgba(7,19,32,.24));
+    border-right:1px solid var(--lobby-line-soft);
+}
+
+.lobby-brand-block::after{
+    content:"";
+    position:absolute;
+    inset:20px;
+    border:1px solid rgba(255,255,255,.035);
+    border-radius:20px;
+    pointer-events:none;
+}
+
+.seal{
+    margin:0 0 30px;
+    padding:0;
+    border:0;
+    border-radius:0;
+    background:none;
+    align-items:flex-start;
+    gap:5px;
+}
+
+.seal::before{display:none;}
+
+.seal-eyebrow{
+    font-size:9px;
+    letter-spacing:.33em;
+    color:rgba(201,183,154,.76);
+}
+
+.seal-title{
+    font-size:54px;
+    letter-spacing:.04em;
+    text-shadow:0 0 34px rgba(94,234,212,.28);
+}
+
+.seal-wolf{
+    margin-bottom:3px;
+    font-size:34px;
+}
+
+.hero-copy h1{
+    font-family:"Charm","IBM Plex Sans Thai",serif;
+    font-size:31px;
+    line-height:1.18;
+    font-weight:700;
+    color:#fff;
+    margin:0 0 9px;
+}
+
+.hero-copy .sub{
+    margin:0;
+    color:rgba(238,230,224,.78);
+    font-size:13px;
+    line-height:1.75;
+}
+
+.hero-copy .sub span{color:rgba(198,192,194,.65);}
+
+.lobby-brand-note{
+    width:100%;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-top:36px;
+    color:rgba(255,255,255,.34);
+}
+
+.lobby-brand-note span{
+    width:34px;
+    height:1px;
+    background:rgba(255,255,255,.16);
+}
+
+.lobby-brand-note b{
+    font:600 8px/1 "JetBrains Mono",monospace;
+    letter-spacing:.22em;
+}
+
+.lobby-controls{
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    padding:58px 46px;
+}
+
+.section-heading{margin-bottom:22px;}
+.section-kicker{
+    display:block;
+    margin-bottom:4px;
+    font:600 9px/1 "JetBrains Mono",monospace;
+    letter-spacing:.18em;
+    color:rgba(94,234,212,.72);
+}
+.section-heading h2{
+    margin:0;
+    font-size:24px;
+    line-height:1.2;
+    color:#fff;
+}
+.section-heading p{
+    margin-top:6px;
+    color:rgba(198,192,194,.67);
+    font-size:12px;
+    line-height:1.6;
+}
+
+.name-field{
+    margin:0 0 16px;
+    text-align:left;
+}
+
+.name-field label{
+    display:block;
+    margin:0 0 7px;
+    font-size:11px;
+    color:rgba(255,248,236,.73);
+    font-weight:600;
+}
+
+.name-input-wrap{position:relative;}
+.name-input-icon{
+    position:absolute;
+    left:13px;
+    top:50%;
+    transform:translateY(-50%);
+    font-size:13px;
+    opacity:.72;
+    pointer-events:none;
+}
+
+.name-field input{
+    width:100%;
+    min-height:48px;
+    padding:12px 14px 12px 40px;
+    border-radius:12px;
+    border:1px solid rgba(255,255,255,.09);
+    background:rgba(3,14,25,.72);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.018);
+    color:#fff;
+    font-size:15px;
+}
+.name-field input::placeholder{color:rgba(198,192,194,.52);}
+.name-field input:focus{
+    outline:none;
+    border-color:rgba(94,234,212,.46);
+    box-shadow:0 0 0 3px rgba(94,234,212,.075);
+}
+
+.lobby-actions{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:10px;
+}
+
+.btn{
+    position:relative;
+    width:100%;
+    min-height:66px;
+    margin:0;
+    padding:11px 15px;
+    display:grid;
+    grid-template-columns:34px minmax(0,1fr) 22px;
+    align-items:center;
+    justify-content:initial;
+    gap:10px;
+    border-radius:14px;
+    text-align:left;
+    font-family:"IBM Plex Sans Thai",sans-serif;
+    font-size:15px;
+    font-weight:600;
+    line-height:1.25;
+    transition:transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
+}
+
+.btn-icon{
+    width:34px;
+    height:34px;
+    display:grid;
+    place-items:center;
+    border-radius:10px;
+    font-size:18px;
+    background:rgba(255,255,255,.065);
+}
+
+.btn-copy{
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+}
+
+.btn-copy small{
+    color:rgba(255,255,255,.56);
+    font-size:10.5px;
+    font-weight:400;
+    line-height:1.3;
+}
+
+.btn-arrow{
+    color:rgba(255,255,255,.56);
+    font:500 18px/1 "JetBrains Mono",monospace;
+    text-align:right;
+    transition:transform .16s ease, color .16s ease;
+}
+
+.btn-host{
+    background:linear-gradient(135deg, rgba(24,185,169,.98), rgba(13,132,126,.98));
+    border:1px solid rgba(131,255,236,.16);
+    box-shadow:0 14px 30px rgba(20,184,166,.18);
+}
+.btn-host .btn-icon{background:rgba(255,255,255,.12);}
+.btn-host .btn-copy small{color:rgba(255,255,255,.70);}
+.btn-host .btn-arrow{color:rgba(255,255,255,.82);}
+
+.btn-player{
+    background:rgba(9,33,47,.72);
+    border:1px solid rgba(255,255,255,.08);
+    color:var(--lobby-text);
+}
+.btn-player .btn-icon{background:rgba(255,255,255,.045);}
+
+.btn:hover{
+    transform:translateY(-2px);
+}
+.btn-host:hover{box-shadow:0 18px 34px rgba(20,184,166,.24);filter:none;}
+.btn-player:hover{background:rgba(12,43,58,.86);border-color:rgba(94,234,212,.25);}
+.btn:hover .btn-arrow{transform:translateX(2px);color:#fff;}
+.btn:active{transform:translateY(0);}
+
+.footer{
+    margin-top:20px;
+    padding-top:14px;
+    border-top:1px solid rgba(255,255,255,.05);
+    color:rgba(137,147,168,.52);
+    font-size:9px;
+    letter-spacing:.16em;
+    text-align:left;
+}
+
+.name-badge{
+    top:18px;
+    right:18px;
+    min-height:38px;
+    margin:0;
+    padding:7px 12px 7px 10px;
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:12px;
+    background:rgba(6,18,31,.58);
+    box-shadow:0 10px 30px rgba(0,0,0,.18);
+    font-family:"IBM Plex Sans Thai",sans-serif;
+    backdrop-filter:blur(14px);
+}
+.name-badge:hover{border-color:rgba(94,234,212,.38);transform:translateY(-1px);}
+
+/* Profile remains the same data source on every screen; only its presentation moves. */
+#statsModal .modal-box.stats-modal-box{
+    width:min(420px, 100%);
+}
+
+@media (min-width:1120px) and (min-height:560px){
+    /* Reserve an explicit gutter between the main lobby and the always-visible Profile dock.
+       Keeping the gutter separate from the dock width prevents the two surfaces from visually
+       touching on medium desktop / iPad-landscape widths. */
+    body.profile-docked .lobby-page{
+        --profile-dock-width:320px;
+        --profile-dock-gap:34px;
+        width:min(1480px, calc(100vw - 40px));
+        padding-right:calc(var(--profile-dock-width) + var(--profile-dock-gap));
+    }
+
+    body.profile-docked .lobby-layout{justify-content:center;}
+
+    body.profile-docked #statsModal{
+        display:flex !important;
+        align-items:center;
+        justify-content:flex-end;
+        padding:78px max(20px, 2.2vw) 24px;
+        background:transparent;
+        backdrop-filter:none;
+        pointer-events:none;
+        z-index:90;
+    }
+
+    body.profile-docked #statsModal .stats-modal-box{
+        pointer-events:auto;
+        width:var(--profile-dock-width);
+        max-width:none;
+        height:auto;
+        max-height:min(760px, calc(100vh - 112px));
+        margin:0;
+        border-radius:22px;
+        padding:16px 16px 13px;
+        background:
+            linear-gradient(180deg, rgba(9,23,36,.96), rgba(5,18,28,.94));
+        border-color:rgba(255,255,255,.10);
+        box-shadow:0 30px 90px rgba(0,0,0,.36), inset 0 1px 0 rgba(255,255,255,.03);
+    }
+
+    body.profile-docked .profile-modal-actions{display:none;}
+    body.profile-docked .profile-modal-head{padding-bottom:12px;}
+    body.profile-docked #statsModalBody{padding-top:10px;}
+    body.profile-docked .account-google-section{padding:11px;}
+    body.profile-docked .stats-overall{gap:7px;}
+    body.profile-docked .stats-overall-cell{padding:9px 5px;}
+
+    /* Desktop Profile is already visible as the permanent dock.
+       Do not leave a second clickable trigger for the same panel. */
+    body.profile-docked .name-badge{
+        display:none !important;
+        pointer-events:none;
+    }
+}
+
+@media (min-width:1200px) and (min-height:700px){
+    body.profile-docked .lobby-page{
+        --profile-dock-width:340px;
+        --profile-dock-gap:34px;
+        padding-right:calc(var(--profile-dock-width) + var(--profile-dock-gap));
+    }
+    body.profile-docked #statsModal .stats-modal-box{width:var(--profile-dock-width);}
+    .card{width:min(930px, 100%);}
+}
+
+@media (min-width:1600px) and (min-height:800px){
+    body.profile-docked .lobby-page{
+        --profile-dock-width:340px;
+        --profile-dock-gap:40px;
+        padding-right:calc(var(--profile-dock-width) + var(--profile-dock-gap));
+    }
+    .card{width:min(1000px, 100%);}
+    .lobby-brand-block{padding:64px 54px;}
+    .lobby-controls{padding:64px 54px;}
+    .hero-copy h1{font-size:34px;}
+}
+
+/* Tablet: preserve the redesign, but reclaim width before docking Profile. */
+@media (max-width:959px){
+    .lobby-page{width:min(100% - 32px, 860px);padding:14px 0 18px;}
+    .lobby-layout{padding:8px 0 14px;}
+    .card{grid-template-columns:1fr; width:100%; border-radius:24px;gap:10px;}
+    .lobby-brand-block{padding:42px 34px 32px;border-right:0;border-bottom:0;align-items:center;text-align:center;}
+    .lobby-brand-block::after{inset:14px;border-radius:17px;}
+    .seal{align-items:center;margin-bottom:20px;}
+    .seal-title{font-size:46px;}
+    .hero-copy h1{font-size:27px;}
+    .lobby-brand-note{justify-content:center;margin-top:25px;}
+    .lobby-controls{padding:32px 34px 34px;}
+    .section-heading{text-align:left;}
+    .name-field{margin-bottom:14px;}
+    .lobby-actions{grid-template-columns:1fr 1fr;}
+    .btn{min-height:62px;}
+    .footer{text-align:center;}
+}
+
+@media (max-width:639px){
+    .lobby-page{width:calc(100% - 20px);padding:9px 0 12px;}
+    .lobby-header{min-height:36px;padding:0 3px 9px;}
+    .lobby-header-title{font-size:8.5px;letter-spacing:.18em;}
+    .lobby-header-caption{display:none;}
+    .lobby-layout{padding:4px 0 9px;align-items:center;}
+    .card{border-radius:20px;}
+    .lobby-brand-block{padding:30px 22px 24px;}
+    .lobby-brand-block::after{inset:10px;border-radius:15px;}
+    .seal{margin-bottom:16px;}
+    .seal-wolf{font-size:29px;}
+    .seal-title{font-size:41px;}
+    .hero-copy h1{font-size:24px;margin-bottom:6px;}
+    .hero-copy .sub{font-size:11.5px;line-height:1.65;}
+    .lobby-brand-note{margin-top:18px;}
+    .lobby-controls{padding:24px 20px 22px;}
+    .section-heading{margin-bottom:17px;}
+    .section-heading h2{font-size:21px;}
+    .section-heading p{font-size:11px;}
+    .lobby-actions{grid-template-columns:1fr;gap:8px;}
+    .btn{min-height:60px;padding:10px 13px;border-radius:13px;}
+    .footer{margin-top:15px;padding-top:12px;font-size:8px;}
+    .name-badge{top:10px;right:10px;min-height:34px;padding:6px 10px;font-size:12px;border-radius:11px;}
+    .name-badge-icon{font-size:12px;}
+    #statsModal .modal-box.stats-modal-box{max-width:min(420px, calc(100vw - 24px));max-height:calc(100vh - 24px);border-radius:19px;}
+}
+
+@media (max-height:620px){
+    .lobby-page{padding-top:8px;padding-bottom:10px;}
+    .lobby-header{padding-bottom:7px;min-height:34px;}
+    .lobby-layout{padding:3px 0 8px;}
+    .lobby-brand-block{padding-top:24px;padding-bottom:20px;}
+    .lobby-controls{padding-top:22px;padding-bottom:22px;}
+    .section-heading{margin-bottom:12px;}
+    .section-heading p{display:none;}
+    .footer{margin-top:11px;padding-top:9px;}
+    .btn{min-height:56px;}
+}
+
+@media (max-width:420px){
+    .lobby-actions{grid-template-columns:1fr;}
+    .lobby-controls{padding-left:17px;padding-right:17px;}
+    .name-field input{min-height:46px;}
+    .btn{min-height:58px;}
+    .lobby-brand-block{padding-left:18px;padding-right:18px;}
+}
+
+
+/* Shared action feedback used by lobby actions */
+.runtime-action-status{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:1200;max-width:min(92vw,680px);padding:9px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(16,20,28,.94);color:#fff;box-shadow:0 10px 28px rgba(0,0,0,.22);font-size:13px;font-weight:600;backdrop-filter:blur(10px)}
+.runtime-action-status.pending{border-color:rgba(255,196,96,.45)}.runtime-action-status.success{border-color:rgba(91,214,142,.42)}.runtime-action-status.error{border-color:rgba(255,112,112,.52)}
+@media (max-width:700px){.runtime-action-status{top:8px;font-size:12px;padding:8px 11px}}
+
+
+/* ==========================================================================
+   INDEX VIEWPORT-FIT HARDENING — no page scroll on the lobby itself
+   --------------------------------------------------------------------------
+   The lobby is a single-screen surface. Small portrait screens stay stacked
+   but compact; short landscape screens switch to a two-column composition so
+   the available width is used instead of creating a tall scrolling page.
+   Modals/profile lists keep their own scroll behavior where content can be
+   genuinely longer than the viewport.
+   ========================================================================== */
+html,
+body{
+    width:100%;
+    height:100%;
+    min-height:100%;
+}
+
+body[data-page="index"]{
+    min-height:100svh;
+    height:100svh;
+    max-height:100svh;
+    padding:0;
+    overflow:hidden;
+    overscroll-behavior:none;
+}
+
+body[data-page="index"] .lobby-page{
+    width:min(var(--lobby-page-max), calc(100vw - 40px));
+    height:100svh;
+    min-height:0;
+    max-height:100svh;
+    padding:12px 0 14px;
+    overflow:hidden;
+}
+
+/* The generic Index viewport-fit rule above resets padding. Re-apply the reserved
+   Profile column afterwards so the viewport-fit pass cannot collapse the dock gutter. */
+@media (min-width:1120px) and (min-height:560px){
+    body[data-page="index"].profile-docked .lobby-page{
+        padding-right:calc(var(--profile-dock-width, 320px) + var(--profile-dock-gap, 34px));
+    }
+}
+
+body[data-page="index"] .lobby-header{
+    flex:0 0 auto;
+}
+
+body[data-page="index"] .lobby-layout{
+    min-height:0;
+    overflow:hidden;
+}
+
+body[data-page="index"] .card{
+    min-height:0;
+    max-height:100%;
+}
+
+/* Short / narrow portrait: keep the familiar top-to-bottom flow, but reclaim
+   vertical space before allowing anything to fall outside the viewport. */
+@media (max-width:639px) and (orientation:portrait) and (max-height:760px){
+    body[data-page="index"] .lobby-page{
+        width:calc(100vw - 14px);
+        padding:6px 0 8px;
+    }
+
+    body[data-page="index"] .lobby-header{
+        min-height:31px;
+        padding:0 3px 5px;
+    }
+
+    body[data-page="index"] .lobby-header-wolf{
+        width:27px;
+        height:27px;
+        border-radius:8px;
+        font-size:14px;
+    }
+
+    body[data-page="index"] .lobby-header-title{
+        font-size:7.5px;
+    }
+
+    body[data-page="index"] .lobby-layout{
+        padding:2px 0 4px;
+    }
+
+    body[data-page="index"] .card{
+        border-radius:17px;
+        gap:0;
+    }
+
+    body[data-page="index"] .lobby-brand-block{
+        padding:18px 16px 13px;
+    }
+
+    body[data-page="index"] .lobby-brand-block::after{inset:7px;border-radius:12px;}
+    body[data-page="index"] .seal{margin-bottom:8px;gap:2px;}
+    body[data-page="index"] .seal-wolf{font-size:24px;margin-bottom:0;}
+    body[data-page="index"] .seal-eyebrow{font-size:7px;}
+    body[data-page="index"] .seal-title{font-size:34px;line-height:1.02;}
+    body[data-page="index"] .hero-copy h1{font-size:20px;margin-bottom:4px;}
+    body[data-page="index"] .hero-copy .sub{font-size:10px;line-height:1.35;}
+    body[data-page="index"] .lobby-brand-note{margin-top:9px;gap:7px;}
+    body[data-page="index"] .lobby-brand-note b{font-size:6.5px;}
+    body[data-page="index"] .lobby-brand-note span{width:22px;}
+
+    body[data-page="index"] .lobby-controls{padding:14px 14px 12px;}
+    body[data-page="index"] .section-heading{margin-bottom:9px;}
+    body[data-page="index"] .section-kicker{font-size:7.5px;margin-bottom:2px;}
+    body[data-page="index"] .section-heading h2{font-size:18px;}
+    body[data-page="index"] .name-field{margin-bottom:8px;}
+    body[data-page="index"] .name-field label{font-size:9px;margin-bottom:4px;}
+    body[data-page="index"] .name-field input{min-height:40px;padding:8px 11px 8px 34px;font-size:13px;}
+    body[data-page="index"] .name-input-icon{left:10px;font-size:12px;}
+    body[data-page="index"] .name-error{font-size:10px;min-height:13px;margin-top:3px;}
+    body[data-page="index"] .lobby-actions{gap:6px;}
+    body[data-page="index"] .btn{min-height:48px;padding:7px 10px;border-radius:10px;grid-template-columns:28px minmax(0,1fr) 17px;gap:7px;font-size:13px;}
+    body[data-page="index"] .btn-icon{width:28px;height:28px;border-radius:8px;font-size:15px;}
+    body[data-page="index"] .btn-copy{gap:2px;}
+    body[data-page="index"] .btn-copy small{font-size:8.5px;line-height:1.15;}
+    body[data-page="index"] .btn-arrow{font-size:15px;}
+    body[data-page="index"] .footer{margin-top:7px;padding-top:7px;font-size:6.5px;}
+}
+
+/* Short landscape: use width to solve the height problem. This is the key
+   fix for phones held sideways (e.g. 568x320) and compact tablet windows. */
+@media (max-width:959px) and (orientation:landscape) and (max-height:600px){
+    body[data-page="index"] .lobby-page{
+        width:calc(100vw - 14px);
+        padding:5px 0 7px;
+    }
+
+    body[data-page="index"] .lobby-header{
+        min-height:29px;
+        padding:0 3px 4px;
+    }
+
+    body[data-page="index"] .lobby-header-wolf{
+        width:25px;
+        height:25px;
+        border-radius:7px;
+        font-size:13px;
+    }
+
+    body[data-page="index"] .lobby-header-title{font-size:7.5px;letter-spacing:.17em;}
+
+    body[data-page="index"] .lobby-layout{
+        padding:1px 0 3px;
+        align-items:stretch;
+    }
+
+    body[data-page="index"] .card{
+        width:100%;
+        height:100%;
+        max-height:100%;
+        grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+        gap:8px;
+        border-radius:17px;
+    }
+
+    body[data-page="index"] .lobby-brand-block{
+        min-height:0;
+        padding:14px 18px;
+        border-right:1px solid var(--lobby-line-soft);
+        border-bottom:0;
+        align-items:flex-start;
+        justify-content:center;
+    }
+
+    body[data-page="index"] .lobby-brand-block::after{inset:7px;border-radius:12px;}
+    body[data-page="index"] .seal{margin-bottom:7px;gap:2px;}
+    body[data-page="index"] .seal-wolf{font-size:23px;margin-bottom:0;}
+    body[data-page="index"] .seal-eyebrow{font-size:7px;}
+    body[data-page="index"] .seal-title{font-size:34px;line-height:1;}
+    body[data-page="index"] .hero-copy h1{font-size:19px;margin-bottom:3px;}
+    body[data-page="index"] .hero-copy .sub{font-size:9.5px;line-height:1.35;}
+    body[data-page="index"] .hero-copy .sub span{display:block;margin-top:1px;}
+    body[data-page="index"] .lobby-brand-note{margin-top:9px;gap:6px;}
+    body[data-page="index"] .lobby-brand-note b{font-size:6px;}
+    body[data-page="index"] .lobby-brand-note span{width:18px;}
+
+    body[data-page="index"] .lobby-controls{
+        min-height:0;
+        padding:13px 18px 11px;
+        justify-content:center;
+    }
+
+    body[data-page="index"] .section-heading{margin-bottom:8px;}
+    body[data-page="index"] .section-kicker{font-size:7px;margin-bottom:2px;}
+    body[data-page="index"] .section-heading h2{font-size:18px;}
+    body[data-page="index"] .name-field{margin-bottom:7px;}
+    body[data-page="index"] .name-field label{font-size:9px;margin-bottom:4px;}
+    body[data-page="index"] .name-field input{min-height:39px;padding:7px 10px 7px 33px;font-size:12.5px;}
+    body[data-page="index"] .name-input-icon{left:10px;font-size:11px;}
+    body[data-page="index"] .name-error{font-size:9.5px;min-height:12px;margin-top:2px;}
+    body[data-page="index"] .lobby-actions{grid-template-columns:1fr;gap:5px;}
+    body[data-page="index"] .btn{min-height:45px;padding:6px 9px;border-radius:9px;grid-template-columns:27px minmax(0,1fr) 16px;gap:6px;font-size:12.5px;}
+    body[data-page="index"] .btn-icon{width:27px;height:27px;border-radius:7px;font-size:14px;}
+    body[data-page="index"] .btn-copy{gap:1px;}
+    body[data-page="index"] .btn-copy small{font-size:8px;line-height:1.1;}
+    body[data-page="index"] .btn-arrow{font-size:14px;}
+    body[data-page="index"] .footer{margin-top:6px;padding-top:6px;font-size:6px;}
+}
+
+/* Very short landscape: remove non-essential decoration, not controls. */
+@media (max-width:700px) and (orientation:landscape) and (max-height:380px){
+    body[data-page="index"] .lobby-brand-note{display:none;}
+    body[data-page="index"] .hero-copy .sub span{display:none;}
+    body[data-page="index"] .footer{display:none;}
+    body[data-page="index"] .lobby-controls{padding-top:9px;padding-bottom:8px;}
+    body[data-page="index"] .lobby-brand-block{padding-top:10px;padding-bottom:10px;}
+    body[data-page="index"] .seal{margin-bottom:5px;}
+    body[data-page="index"] .seal-title{font-size:31px;}
+    body[data-page="index"] .hero-copy h1{font-size:17px;}
+}
+
+/* The index surface itself never scrolls. Long content is allowed to scroll
+   only inside explicit dialogs/lists that already own their scroll container. */
+body[data-page="index"] .stats-modal-box,
+body[data-page="index"] .stats-teams{
+    overscroll-behavior:contain;
+}
