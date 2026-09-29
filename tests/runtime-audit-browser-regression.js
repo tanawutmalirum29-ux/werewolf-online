@@ -8,11 +8,15 @@ const auditJs = fs.readFileSync(path.join(root, 'public/js/runtime-audit.js'), '
 const engineJs = fs.readFileSync(path.join(root, 'utils/runtime-audit-engine.js'), 'utf8');
 const browserEngineJs = fs.readFileSync(path.join(root, 'public/js/runtime-audit-engine.js'), 'utf8');
 assert.strictEqual(browserEngineJs, engineJs, 'browser runtime-audit engine must stay in sync with Node source');
-for (const file of ['public/player.html','public/host.html','public/admin.html']) {
+for (const file of ['public/index.html','public/player.html','public/host.html','public/admin.html']) {
     const html = fs.readFileSync(path.join(root, file), 'utf8');
-    assert(html.includes('runtime-audit-engine.js?v=1'), `${file}: runtime audit engine missing`);
-    assert(html.includes('runtime-audit.js?v=1'), `${file}: runtime audit script missing`);
+    assert(html.includes('runtime-audit-engine.js'), `${file}: runtime audit engine missing`);
+    assert(html.includes('runtime-audit-action-registry.js'), `${file}: runtime audit action registry missing`);
+    assert(html.includes('runtime-audit.js'), `${file}: runtime audit script missing`);
+    assert(html.includes('runtime-audit-actions.js'), `${file}: runtime audit action runner missing`);
 }
+const maintenance = fs.readFileSync(path.join(root, 'public/maintenance.html'), 'utf8');
+assert(maintenance.includes('__WW_MAINTENANCE_RUNTIME_AUDIT__'), 'maintenance runtime audit-lite missing');
 const player = fs.readFileSync(path.join(root, 'public/js/player.main.js'), 'utf8');
 const host = fs.readFileSync(path.join(root, 'public/js/host.main.js'), 'utf8');
 assert(player.includes('WWRuntimeAudit?.setStateProvider'), 'Player state provider hook missing');

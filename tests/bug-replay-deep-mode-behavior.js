@@ -35,6 +35,11 @@ function cleanup() {
         assert.strictEqual(deep.failures.length, 2, 'deep replay must collect every failure in a scenario');
         assert.strictEqual(deep.steps[1].ok, true, 'deep replay must continue to later passing step');
 
+        const defaultContinuous = await runBugReplayScenario(scenario, { timeoutMs:5000 });
+        assert.strictEqual(defaultContinuous.stopped, false, 'default replay must continue after failures');
+        assert.strictEqual(defaultContinuous.steps.length, 3, 'default replay must execute every step');
+        assert.strictEqual(defaultContinuous.failures.length, 2, 'default replay must collect every failure');
+
         const failFast = await runBugReplayScenario(scenario, { timeoutMs:5000, continueOnFailure:false });
         assert.strictEqual(failFast.ok, false, 'fail-fast replay must report failure');
         assert.strictEqual(failFast.stopped, false, 'fail-fast failure is not admin cancellation');

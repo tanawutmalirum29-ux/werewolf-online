@@ -15,6 +15,7 @@ assert(server.includes("recentSocketDisconnect('host', id, tok"),'host endpoint 
 assert(/if \(!socket \|\| !socket\.connected\) return;/.test(player),'player pagehide must not beacon after socket disconnect');
 assert(/if \(!socket \|\| !socket\.connected\) return;/.test(host),'host pagehide must not beacon after socket disconnect');
 assert(server.includes('function diagnosticIsBenignLifecycleEvent'),'diagnostics must distinguish lifecycle events from failures');
+assert(server.includes('BROWSER_EXIT_DUPLICATE_IGNORED'),'duplicate lifecycle guard must be classified as benign');
 assert(/if \(diagnosticIsBenignLifecycleEvent\(before\) \|\| diagnosticIsBenignLifecycleEvent\(after\)\) return null;/.test(server),'benign lifecycle events must not create causal graph edges');
 console.log('browser-exit duplicate lifecycle regression: PASS');
 

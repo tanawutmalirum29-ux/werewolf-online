@@ -8,20 +8,17 @@ assert(!html.includes('id="adminQuickDock"'), 'obsolete quick dock still present
 assert(!html.includes('function quickRefreshAdmin()'), 'obsolete quick refresh handler still present');
 assert(!html.includes('function updateQuickDock()'), 'obsolete quick dock state handler still present');
 
-assert(html.includes('id="adminBottomDock"'), 'missing admin bottom dock');
-assert(html.includes('data-admin-nav="overview"'), 'missing overview dock button');
-assert(html.includes('data-admin-nav="all"'), 'missing player dock button');
-assert(html.includes('data-admin-nav="live"'), 'missing live dock button');
-assert(html.includes('data-admin-nav="rooms"'), 'missing rooms dock button');
-assert(html.includes('data-admin-nav="tools"'), 'missing system dock button');
-assert(html.includes('data-admin-nav="diagnostics"'), 'missing diagnostics dock button');
-assert(html.includes('id="adminPanelSheet"'), 'missing floating admin panel sheet');
-assert(html.includes('function closeAdminPanel()'), 'missing admin panel close handler');
-assert(html.includes('const ADMIN_PANEL_META'), 'missing admin panel metadata');
-assert(html.includes('data-admin-sheet-close'), 'missing admin panel backdrop close target');
-assert(!html.includes('<div class="tabs admin-tabs">'), 'old top admin tab bar still present');
+assert(!html.includes('id="adminBottomDock"'), 'legacy bottom dock should be removed');
+assert(!html.includes('id="adminPanelSheet"'), 'legacy floating panel sheet should be removed');
+assert(html.includes('class="admin-sidebar-nav"'), 'persistent sidebar navigation missing');
+assert(html.includes('id="adminApp"'), 'Admin Control Center root missing');
+assert(html.includes('id="adminWorkspace"'), 'Admin workspace missing');
+assert(!html.includes('id="adminShellContext"'), 'obsolete context rail must stay removed');
+assert(html.includes('function closeAdminPanel()'), 'missing compatibility navigation handler');
+assert(html.includes('const ADMIN_PANEL_META'), 'missing admin page metadata');
+assert(!html.includes('class="tabs admin-tabs"'), 'old top admin tab bar still present');
 
-assert(html.includes('class="dashboard-focus"'), 'missing simplified dashboard guidance');
+assert(html.includes('class="overview-dashboard"'), 'missing redesigned Overview dashboard');
 assert(html.includes('class="player-account-groups"'), 'missing split player account groups');
 assert(html.includes('group("google"'), 'missing Google account area');
 assert(html.includes('group("temporary"'), 'missing temporary account area');
@@ -31,10 +28,11 @@ assert(html.includes('a.accountType === "temporary" ? "🟡 บัญชีช�
 
 assert(html.includes('id="adminViewportChip"'), 'developer viewport control was lost');
 assert(html.includes('id="copyAdminCommandBtn"'), 'developer copy-command control was lost');
-assert(html.includes('id="adminReleaseInline"'), 'inline admin release display is missing');
+assert(!html.includes('id="adminReleaseInline"'), 'obsolete inline admin release display must be removed with Operations System card');
+assert(html.includes('id="runningVersionChip"'), 'global running version chip must remain');
 
 const panelIds = ['live', 'all', 'rooms', 'tools', 'diagnostics'];
 for (const id of panelIds) {
-    assert(html.includes('id="tab-' + id + '" data-admin-panel="' + id + '"'), 'panel marker missing for ' + id);
+    assert(new RegExp('id=\"tab-' + id + '\"[^>]*data-admin-panel=\"' + id + '\"|data-admin-panel=\"' + id + '\"[^>]*id=\"tab-' + id + '\"').test(html), 'panel marker missing for ' + id);
 }
-console.log('admin bottom dock + floating panel + Google/temporary separation regression: PASS');
+console.log('admin workspace shell + Google/temporary separation regression: PASS');

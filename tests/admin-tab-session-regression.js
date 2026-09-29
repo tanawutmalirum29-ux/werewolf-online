@@ -28,11 +28,14 @@ assert(server.includes('adminTabSessionRevoked'), 'tab admin logout must revoke 
 
 assert(admin.includes('autoConnect:false'), 'admin socket must not connect before tab authentication is ready');
 assert(admin.includes('/js/admin-auth-tab.js?v=20260925-1'), 'tab auth client module missing');
-assert(admin.includes('/js/admin-command-registry.js?v=20260925-1'), 'admin command registry missing');
-assert(admin.includes('/js/admin-shell.js?v=20260925-1'), 'admin shell script must be loaded by the real Admin page');
+assert(admin.includes('/js/admin-command-registry.js?v=20260925-2'), 'admin command registry missing');
+assert(admin.includes('/js/admin-shell.js?v=20260926-5'), 'admin shell script must be loaded by the real Admin page');
 assert(admin.includes('function updateAdminShellStatus'), 'admin page must bridge live status into the shell');
-assert(shell.includes('adminGameSurface'), 'real index surface missing from admin shell');
-assert(shell.includes('/index.html?embedded=admin'), 'admin shell must embed the actual index page');
+assert(admin.includes('id="adminApp"') && admin.includes('class="admin-app-shell"'), 'Admin Control Center root missing');
+assert(admin.includes('class="admin-sidebar-nav"'), 'persistent Admin sidebar navigation missing');
+assert(!admin.includes('id="adminShellContext"'), 'obsolete persistent context rail must stay removed');
+assert(!shell.includes('/index.html?embedded=admin'), 'new admin shell must not embed the Index page');
+assert(!admin.includes('id="adminGameSurface"'), 'legacy Index iframe must be removed from Admin');
 assert(shell.includes('adminCommandPalette'), 'command palette missing');
 assert(shell.includes('ctrlKey') && shell.includes('metaKey'), 'command palette shortcut support missing');
 assert(admin.includes('window.__wwAdminSocket = socket'), 'admin shell logout must be able to access the shared socket');
@@ -43,11 +46,21 @@ assert(auth.includes('Authorization', 0), 'tab auth fetch wrapper must present b
 assert(auth.includes('history.replaceState'), 'OAuth fragment must be cleared after exchange');
 assert(shell.includes('data-shell-command'), 'shell quick commands missing');
 assert(shell.includes('ww-admin-event'), 'Admin Event Bus integration missing');
-assert(shell.includes('e.origin!==location.origin'), 'iframe message origin must be same-origin checked');
+assert(shell.includes('data-admin-nav') || admin.includes('data-admin-nav'), 'Admin navigation wiring missing');
 assert(registry.includes('server.reload.both'), 'root shortcut registry missing server controls');
 assert(registry.includes('bugreplay.phase2'), 'root shortcut registry missing diagnostics/phase2');
 assert(css.includes('@media(max-width:720px)'), 'mobile shell layout missing');
-assert(css.includes('grid-template-columns:72px'), 'desktop shell rail layout missing');
+assert(css.includes('grid-template-columns:var(--admin-sidebar)'), 'desktop Admin sidebar layout missing');
+assert(css.includes('@media(max-width:720px)'), 'mobile Admin navigation layout missing');
+const phase2css = fs.readFileSync(path.join(root, 'public/css/admin-phase2.css'), 'utf8');
+const phase2js = fs.readFileSync(path.join(root, 'public/js/admin-phase2.js'), 'utf8');
+assert(admin.includes('/css/admin-phase2.css?v=20260926-7'), 'Phase 2 CSS missing');
+assert(admin.includes('/js/admin-phase2.js?v=20260925-1'), 'Phase 2 JS missing');
+assert(phase2css.includes('.phase2-page-intro') && !phase2css.includes('#accountOverlay'), 'Phase 2 layout styles missing or obsolete account drawer remains');
+assert(phase2js.includes('globalSearchItems') && phase2js.includes('playerFilterBar') && phase2js.includes('installContextEnhancement'), 'Phase 2 functional UX hooks missing');
+assert(admin.includes('id="phase2DangerCard"'), 'Phase 2 danger zone mount missing');
+assert(admin.includes('id="adminOperationsHeaderTools"'), 'Operations header tool mount missing');
+assert(!admin.includes('id="phase2DevCard"'), 'obsolete Operations System card must stay removed');
 
 // Execute the small auth module in a deterministic browser stub and verify tab isolation.
 const storage = new Map();

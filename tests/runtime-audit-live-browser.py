@@ -2,8 +2,10 @@ from pathlib import Path
 try:
     from playwright.sync_api import sync_playwright
 except Exception as exc:
-    print(f'SKIP: python Playwright unavailable: {exc}')
+    print(f'SKIP: Python Playwright unavailable: {exc}')
     raise SystemExit(77)
+
+from browser_harness import launch_chromium
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,7 +27,11 @@ window.__WW_RUNTIME_STATE_PROVIDER__=()=>({roomId:'ABC',started:true,isNight:tru
 </script>
 </body></html>'''
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, executable_path='/usr/bin/chromium', args=['--no-sandbox'])
+        try:
+            browser = launch_chromium(p)
+        except RuntimeError as exc:
+            print(f"SKIP: {exc}")
+            raise SystemExit(77)
         page = browser.new_page(viewport={'width':390,'height':390})
         page.set_content(html, wait_until='load')
         page.evaluate('window.__WW_RUNTIME_AUDIT_FORCE__ = true')

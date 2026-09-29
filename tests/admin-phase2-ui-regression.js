@@ -1,0 +1,31 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const root = path.resolve(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'public/admin.html'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'public/css/admin-phase2.css'), 'utf8');
+const shellCss = fs.readFileSync(path.join(root, 'public/css/admin-shell.css'), 'utf8');
+const js = fs.readFileSync(path.join(root, 'public/js/admin-phase2.js'), 'utf8');
+const shell = fs.readFileSync(path.join(root, 'public/js/admin-shell.js'), 'utf8');
+
+assert(!js.includes('phase2OverviewExtra') && !js.includes('System Health') && !js.includes('Quick Actions'), 'legacy Phase 2 overview layer must be removed');
+assert(html.includes('id="playerFilterBar"'), 'player filter mount missing');
+assert(html.includes('id="phase2RoomSearch"'), 'room search missing');
+for (const id of ['phase2ServerCard','phase2UpdateCard','phase2TesterCard','phase2DangerCard']) assert(html.includes(`id="${id}"`), `${id} missing`);
+assert(!html.includes('id="phase2DevCard"'), 'obsolete System card must stay removed');
+assert(html.includes('id="adminOperationsHeaderTools"'), 'Operations header tools missing');
+assert(html.includes('ops-header-section-jump'), 'Operations header navigation missing');
+for (const id of ['bugReplayCard','diagPermissions','diagEvents']) assert(html.includes(id), `diagnostic navigation target ${id} missing`);
+assert(js.includes('globalSearchItems'), 'global data search bridge missing');
+assert(js.includes('registry.find='), 'dynamic command result resolution missing');
+assert(shell.includes('PINNED_KEY'), 'command pin persistence missing');
+assert(shell.includes('adminCommandPinBtn'), 'command pin control missing');
+assert(html.includes('id="playerDetailWorkspace"') && html.includes('id="roomDetailWorkspace"'), 'detail workspace mounts missing');
+assert(shellCss.includes('.admin-detail-workspace') && shellCss.includes('.room-inspector-content-grid'), 'workspace detail styling missing');
+assert(!html.includes('id="accountOverlay"') && !html.includes('id="roomDetailOverlay"'), 'Player/Room detail must not use overlays');
+assert(!css.includes('#accountOverlay') && !css.includes('#roomDetailOverlay'), 'obsolete detail overlay styling remains');
+console.log('admin-phase2-ui: PASS');
+
+assert(html.includes('class="overview-dashboard"'), 'new Overview dashboard missing');
+for (const id of ['overviewServerState','overviewServerMeta','sumOnline','sumRooms','sumAccounts','overviewRooms','overviewActivity']) assert(html.includes(`id="${id}"`), `Overview element ${id} missing`);
+for (const legacy of ['sumGoogleAccounts','sumTemporaryAccounts','sumRoomSessions','sumTesters','dashboard-focus','overviewRecent']) assert(!html.includes(`id="${legacy}"`) && !html.includes(`class="${legacy}"`), `legacy Overview element remains: ${legacy}`);

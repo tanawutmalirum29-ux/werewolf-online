@@ -1,0 +1,25 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const admin = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+
+assert(admin.includes('🔎 หยุดที่บั๊กแรก'), 'first-bug runner button should have a distinct label');
+assert(admin.includes('▶️ รันทั้งหมด'), 'complete runner button should have a distinct label');
+assert(!admin.includes('🔎 ตรวจละเอียดทุกขั้น'), 'old deep runner label should be removed');
+assert(!admin.includes('▶️ รันทั้งหมดต่อจนครบ'), 'old duplicate continuous label should be removed');
+assert(!admin.includes('🔎 ตรวจละเอียดต่อเนื่อง'), 'old duplicate continuous label should be removed');
+assert(admin.includes('let bugReplayFailureReportLinks = new Map();'), 'live failure report cache is missing');
+assert(admin.includes('async function ensureBugReplayFailureReportLinks(job)'), 'live failure report hydrator is missing');
+assert(admin.includes("/api/admin/diagnostics/share"), 'live failure reporting must reuse diagnostic share generation');
+assert(admin.includes('body:JSON.stringify({eventId})'), 'live failure report must request the concrete failure event');
+assert(admin.includes('bugReplayFocusedReportUrl(base,eventId)'), 'live failure must expose a focused event report URL');
+assert(!admin.includes('<div class="bug-replay-live-failures">'), 'continuous mode should not render per-failure live link list');
+assert(admin.includes('คัดลอกลิงก์ AI'), 'first-bug copy link action is missing');
+assert(admin.includes('เก็บรายละเอียดไว้ในรายงานรวม'), 'running state must point to the aggregate report');
+assert(admin.includes('ensureBugReplayFailureReportLinks(job).catch(()=>{});'), 'poll loop must hydrate newly discovered failure links');
+assert(admin.includes('bugReplayFailureReportLinks = new Map();'), 'new run must reset failure links cleanly');
+assert(admin.includes("jsonReportUrl=reportUrl+'.json'"), 'focused JSON URL must be derived from HTML event URL');
+assert(admin.includes('aiReportUrl:jsonReportUrl'), 'focused AI URL must use the machine-readable JSON report');
+console.log('bug-replay live failure report regression: PASS');

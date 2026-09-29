@@ -12,7 +12,7 @@ const start = serverText.indexOf('function publicDiagnosticText(');
 const end = serverText.indexOf('\nasync function persistDiagnosticShare(', start);
 assert(start >= 0 && end > start, 'public diagnostic helper block not found');
 const sandbox = { crypto, DIAGNOSTIC_SHARE_TOKEN_BYTES: 18 };
-const block = `${serverText.slice(start, end)}\nthis.__api={publicDiagnosticText,publicDiagnosticValue,publicDiagnosticResource,diagnosticShareToken,validDiagnosticShareToken,diagnosticShareText,diagnosticShareHtml,diagnosticShareFocusedBundle,diagnosticShareEventUrl};`;
+const block = `${serverText.slice(start, end)}\nthis.__api={publicDiagnosticText,publicDiagnosticValue,publicDiagnosticResource,diagnosticShareToken,validDiagnosticShareToken,diagnosticShareUrls,diagnosticShareText,diagnosticShareHtml,diagnosticShareFocusedBundle,diagnosticShareEventUrl};`;
 vm.runInNewContext(block, sandbox, { filename: 'diagnostic-share-block.js' });
 const api = sandbox.__api;
 
@@ -20,6 +20,11 @@ const token = api.diagnosticShareToken();
 assert(api.validDiagnosticShareToken(token), 'share token must pass strict token validation');
 assert(token.length >= 20 && token.length <= 80, 'share token length must remain bounded');
 assert(api.validDiagnosticShareToken('short') === false, 'short tokens must be rejected');
+
+const shareUrls = api.diagnosticShareUrls('https://example.test/', token);
+assert(shareUrls.html === `https://example.test/diagnostics/share/${token}`, 'shared diagnostic HTML URL must use the canonical route');
+assert(shareUrls.json === `${shareUrls.html}.json`, 'shared diagnostic JSON URL must extend the canonical HTML URL');
+assert(shareUrls.ai === shareUrls.json, 'AI share URL must be the machine-readable JSON endpoint');
 
 const secretText = 'https://x.test/join?tp=SUPERSECRET123456789&accountToken=abc123 user@example.com Bearer ABCDEFGHIJKLMNOPQRSTUVWXYZ eyJ' + 'a'.repeat(24) + '.' + 'b'.repeat(12) + '.' + 'c'.repeat(12);
 const safeText = api.publicDiagnosticText(secretText);

@@ -70,7 +70,7 @@ for (const needle of [
     'function renderPlayerCardFallback',
     'window.WWDiagnostic.breadcrumb("player-grid.render-fallback"',
     'playerGridSmallFitStreak',
-    'const suspiciousCollapsedHeight = metrics.height < 120',
+    'const suspiciousCollapsedHeight = document.body.classList.contains("game-visible")',
     'el.dataset.gridFitStatus = "empty"',
     'window.addEventListener("pageshow", refit, { passive: true });',
     'window.addEventListener("orientationchange", refit, { passive: true });',
@@ -122,11 +122,14 @@ for (const needle of [
     "id:'replay-engine'",
     'continueOnFailure',
 ]) assertOk(runner.includes(needle) || server.includes(needle), `replay depth hook missing: ${needle}`);
-assertOk(admin.includes('bugReplayDeepBtn'), 'Admin deep replay button missing');
-assertOk(admin.includes("startBugReplay('deep')"), 'Admin deep replay must use deep mode');
-assertOk(admin.includes('failureCount'), 'Admin UI must display deep replay failure count');
+assertOk(admin.includes('bugReplayFirstBtn'), 'Admin first-bug replay button missing');
+assertOk(admin.includes("startBugReplay('first')"), 'Admin first-bug replay must use first mode');
+assertOk(admin.includes('bugReplayStartBtn'), 'Admin full replay button missing');
+assertOk(admin.includes("startBugReplay('all')"), 'Admin full replay must use all mode');
+assertOk(!admin.includes('bugReplayDeepBtn'), 'Obsolete Admin deep replay button must stay removed');
+assertOk(!admin.includes('bugReplayPhase2Btn'), 'Obsolete Admin Phase 2 replay button must stay removed');
+assertOk(admin.includes('failureCount'), 'Admin UI must display replay failure count');
 assertOk(server.includes('remainingSteps'), 'Bug Replay job must expose accurate remaining-step progress');
-assertOk(admin.includes('bugReplayDeepBtn') && admin.includes("startBugReplay('deep')"), 'Admin deep replay wiring must remain available');
 assertOk(runner.includes('SKIP: python3 unavailable'), 'Python browser harness must degrade to an explicit skip when Python is unavailable');
 
 console.log(`bug-replay recent fixes: PASS (30,000 randomized grid states + reload/version/Host/Replay guards)`);

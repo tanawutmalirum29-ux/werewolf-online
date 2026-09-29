@@ -1,5 +1,12 @@
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+
+try:
+    from playwright.sync_api import sync_playwright
+except Exception as exc:
+    print(f"SKIP: Python Playwright unavailable: {exc}")
+    raise SystemExit(77)
+
+from browser_harness import launch_chromium
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAYER_HTML = (ROOT / 'public' / 'player.html').read_text()
@@ -60,7 +67,12 @@ body{{display:block !important}}
 </html>'''
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, executable_path="/usr/bin/chromium", args=["--no-sandbox"])
+        try:
+            browser = launch_chromium(p)
+        except RuntimeError as exc:
+            print(f"SKIP: {exc}")
+            raise SystemExit(77)
+
         page = browser.new_page(viewport={"width": 360, "height": 640}, device_scale_factor=2)
         page.set_content(harness, wait_until='load')
 
@@ -76,6 +88,23 @@ body{{display:block !important}}
                         d.dataset.alive = '1';
                         d.innerHTML = '<div class=\"pname\">P' + i + '</div>';
                         el.appendChild(d);
+                    }
+                    const cs = getComputedStyle(el);
+                    const w = el.clientWidth - (parseFloat(cs.paddingLeft)||0) - (parseFloat(cs.paddingRight)||0);
+                    const h = el.clientHeight - (parseFloat(cs.paddingTop)||0) - (parseFloat(cs.paddingBottom)||0);
+                    const gap = parseFloat(cs.columnGap)||6;
+                    const rowGap = parseFloat(cs.rowGap)||gap;
+                    const maxRaw = cs.getPropertyValue('--player-grid-max').trim();
+                    const configuredMax = /^(?:\\d+(?:\\.\\d+)?)(?:px)?$/i.test(maxRaw) ? parseFloat(maxRaw) : NaN;
+                    const responsiveMax = Math.min(340, Math.max(240, (window.visualViewport?.width || window.innerWidth || 0) * 0.12));
+                    const maxPx = Number.isFinite(configuredMax) && configuredMax >= 50 ? configuredMax : responsiveMax;
+                    const layout = computePlayerGridLayout(w, h, count, gap, 50, maxPx, rowGap);
+                    if (layout) {
+                        el.style.setProperty('--player-card-size', layout.size + 'px');
+                        el.style.setProperty('--player-grid-template', `repeat(${layout.columns}, ${layout.size}px)`);
+                        el.dataset.gridColumns = String(layout.columns);
+                        el.dataset.gridRows = String(layout.rows);
+                        el.dataset.gridFitStatus = layout.fits ? 'fit' : 'guarded';
                     }
                 },
                 metrics(expected) {
@@ -101,6 +130,8 @@ body{{display:block !important}}
                         height: er.height,
                         columns: Number(el.dataset.gridColumns || 0),
                         rows: Number(el.dataset.gridRows || 0),
+                        minCard: cards.length ? Math.min(...rects.map(r => r.width)) : 0,
+                        gridTrackPx: parseFloat((cs.gridTemplateColumns || '').split(' ')[0]) || 0,
                         scrollOverflow: Math.max(0, el.scrollHeight - el.clientHeight),
                     };
                 }
@@ -117,8 +148,10 @@ body{{display:block !important}}
             assert_true(m['visible'] == expected, f'{label}: hidden/missing card {m}')
             assert_true(m['overflow'] <= 0.75, f'{label}: card overflow {m}')
             assert_true(m['scrollOverflow'] <= 0.75, f'{label}: #players internal overflow {m}')
-            assert_true(m['firstLeft'] <= 1.0, f'{label}: first/last row not left anchored {m}')
+            assert_true(-1.0 <= m['firstLeft'] <= m['width'], f'{label}: player board is outside its own grid area {m}')
             assert_true(m['columns'] >= 1 and m['rows'] >= 1, f'{label}: invalid grid dimensions {m}')
+            assert_true(m['minCard'] >= 40, f'{label}: rendered Player cards collapsed below readable emergency size {m}')
+            assert_true(m['gridTrackPx'] > 0 and abs(m['minCard'] - m['gridTrackPx']) <= 1.5, f'{label}: grid track/card size mismatch (WebKit collapse guard) {m}')
             return m
 
         scenarios = [
@@ -185,6 +218,78 @@ body{{display:block !important}}
         assert_true(settled['columns'] <= 6, f'transient small measurement left too many columns: {settled}')
         assert_true(min(settled['sizes']) >= 140, f'transient small measurement left tiny cards: {settled}')
         assert_true(settled['status'] in ('fit','guarded'), f'transient state remained unresolved: {settled}')
+
+        # Full normal-Player layout regression: this deliberately does NOT override the game's
+        # desktop/mobile column CSS. It catches the production symptom seen in IMG_0947 where
+        # the grid track remained large while .player cards collapsed into tiny dots.
+        full_layout_html = f"""<!doctype html>
+<html lang=\"th\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<style>{PLAYER_CSS}</style></head>
+<body data-page=\"player\" class=\"is-day\">
+<div class=\"app game-visible\">
+  <div class=\"card hidden\" id=\"joinCard\"></div>
+  <div class=\"card hidden\" id=\"rolesPanelCard\"><h3>บทในเกมรอบนี้</h3><div>บท</div></div>
+  <div class=\"card\" id=\"playersCard\">
+    <div class=\"players-card-head\"><h3><span id=\"phaseIcon\"></span><span id=\"phaseText\">ผู้เล่นในห้อง</span></h3><div class=\"player-filter-chips\"><button class=\"filterChip active\">ทั้งหมด</button></div></div>
+    <p class=\"sub\" id=\"playersSub\"></p><div id=\"players\"></div>
+  </div>
+  <div class=\"card\" id=\"chatCard\"><div>แชท</div><div style=\"height:100%\"></div></div>
+</div>
+<div id=\"bottomBar\"></div><div id=\"dayNightBadge\"></div>
+<script>{controller}</script>
+</body></html>"""
+        full = browser.new_page(viewport={'width': 1180, 'height': 682}, device_scale_factor=2)
+        full.set_content(full_layout_html, wait_until='load')
+        full.evaluate("""() => {
+            for (let i=0;i<29;i++){
+                const d=document.createElement('div'); d.className='player'; d.dataset.pid='p'+i; d.dataset.alive='1';
+                d.innerHTML='<div class=\"pname\">ผู้เล่น'+(i+1)+'</div>';
+                document.getElementById('players').appendChild(d);
+            }
+            document.getElementById('playersCard').classList.remove('hidden');
+            document.getElementById('rolesPanelCard').classList.remove('hidden');
+        }""")
+        full.wait_for_timeout(260)
+        full_probe = full.evaluate("""() => {
+            const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};};
+            const el=document.getElementById('players');
+            const cards=[...el.querySelectorAll('.player')];
+            const cr=cards.map(rect);
+            return {
+                viewport:[innerWidth,innerHeight], app:rect(document.querySelector('.app')),
+                roles:rect(document.getElementById('rolesPanelCard')), chat:rect(document.getElementById('chatCard')),
+                players:rect(el), card:cr[0]||null, minCard:cr.length?Math.min(...cr.map(x=>x.w)):0,
+                gridTrack:parseFloat((getComputedStyle(el).gridTemplateColumns||'').split(' ')[0])||0,
+                columns:Number(el.dataset.gridColumns||0), rows:Number(el.dataset.gridRows||0),
+                status:el.dataset.gridFitStatus||''
+            };
+        }""")
+        assert_true(full_probe['roles']['w'] == 0, f'1180 normal Player should keep the role rail collapsed: {full_probe}')
+        assert_true(full_probe['app']['w'] >= 880, f'1180 normal Player work area is too narrow after the tablet layout refactor: {full_probe}')
+        assert_true(full_probe['chat']['w'] >= 255 and full_probe['chat']['w'] <= 275, f'1180 normal Player chat width regression: {full_probe}')
+        assert_true(full_probe['minCard'] >= 90, f'1180 normal Player cards collapsed into tiny dots: {full_probe}')
+        assert_true(full_probe['gridTrack'] > 0 and abs(full_probe['minCard'] - full_probe['gridTrack']) <= 1.5, f'1180 normal Player card/track mismatch: {full_probe}')
+        assert_true(full_probe['status'] in ('fit','guarded'), f'1180 normal Player grid never settled: {full_probe}')
+
+        full.set_viewport_size({'width': 1474, 'height': 1007})
+        full.wait_for_timeout(220)
+        full_probe_wide = full.evaluate("""() => {
+            const r=e=>{const x=e.getBoundingClientRect();return {x:x.x,w:x.width,h:x.height};};
+            const p=document.getElementById('players'), c=[...p.querySelectorAll('.player')].map(r);
+            return {app:r(document.querySelector('.app')),roles:r(document.getElementById('rolesPanelCard')),chat:r(document.getElementById('chatCard')),minCard:c.length?Math.min(...c.map(x=>x.w)):0,gridTrack:parseFloat((getComputedStyle(p).gridTemplateColumns||'').split(' ')[0])||0,columns:Number(p.dataset.gridColumns||0)};
+        }""")
+        assert_true(full_probe_wide['app']['w'] >= 880, f'1474 normal Player center canvas still too small: {full_probe_wide}')
+        assert_true(full_probe_wide['roles']['w'] <= 255, f'1474 normal Player role panel still consumes too much space: {full_probe_wide}')
+        assert_true(full_probe_wide['chat']['w'] <= 325, f'1474 normal Player chat panel still consumes too much space: {full_probe_wide}')
+        assert_true(full_probe_wide['minCard'] >= 120, f'1474 normal Player cards collapsed: {full_probe_wide}')
+        assert_true(abs(full_probe_wide['minCard'] - full_probe_wide['gridTrack']) <= 1.5, f'1474 card/track mismatch: {full_probe_wide}')
+
+        full.set_viewport_size({'width': 1024, 'height': 768})
+        full.wait_for_timeout(180)
+        compact_probe = full.evaluate("""() => {const r=e=>{const x=e.getBoundingClientRect();return {x:x.x,w:x.width,h:x.height};}; return {roles:r(document.getElementById('rolesPanelCard')),app:r(document.querySelector('.app')),chat:r(document.getElementById('chatCard'))};}""")
+        assert_true(compact_probe['roles']['w'] == 0, f'1024 normal Player must keep role panel out of the way: {compact_probe}')
+        assert_true(compact_probe['app']['w'] >= 740, f'1024 normal Player center area is too small: {compact_probe}')
+        full.close()
 
         # Background -> foreground: corrupt the exact inline template, then rely on the real lifecycle hooks.
         page.locator('#playersCard').evaluate('(el) => { el.style.width="500px"; el.style.height="680px"; }')

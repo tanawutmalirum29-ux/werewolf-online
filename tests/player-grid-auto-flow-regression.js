@@ -33,7 +33,8 @@ assert(hostJs.includes('list.style.removeProperty("grid-template-columns")'), "h
 assert(hostJs.includes('listSimple.style.removeProperty("grid-template-columns")'), "host auto mode must clear stale simple-list inline columns");
 assert(hostJs.includes("cardFitObserver = new ResizeObserver"), "host must observe card geometry changes");
 assert(hostJs.includes("const mo = new MutationObserver"), "host must re-observe live-added/removed cards");
-assert(hostJs.includes('window.addEventListener("pageshow", scheduleCardFit'), "host must refit after returning to the page without reload");
+assert(hostJs.includes('window.addEventListener("pageshow", () => {'), "host must refit after returning to the page without reload");
+assert(hostJs.includes("scheduleHostPlayerGridStabilization('pageshow')"), "host pageshow must also stabilize the player grid");
 
 // A single/partial row must stay at column 1; no auto-centering transform is allowed.
 assert(!hostCss.slice(hostCss.indexOf(".player{"), hostCss.indexOf(".player-inner")).includes("margin-inline:auto"), "host normal player cards must not auto-center");

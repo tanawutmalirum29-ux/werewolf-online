@@ -19,6 +19,10 @@ assert(server.includes('requestedMode === "phase2"'), 'server must explicitly al
 assert(server.includes('listBugReplayScenarios(safeMode)'), 'server must select Phase 2 catalog by mode');
 assert(server.includes('phase2Reports'), 'server must retain bounded Phase 2 stage reports');
 assert(server.includes('safeMode === "phase2" ? 60_000 : 25_000'), 'Phase 2 runner must have a longer bounded child-test timeout');
-assert(admin.includes('id="bugReplayPhase2Btn"') && admin.includes("startBugReplay('phase2')"), 'Admin must expose Phase 2 start control');
+assert(admin.includes('id="bugReplayFirstBtn"') && admin.includes("startBugReplay('first')"), 'Admin must expose Bug Replay first-failure control');
+assert(admin.includes('id="bugReplayStartBtn"') && admin.includes("startBugReplay('all')"), 'Admin must expose Bug Replay full-run control');
+assert(admin.includes('loadBugReplayScenarios("phase2")'), 'Admin must support loading the Phase 2 scenario catalog');
+assert(admin.includes('job.mode === "phase2"'), 'Admin must render Phase 2 job status when a Phase 2 run is launched through the control plane');
+assert(server.includes('requestedMode === "phase2"') && server.includes('startBugReplayJob(mode'), 'server must keep an explicit Phase 2 execution path');
 
 console.log('phase2-runner-integration-regression: PASS');

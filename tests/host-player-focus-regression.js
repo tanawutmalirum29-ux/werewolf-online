@@ -10,18 +10,20 @@ function assertOk(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-for (const id of ["playerCard", "playerFocusBtn", "list", "listSimple", "chatCard", "focusRestartBtn", "startNightBtn", "resolveBtn", "voteBtn", "reopenGameOverBtn", "reopenPopupBtn"]) {
+for (const id of ["playerCard", "playerFocusBtn", "list", "listSimple", "chatCard", "restartRoomBtn", "startNightBtn", "resolveBtn", "voteBtn", "reopenGameOverBtn", "reopenPopupBtn"]) {
   assertOk(new RegExp(`id=["']${id}["']`).test(html), `missing focus-mode hook: ${id}`);
 }
 
 assertOk(html.includes('onclick="togglePlayerFocusMode()"'), "focus button must call togglePlayerFocusMode");
 assertOk(html.includes('aria-pressed="false"'), "focus button must expose initial pressed state");
+assertOk((html.match(/id="restartRoomBtn"/g) || []).length === 1, "Host must have exactly one restart button hook");
+assertOk(html.lastIndexOf('id="restartRoomBtn"') > html.indexOf('<div class="floating-bar">'), "restart button must live in the floating dock");
 assertOk(js.includes("let playerFocusMode = false;"), "missing player focus state");
 assertOk(js.includes("function setPlayerFocusMode(active)"), "missing player focus setter");
 assertOk(js.includes("document.documentElement.classList.toggle(\"host-player-focus\", playerFocusMode);"), "focus mode must lock root state");
 assertOk(js.includes("document.body.classList.toggle(\"host-player-focus\", playerFocusMode);"), "focus mode must lock body state");
 assertOk(js.includes('event.key === "Escape" && playerFocusMode'), "focus mode must support Escape exit");
-assertOk(js.includes('const focusRestartBtn = document.getElementById("focusRestartBtn");'), "focus restart sync missing");
+assertOk(js.includes('const restartRoomBtn = document.getElementById("restartRoomBtn");'), "single restart sync missing");
 assertOk(js.includes('if (!canFocus && playerFocusMode) setPlayerFocusMode(false);'), "focus mode must auto-exit when host page is not available");
 
 for (const rule of [
@@ -66,7 +68,7 @@ for (const hiddenSelector of [
 assertOk(css.includes(`body.host-player-focus .vote-modal-overlay{\n    z-index:700;`), "focus mode must keep modal dialogs above the fullscreen player panel");
 assertOk(css.includes(`body.host-player-focus #wwVersionBadge{\n    display:none !important;`), "focus mode must hide the normal version badge");
 
-for (const actionId of ["startNightBtn", "resolveBtn", "voteBtn", "focusRestartBtn", "reopenGameOverBtn", "reopenPopupBtn"]) {
+for (const actionId of ["startNightBtn", "resolveBtn", "voteBtn", "restartRoomBtn", "reopenGameOverBtn", "reopenPopupBtn"]) {
   assertOk(new RegExp(`id=["']${actionId}["']`).test(html), `focus dock missing action: ${actionId}`);
 }
 

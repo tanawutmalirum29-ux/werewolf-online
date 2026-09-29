@@ -27,6 +27,8 @@ assert(server.includes('DIAGNOSTIC_SHARE_MAX_BYTES'), 'share payload must be bou
 assert(admin.includes('copyDiagnosticShareLink'), 'admin must expose copy-link action');
 assert(admin.includes('/api/admin/diagnostics/share'), 'admin must call the share endpoint');
 assert(admin.includes('🔗 คัดลอกลิงก์ AI'), 'admin UI must expose an AI-readable share button');
+assert(server.includes('aiUrl:jsonUrl'), 'diagnostic share API must explicitly expose the machine-readable AI URL');
+assert(admin.includes('const aiUrl = data.aiUrl || data.jsonUrl || data.url;'), 'diagnostic share UI must prefer the machine-readable AI URL');
 assert(admin.includes('หมดอายุ'), 'admin UI must communicate share expiry');
 assert(reporter.includes('causalHint'), 'client diagnostic causal hint must be sent to server');
 

@@ -22,5 +22,8 @@ assert(admin.includes('bugReplayAudit'), 'Admin Bug Replay audit panel missing')
 assert(admin.includes('/api/admin/bug-replay/audit?runId='), 'Admin must load runtime audit details from the server');
 assert(admin.includes('Runtime Audit'), 'Admin must show runtime audit status');
 assert(admin.includes('bugReplayAuditOpen'), 'Admin must keep audit detail collapsible');
+assert(admin.includes('runtimeActionAuditCard'), 'Admin Runtime Action Audit panel missing');
+assert(admin.includes('runRuntimeSafeActions'), 'Admin Runtime Action Audit runner missing');
+assert(fs.readFileSync(path.join(root,'public/js/admin-command-registry.js'),'utf8').includes('diagnostics.runtime-actions'), 'Runtime Action Audit command missing');
 
 console.log('runtime-audit-integration-regression: PASS');

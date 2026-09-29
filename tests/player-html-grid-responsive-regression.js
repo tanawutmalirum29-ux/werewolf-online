@@ -22,12 +22,19 @@ assert(playerJs.includes("function renderPlayerCardFallback"), "Player grid must
 assert(playerJs.includes('window.WWDiagnostic.breadcrumb("player-grid.render-fallback"'), "Player grid fallback must record a diagnostic breadcrumb");
 assert(playerJs.includes("scheduleFitPlayerGrid(false);\n\n    return mode;"), "Player grid render must refit after room updates");
 assert(playerJs.includes('el.dataset.gridFitStatus = "empty"'), "Player grid must clear stale sizing state when no players remain");
-assert(playerJs.includes('const suspiciousCollapsedHeight = metrics.height < 120'), "Player grid must detect collapsed transient measurements");
+assert(playerJs.includes('const suspiciousCollapsedHeight = document.body.classList.contains("game-visible")'), "Player grid must detect collapsed transient measurements");
+assert(playerJs.includes('gameCardRect'), "Player grid collapsed guard must compare the grid against its parent game card");
 assert(playerJs.includes('window.addEventListener("pageshow", refit, { passive: true });'), "Player grid pageshow recovery hook missing");
 assert(playerJs.includes('window.addEventListener("orientationchange", refit, { passive: true });'), "Player grid orientation recovery hook missing");
 assert(playerJs.includes('document.addEventListener("visibilitychange"'), "Player grid visibility recovery hook missing");
 assert(playerJs.includes('window.visualViewport.addEventListener("resize", () => scheduleFitPlayerGrid(true)'), "Player grid visual viewport recovery hook missing");
-assert(playerCss.includes("justify-content:start;"), "Player grid must keep incomplete rows left-anchored");
+assert(playerCss.includes("justify-content:start;"), "Player grid base must retain left anchoring outside the large-screen workspace");
+assert(/@media \(min-width:1280px\)[\s\S]*?#players\{[\s\S]*?justify-content:center;/.test(playerCss), "large-screen Player grid must center the board inside the workspace");
+assert(playerCss.includes("width:var(--player-card-fit, 88px);"), "Player cards must have explicit width matching the grid track");
+assert(playerCss.includes("--player-grid-max:clamp(240px,12vw,340px);"), "large-screen Player card ceiling must scale on genuinely large displays");
+assert(playerCss.includes("--player-wide-roles-width:clamp(210px,16vw,420px);"), "large-screen role zone must scale with display width");
+assert(playerCss.includes("--player-wide-chat-width:clamp(280px,20vw,520px);"), "large-screen chat zone must scale with display width");
+assert(playerCss.includes("height:var(--player-card-fit, 88px);"), "Player cards must have explicit height matching the grid track");
 
 // Always-available Node fallback: models the same width/height-driven controller for every
 // add/remove/rotation state, so the regression remains useful even on machines without Playwright.

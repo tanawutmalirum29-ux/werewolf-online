@@ -38,8 +38,8 @@ must("Graceful shutdown stops accepting HTTP connections", server.includes("serv
 must("Graceful shutdown closes Socket.IO connections", server.includes("io.close();"));
 must("CloudFront fallback page is self-contained", !fallback.includes('src="') && !fallback.includes('href="') && fallback.includes("location.reload()"));
 must("Fallback page avoids AWS/CloudFront branding", !/CloudFront|Elastic Beanstalk|Amazon Web Services/i.test(fallback));
-must("CloudFront setup keeps error page on separate origin", readme.includes("S3 bucket แยกจาก Elastic Beanstalk origin"));
-must("CloudFront setup covers 502/503/504", readme.includes("`502`, `503`, `504`"));
+must("CloudFront setup keeps error page on separate origin", readme.includes("Elastic Beanstalk origin") && readme.includes("S3"));
+must("CloudFront setup covers 502/503/504", readme.includes("`502`") && readme.includes("`503`") && readme.includes("`504`"));
 
 // The old server-side EB helper must remain removed; the central utility owns VersionLabel lookup.
 must("server.js does not instantiate the EB SDK directly", !server.includes("ElasticBeanstalkClient, DescribeEnvironmentsCommand"));

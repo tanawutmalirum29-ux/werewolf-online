@@ -22,6 +22,6 @@ assert(shared.includes('loadedBuildVersion'), 'build mismatch detection');
 assert(shared.includes('loadedClientHash'), 'client hash mismatch detection');
 assert(host.includes('__WW_BUILD_VERSION__'), 'host build metadata');
 assert(player.includes('__WW_BUILD_VERSION__'), 'player build metadata');
-assert(admin.includes('__WW_ADMIN_RELEASE__'), 'admin release metadata');
+assert(/<meta content="[A-Za-z0-9_-]+" name="ww-admin-release"\/>/.test(admin), 'admin release metadata');
 assert(admin.includes('askTesterUpdate'), 'admin tester update controls');
 console.log('tester-update-channel regression: PASS');

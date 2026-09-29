@@ -1,0 +1,20 @@
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const root = path.resolve(__dirname, '..');
+const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const admin = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+
+assert(server.includes("app.post('/api/admin/diagnostics/github/all'"), 'batch GitHub endpoint missing');
+assert(server.includes('diagnosticGithubBatchInFlight'), 'batch GitHub concurrency guard missing');
+assert(server.includes('slice(0, 100)'), 'batch endpoint must bound event count');
+assert(server.includes('Promise.all(Array.from({ length:Math.min(4, eventIds.length) }'), 'batch endpoint must use bounded concurrency');
+assert(server.includes('submitDiagnosticEventToGithub(primary, config)'), 'batch route must reuse the single-report submit path');
+assert(server.includes("code:'GITHUB_BATCH_IN_PROGRESS'"), 'batch route must reject overlapping submissions');
+assert(server.includes("label:'diagnostic.github.batch_completed'"), 'batch route must record a completion breadcrumb');
+assert(admin.includes('id="diagGithubSubmitAllBtn"'), 'admin must expose batch GitHub control');
+assert(admin.includes('ส่งรายงานทั้งหมดขึ้น GitHub'), 'admin batch control text missing');
+assert(admin.includes("body:JSON.stringify({eventIds:events.map((e)=>e.id)})"), 'admin batch request must contain only event ids');
+assert(!admin.match(/github_pat_[A-Za-z0-9_]+/), 'admin HTML must not contain a GitHub PAT');
+console.log('github-bug-report-batch-regression: PASS');

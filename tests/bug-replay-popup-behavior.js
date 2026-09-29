@@ -1,0 +1,25 @@
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const root = path.resolve(__dirname, "..");
+const admin = fs.readFileSync(path.join(root, "public", "admin.html"), "utf8");
+const runner = fs.readFileSync(path.join(root, "utils", "bug-replay-runner.js"), "utf8");
+const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
+
+assert(admin.includes("overlay.id='bugReplayResultOverlay'"), "Bug Replay result popup must exist");
+assert(admin.includes("function showBugReplayResultPopup(job)"), "terminal result popup renderer missing");
+assert(admin.includes("function maybeShowBugReplayResultPopup(job)"), "terminal popup trigger missing");
+assert(admin.includes("maybeShowBugReplayResultPopup(job).catch(()=>{});"), "terminal states must trigger the popup");
+assert(admin.includes("function bugReplayReportUrlUsable(url)"), "report URL validator missing");
+assert(admin.includes("bugReplayPopupCopyBtn"), "popup copy control missing");
+assert(admin.includes("bugReplayPopupJsonBtn"), "popup JSON download control missing");
+assert(admin.includes("downloadBugReplayFile(popupJsonUrl,'json')"), "popup JSON download must be wired");
+assert(admin.includes("bugReplayPopupRetryBtn"), "missing report URL needs an explicit retry action");
+assert(admin.includes("closeBugReplayResultPopup();"), "new replay should close the previous result popup");
+assert(!admin.includes("แต่ละจุดมีลิงก์รายงานทันที"), "continuous mode should not advertise per-failure links");
+assert(server.includes('continueOnFailure: safeMode !== "first"'), "first mode must be fail-fast");
+assert(server.includes("if (!job.continueOnFailure) {"), "server must stop the first-bug run after its first failure");
+assert(server.includes('job.stopReason = "first_failure"'), "first-bug stop reason must be explicit");
+assert(server.includes('stopReason: job.stopReason || ""'), "public job must expose the first-failure stop reason");
+assert(runner.includes("if (!continueOnFailure) return { ok:false, stopped:false"), "runner must stop at the first failure when fail-fast is requested");
+console.log("bug-replay popup behavior: PASS");

@@ -32,6 +32,10 @@ for (const rule of [
 }
 
 assertOk(js.includes("updateHostControlChrome"), "missing host chrome updater");
+assertOk((html.match(/id="restartRoomBtn"/g) || []).length === 1, "Host must render exactly one restart button");
+assertOk(!html.includes('id="focusRestartBtn"'), "obsolete duplicate focus restart button must be removed");
+assertOk(js.includes('const showStartNight = gameInProgress && !room.isNight;'), "daytime start-night visibility invariant missing");
+assertOk(js.includes('const showResolveNight = gameInProgress && !!room.isNight;'), "night resolve visibility invariant missing");
 assertOk(js.includes("function keepChatInRightCol()"), "chat must remain owned by the right workspace column");
 assertOk(js.includes("if (chatCard.parentElement !== rightCol) rightCol.appendChild(chatCard);"), "chat placement must not migrate between workspace columns");
 assertOk(js.includes("updateHostControlChrome(currentRoom || { started:false"), "role count/step must update the host chrome");
