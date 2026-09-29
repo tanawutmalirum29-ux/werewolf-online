@@ -13,12 +13,12 @@ function testConfig() {
     const config = getGithubBugReportConfig({
         GITHUB_BUG_REPORT_TOKEN: 'github_pat_test_only',
         GITHUB_BUG_REPORT_OWNER: 'tanawutmalirum29-ux',
-        GITHUB_BUG_REPORT_REPO: 'werewolf-bug-reports',
+        GITHUB_BUG_REPORT_REPO: 'werewolf-online',
         GITHUB_BUG_REPORT_LABELS: 'bug-report,runtime-audit',
         GITHUB_BUG_REPORT_TIMEOUT_MS: '9000',
     });
     assert.strictEqual(config.configured, true);
-    assert.strictEqual(config.repository, 'tanawutmalirum29-ux/werewolf-bug-reports');
+    assert.strictEqual(config.repository, 'tanawutmalirum29-ux/werewolf-online');
     assert.deepStrictEqual(config.labels, ['bug-report', 'runtime-audit']);
     assert.strictEqual(config.timeoutMs, 9000);
     const missing = getGithubBugReportConfig({ GITHUB_BUG_REPORT_TOKEN:'' });
@@ -27,7 +27,7 @@ function testConfig() {
     assert.strictEqual(buildGithubBugReportStatus({ GITHUB_BUG_REPORT_TOKEN:'' }).configured, false);
     const status = buildGithubBugReportStatus({ GITHUB_BUG_REPORT_TOKEN:'github_pat_should_never_leave_server' });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(status, 'token'), false);
-    assert.strictEqual(status.repository, 'tanawutmalirum29-ux/werewolf-bug-reports');
+    assert.strictEqual(status.repository, 'tanawutmalirum29-ux/werewolf-online');
 }
 
 function testIssueFormattingAndRedaction() {
@@ -71,16 +71,16 @@ async function testCreateIssue() {
         return {
             ok:true,
             status:201,
-            async text(){ return JSON.stringify({number:42,html_url:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/issues/42',title:'[BUG] test'}); },
+            async text(){ return JSON.stringify({number:42,html_url:'https://github.com/tanawutmalirum29-ux/werewolf-online/issues/42',title:'[BUG] test'}); },
         };
     };
-    const config = getGithubBugReportConfig({GITHUB_BUG_REPORT_TOKEN:'github_pat_test',GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',GITHUB_BUG_REPORT_REPO:'werewolf-bug-reports'});
+    const config = getGithubBugReportConfig({GITHUB_BUG_REPORT_TOKEN:'github_pat_test',GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',GITHUB_BUG_REPORT_REPO:'werewolf-online'});
     const result = await createGithubBugReportIssue({
         issue:{title:'[BUG] test',body:'body'},
         config,
         fetchImpl:mockFetch,
     });
-    assert.deepStrictEqual({number:result.number,issueUrl:result.issueUrl}, {number:42,issueUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/issues/42'});
+    assert.deepStrictEqual({number:result.number,issueUrl:result.issueUrl}, {number:42,issueUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/issues/42'});
     assert.strictEqual(received.options.method,'POST');
     assert.strictEqual(received.options.headers.Authorization,'Bearer github_pat_test');
     assert.strictEqual(received.options.headers['X-GitHub-Api-Version'],GITHUB_API_VERSION);
@@ -90,7 +90,7 @@ async function testCreateIssue() {
 }
 
 async function testErrors() {
-    const config = getGithubBugReportConfig({GITHUB_BUG_REPORT_TOKEN:'github_pat_test',GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',GITHUB_BUG_REPORT_REPO:'werewolf-bug-reports'});
+    const config = getGithubBugReportConfig({GITHUB_BUG_REPORT_TOKEN:'github_pat_test',GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',GITHUB_BUG_REPORT_REPO:'werewolf-online'});
     await assert.rejects(
         createGithubBugReportIssue({issue:{title:'x',body:'y'},config,fetchImpl:async()=>({ok:false,status:401,text:async()=>JSON.stringify({message:'Bad credentials'})})}),
         (err)=>err.publicCode === 'GITHUB_AUTH_FAILED'
