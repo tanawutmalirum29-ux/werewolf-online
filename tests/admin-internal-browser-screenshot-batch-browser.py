@@ -87,11 +87,11 @@ def main():
               const h = Object.fromEntries(Object.entries(init.headers || {}).map(([k,v]) => [String(k).toLowerCase(), String(v)]));
               window.__githubSeen.push({width:h['x-ww-screenshot-width'],height:h['x-ww-screenshot-height'],file:h['x-ww-screenshot-file']});
               return new Response(JSON.stringify({
-                ok:true,reused:false,repository:'tanawutmalirum29-ux/werewolf-bug-reports',
+                ok:true,reused:false,repository:'tanawutmalirum29-ux/werewolf-online',
                 imagePath:'screenshots/test.png',metadataPath:'screenshots/test.json',
-                imageUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/test.png',
-                imageDownloadUrl:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-bug-reports/main/test.png',
-                metadataUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/test.json'
+                imageUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/test.png',
+                imageDownloadUrl:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-online/main/test.png',
+                metadataUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/test.json'
               }), {status:200,headers:{'content-type':'application/json'}});
             }
             return nativeFetch(input, init);
