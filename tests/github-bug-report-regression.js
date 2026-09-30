@@ -28,6 +28,8 @@ function testConfig() {
     const status = buildGithubBugReportStatus({ GITHUB_BUG_REPORT_TOKEN:'github_pat_should_never_leave_server' });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(status, 'token'), false);
     assert.strictEqual(status.repository, 'tanawutmalirum29-ux/werewolf-online');
+    const legacy = getGithubBugReportConfig({ GITHUB_BUG_REPORT_TOKEN:'github_pat_legacy', GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux', GITHUB_BUG_REPORT_REPO:'werewolf-bug-reports' });
+    assert.strictEqual(legacy.repository, 'tanawutmalirum29-ux/werewolf-online');
 }
 
 function testIssueFormattingAndRedaction() {
