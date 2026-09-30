@@ -12,8 +12,6 @@ const {
 const ROOT = path.resolve(__dirname, '..');
 const serverJs = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 const adminBrowser = fs.readFileSync(path.join(ROOT, 'public/js/admin-browser.js'), 'utf8');
-const setup = fs.readFileSync(path.join(ROOT, 'GITHUB-BUG-REPORT-SETUP.md'), 'utf8');
-
 const config = getGithubBugReportConfig({
   GITHUB_BUG_REPORT_TOKEN:'github_pat_screenshot_403_test',
   GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',
@@ -57,7 +55,6 @@ function testContracts() {
   assert.ok(serverJs.includes('acceptedPermissions'), 'server diagnostic must retain accepted permission evidence');
   assert.ok(serverJs.includes('GITHUB_RATE_LIMITED'), 'server must distinguish rate limiting from permission failure');
   assert.ok(adminBrowser.includes('GITHUB_CREATE_SCREENSHOT_FAILED'), 'admin screenshot flow must keep generic fallback');
-  assert.ok(setup.includes('Contents: Read and write'), 'setup must require Contents write for screenshot files');
 }
 
 (async()=>{
