@@ -4422,7 +4422,7 @@ async function downloadAllDiagnosticJson(button){
     try {
         const text=await fetchAllDiagnosticJsonText();
         const blob=new Blob([text],{type:'application/json;charset=utf-8'});
-        triggerDiagnosticJsonDownload(blob,'werewolf-bug-reports-all.json');
+        triggerDiagnosticJsonDownload(blob,'werewolf-online-bug-reports-all.json');
         wwToast('ดาวน์โหลด JSON รายงานทั้งหมดแล้ว',{type:'success',duration:2600});
     } catch(err) {
         wwToast('ดาวน์โหลดรายงานทั้งหมดไม่สำเร็จ · '+(err?.message||err),{type:'error',duration:3600});
@@ -4705,7 +4705,7 @@ async function loadDiagnostics(){
 }
 async function clearGithubIssuesFromAdmin(){
     const button=document.getElementById('diagGithubClearIssuesBtn');
-    if(!(await wwConfirm('ลบ GitHub Issues ทั้งหมดใน werewolf-bug-reports ใช่หรือไม่? การลบเป็นถาวร และจะไม่ลบไฟล์ Screenshot ใน repository',{danger:true,okText:'ไปต่อ'}))) return;
+    if(!(await wwConfirm('ลบ GitHub Issues ทั้งหมดใน werewolf-online ใช่หรือไม่? การลบเป็นถาวร และจะไม่ลบไฟล์ Screenshot ใน repository',{danger:true,okText:'ไปต่อ'}))) return;
     if(!(await wwConfirm('ยืนยันครั้งสุดท้าย: ลบ Issues ทั้งหมด ทั้งรายการที่เปิดและปิด แล้วไม่สามารถกู้กลับจากหน้า GitHub ได้',{danger:true,okText:'ลบทั้งหมด'}))) return;
     const authReady=await ensureAdminLogin();
     if(!authReady) return;
