@@ -36,7 +36,7 @@ def main():
           renderDiagnostics({
             summary:{stored:3,serious:1,accessDenied:0},
             server:{uptimeSec:3720},
-            githubBugReports:{configured:true,repository:'tanawutmalirum29-ux/werewolf-bug-reports'},
+            githubBugReports:{configured:true,repository:'tanawutmalirum29-ux/werewolf-online'},
             permissions:{expected:[{action:'dynamodb:GetItem',reason:'อ่านข้อมูลผู้เล่น'}],observedFailures:[]},
             events:[
               {id:'evt-1',time:new Date().toISOString(),kind:'bug_replay_failure',source:'server',page:'admin',message:'FIRST_FAILURE_SENTINEL',action:'bug-replay:first',analysis:{rootCause:'ตัวอย่าง failure แรก',causeCode:'FIRST_FAILURE',failureStage:'bug-replay',rootCauseSource:'test',confidence:'high'},traceId:'trace-1'},
@@ -63,7 +63,7 @@ def main():
         assert page.locator('#adminPanelTitle').inner_text() == 'การตรวจสอบ', 'Diagnostics title must use the single Thai header'
         assert page.locator('#adminPanelKicker').is_hidden(), 'Diagnostics must not show the duplicate English kicker'
         assert page.locator('#adminDiagnosticsHeaderTools').is_visible(), 'Diagnostics header tools must be visible'
-        assert page.locator('#diagGithubStatus').get_attribute('href') == 'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports', 'GitHub repository link must point to the configured repository'
+        assert page.locator('#diagGithubStatus').get_attribute('href') == 'https://github.com/tanawutmalirum29-ux/werewolf-online', 'GitHub repository link must point to the configured repository'
         assert page.locator('#diagGithubSubmitAllBtn').inner_text().find('ส่งรายงานทั้งหมดขึ้น GitHub') >= 0, 'batch GitHub action missing'
         assert not page.locator('#diagGithubSubmitAllBtn').is_disabled(), 'batch GitHub action should be enabled when events and GitHub are configured'
         assert page.locator('.admin-diagnostics-header-actions').evaluate("el=>getComputedStyle(el).flexWrap") == 'nowrap', 'Diagnostics actions must stay on one row'
@@ -96,7 +96,7 @@ def main():
         page.locator('#diagJsonCloseBtn').click()
 
         # Batch GitHub action must submit exactly the currently rendered event IDs.
-        page.evaluate("window.wwConfirm=async()=>true; window.ensureAdminLogin=async()=>true; window.__batchRequests=[]; window.adminFetchJson=async function(url,options){window.__batchRequests.push({url,body:options?.body||''}); return {response:{ok:true,status:200},data:{ok:true,requested:2,created:2,reused:0,failed:0,repository:'tanawutmalirum29-ux/werewolf-bug-reports',results:[]}};};")
+        page.evaluate("window.wwConfirm=async()=>true; window.ensureAdminLogin=async()=>true; window.__batchRequests=[]; window.adminFetchJson=async function(url,options){window.__batchRequests.push({url,body:options?.body||''}); return {response:{ok:true,status:200},data:{ok:true,requested:2,created:2,reused:0,failed:0,repository:'tanawutmalirum29-ux/werewolf-online',results:[]}};};")
         page.locator('#diagGithubSubmitAllBtn').click()
         page.wait_for_timeout(140)
         batch_requests=page.evaluate('window.__batchRequests')
