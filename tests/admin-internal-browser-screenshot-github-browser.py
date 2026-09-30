@@ -77,12 +77,12 @@ def main():
               return new Response(JSON.stringify({
                 ok:true,
                 reused:false,
-                repository:'tanawutmalirum29-ux/werewolf-bug-reports',
+                repository:'tanawutmalirum29-ux/werewolf-online',
                 imagePath:'screenshots/2026/09/26/index/390x844/a.png',
                 metadataPath:'screenshots/2026/09/26/index/390x844/a.json',
-                imageUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/a.png',
-                imageDownloadUrl:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-bug-reports/main/a.png',
-                metadataUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/a.json'
+                imageUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/a.png',
+                imageDownloadUrl:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-online/main/a.png',
+                metadataUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/a.json'
               }), {status:200, headers:{'content-type':'application/json'}});
             }
             return originalFetch(input, init);
@@ -106,7 +106,7 @@ def main():
         page.locator('#adminBrowserCaptureGithubBtn').click()
         page.wait_for_function("() => window.WWAdminBrowser.state.lastCaptureBatch?.items?.[0]?.status === 'github-saved'", timeout=7000)
         result_390 = page.evaluate("() => window.WWAdminBrowser.state.lastCaptureGithub")
-        assert result_390 and result_390['imageUrl'] == 'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/a.png', result_390
+        assert result_390 and result_390['imageUrl'] == 'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/a.png', result_390
         seen = page.evaluate('window.__githubScreenshotSeen')
         assert seen['method'] == 'POST', seen
         assert seen['headers'].get('content-type','').startswith('image/png'), seen
