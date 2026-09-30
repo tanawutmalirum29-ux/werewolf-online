@@ -19,7 +19,7 @@ function config() {
   return getGithubBugReportConfig({
     GITHUB_BUG_REPORT_TOKEN: 'github_pat_issue_clear_test',
     GITHUB_BUG_REPORT_OWNER: 'tanawutmalirum29-ux',
-    GITHUB_BUG_REPORT_REPO: 'werewolf-bug-reports',
+    GITHUB_BUG_REPORT_REPO: 'werewolf-online',
     GITHUB_BUG_REPORT_BRANCH: 'main',
   });
 }
@@ -44,18 +44,18 @@ async function testListAndDeleteGraphql() {
     const payload = JSON.parse(options.body);
     if (payload.query.includes('repository(owner:$owner')) {
       listed = true;
-      assert.deepStrictEqual(payload.variables, {owner:'tanawutmalirum29-ux',name:'werewolf-bug-reports',cursor:null});
+      assert.deepStrictEqual(payload.variables, {owner:'tanawutmalirum29-ux',name:'werewolf-online',cursor:null});
       return {
         ok:true,status:200,
         async text(){ return JSON.stringify({data:{repository:{issues:{nodes:[
-          {id:'I_kwDO1',number:1,title:'first',url:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/issues/1'},
-          {id:'I_kwDO2',number:2,title:'second',url:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/issues/2'}
+          {id:'I_kwDO1',number:1,title:'first',url:'https://github.com/tanawutmalirum29-ux/werewolf-online/issues/1'},
+          {id:'I_kwDO2',number:2,title:'second',url:'https://github.com/tanawutmalirum29-ux/werewolf-online/issues/2'}
         ],pageInfo:{hasNextPage:false,endCursor:null},totalCount:2}}}}); },
       };
     }
     assert.ok(payload.query.includes('deleteIssue(input:{issueId:$issueId})'));
     assert.ok(payload.variables.issueId.startsWith('I_kwDO'));
-    return {ok:true,status:200,async text(){return JSON.stringify({data:{deleteIssue:{repository:{url:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports'}}}});}};
+    return {ok:true,status:200,async text(){return JSON.stringify({data:{deleteIssue:{repository:{url:'https://github.com/tanawutmalirum29-ux/werewolf-online'}}}});}};
   };
 
   const result = await clearAllGithubIssues({config:config(),fetchImpl:mockFetch});
