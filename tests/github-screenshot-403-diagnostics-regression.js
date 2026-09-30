@@ -17,7 +17,7 @@ const setup = fs.readFileSync(path.join(ROOT, 'GITHUB-BUG-REPORT-SETUP.md'), 'ut
 const config = getGithubBugReportConfig({
   GITHUB_BUG_REPORT_TOKEN:'github_pat_screenshot_403_test',
   GITHUB_BUG_REPORT_OWNER:'tanawutmalirum29-ux',
-  GITHUB_BUG_REPORT_REPO:'werewolf-bug-reports',
+  GITHUB_BUG_REPORT_REPO:'werewolf-online',
   GITHUB_BUG_REPORT_BRANCH:'main',
 });
 
