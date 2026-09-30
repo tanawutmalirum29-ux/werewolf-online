@@ -13,6 +13,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Run GitHub bug/screenshot regression checks
+        run: |
+          node --check utils/github-bug-reports.js
+          node tests/github-bug-report-regression.js
+          node tests/github-issue-clear-regression.js
+          node tests/github-screenshot-clear-regression.js
+          node tests/github-screenshot-403-diagnostics-regression.js
+          node tests/admin-internal-browser-screenshot-github-regression.js
+
+      - name: Create deploy ZIP
+        run: |
+          rm -f werewolf-deploy.zip
+          zip -qr werewolf-deploy.zip . -x ".git/*" "node_modules/*" "werewolf-deploy.zip"
+
+      - name: Upload deploy ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: werewolf-deploy
+          path: werewolf-deploy.zip
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
