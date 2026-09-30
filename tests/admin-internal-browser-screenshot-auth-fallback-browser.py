@@ -65,12 +65,12 @@ def main():
               this.responseText=JSON.stringify({
                 ok:true,
                 reused:false,
-                repository:'tanawutmalirum29-ux/werewolf-bug-reports',
+                repository:'tanawutmalirum29-ux/werewolf-online',
                 imagePath:'screenshots/2026/09/26/index/390x844/fallback.png',
                 metadataPath:'screenshots/2026/09/26/index/390x844/fallback.json',
-                imageUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/fallback.png',
-                imageDownloadUrl:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-bug-reports/main/fallback.png',
-                metadataUrl:'https://github.com/tanawutmalirum29-ux/werewolf-bug-reports/blob/main/fallback.json'
+                imageUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/fallback.png',
+                imageDownloadUrl:'https://raw.githubusercontent.com/tanawutmalirum29-ux/werewolf-online/main/fallback.png',
+                metadataUrl:'https://github.com/tanawutmalirum29-ux/werewolf-online/blob/main/fallback.json'
               });
               queueMicrotask(() => this.onload?.());
             }
