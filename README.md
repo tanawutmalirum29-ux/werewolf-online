@@ -1014,7 +1014,7 @@ Diagnostics เก็บไว้ใน memory ของ process สูงสุ
 
 การแจ้งเตือนทั่วไปในหน้าเกมใช้ CSS toast ผ่าน `wwToast/wwAlert` แทน browser `alert()` และกล่องยืนยันใช้ CSS modal เพื่อไม่บล็อก JavaScript event loop แบบ native dialog
 
-การจัดการรายงานบั๊กใน Header ของ Diagnostics แยกเป็น 2 ชั้น: บรรทัดบนแสดงลิงก์ repository `werewolf-bug-reports` เพียงรายการเดียว ส่วนบรรทัด action ใช้แถวเดียวสำหรับ `ส่งรายงานทั้งหมดขึ้น GitHub`, `⬇️ JSON`, `ล้าง Error`, `ล้าง GitHub Issues` และ `ล้าง Screenshot PNG/JSON` โดยแถว action จะเลื่อนในแนวนอนบนหน้าจอแคบแทนการตกหลายบรรทัด
+การจัดการรายงานบั๊กใน Header ของ Diagnostics แยกเป็น 2 ชั้น: บรรทัดบนแสดงลิงก์ repository `werewolf-online` เพียงรายการเดียว ส่วนบรรทัด action ใช้แถวเดียวสำหรับ `ส่งรายงานทั้งหมดขึ้น GitHub`, `⬇️ JSON`, `ล้าง Error`, `ล้าง GitHub Issues` และ `ล้าง Screenshot PNG/JSON` โดยแถว action จะเลื่อนในแนวนอนบนหน้าจอแคบแทนการตกหลายบรรทัด
 
 ปุ่ม `🐙 ส่งรายงานทั้งหมดขึ้น GitHub` ส่ง event IDs ของรายงานที่กำลังแสดงอยู่ใน Diagnostics ไปยัง `/api/admin/diagnostics/github/all` ฝั่ง server แบบ concurrent จำกัด 4 รายการ และ reuse GitHub Issue เดิมเมื่อ event นั้นเคยถูกส่งแล้ว
 
