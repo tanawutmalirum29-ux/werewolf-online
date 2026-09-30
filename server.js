@@ -6766,7 +6766,7 @@ function diagnosticExportFilename(scope, eventId = "") {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     return scope === "event"
         ? `werewolf-bug-report-${safe || "event"}-${stamp}.json`
-        : `werewolf-bug-reports-all-${stamp}.json`;
+        : `werewolf-online-bug-reports-all-${stamp}.json`;
 }
 
 
