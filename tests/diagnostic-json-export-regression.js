@@ -18,5 +18,5 @@ assert(admin.includes('openDiagnosticJsonOptions()'), 'diagnostics toolbar must 
 assert(admin.includes('diagJsonOptionsBtn'), 'diagnostics header must expose the JSON options button');
 assert(admin.includes('/api/admin/diagnostics/export?scope=event&eventId='), 'single JSON download must call export endpoint');
 assert(admin.includes('/api/admin/diagnostics/export?scope=all'), 'all JSON download must call export endpoint');
-assert(admin.includes('werewolf-bug-reports-all.json'), 'aggregate download must have a deterministic fallback filename');
+assert(admin.includes('werewolf-online-bug-reports-all.json'), 'aggregate download must have a deterministic fallback filename');
 console.log('diagnostic-json-export-regression: PASS');
