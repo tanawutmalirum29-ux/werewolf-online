@@ -15,6 +15,10 @@ jobs:
 
       - name: Run GitHub bug/screenshot regression checks
         run: |
+          if git grep -n "werewolf-bug-reports" -- . ':!utils/github-bug-reports.js'; then
+            echo "Legacy GitHub bug-report repository reference found outside the migration guard."
+            exit 1
+          fi
           node --check utils/github-bug-reports.js
           node tests/github-bug-report-regression.js
           node tests/github-issue-clear-regression.js
