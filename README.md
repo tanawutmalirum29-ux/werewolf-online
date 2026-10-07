@@ -1,160 +1,160 @@
-# Werewolf Basic
+# Werewolf Basic — GitHub → AWS Amplify + AppSync
 
-เกมแจกการ์ดและคุมห้องแบบพื้นฐาน เหลือหน้า **index / host / player** โฮสต์เป็นผู้ตัดสินเกมเอง ผู้เล่นเห็นการ์ดของตัวเอง
+เกมพื้นฐาน 3 หน้า **index / host / player**: โฮสต์เลือกจำนวนบทบาท สุ่มแจกการ์ด คุมกลางวัน/กลางคืน กำหนดคนตายและประกาศจบเกม ผู้เล่นเห็นเฉพาะการ์ดของตัวเองก่อนจบเกม พูดคุย โหวต และใช้พลังโดยแจ้งโฮสต์กันเอง ไม่มี Admin หรือบัญชีผู้เล่น
 
-[เปิดหน้าติดตั้ง Render ฟรี](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Ftanawutmalirum29-ux%2Fwerewolf-online%2Ftree%2Fmain)
+**ไม่ต้องใช้ Render หรือเซิร์ฟเวอร์ Node แยกสำหรับ AWS รุ่นนี้** Amplify Hosting เสิร์ฟหน้าเว็บและรูป ส่วน **AWS AppSync Event API หนึ่งตัว** ส่งข้อความสดระหว่างอุปกรณ์ ห้องและการ์ดอยู่ใน RAM ของหน้าโฮสต์ ไม่มี DB, DynamoDB, Cognito, Lambda, Elastic Beanstalk, snapshot, ประวัติหรือระบบกู้ห้อง
 
-## ทำอะไรได้บ้าง
+ใช้ GitHub branch **main** เพียงอันเดียว ไม่ต้องสร้าง branch ใหม่
 
-- โฮสต์สร้างห้อง แล้วส่งรหัส 5 ตัวหรือลิงก์ให้เพื่อน
-- ผู้เล่นตั้งชื่อและเข้าห้อง ไม่ต้องสมัครบัญชี
-- โฮสต์เลือกจำนวนบทบาทด้วย + / − การ์ดที่ขาดเติมชาวบ้านให้อัตโนมัติ
-- สุ่มแจกการ์ด ผู้เล่นเห็นเฉพาะการ์ดของตัวเองจนจบเกม
-- โฮสต์เห็นทุกบทบาท มีสวิตช์ซ่อนบทบาทบนจอ
-- โฮสต์กำหนดมีชีวิต/เสียชีวิต ป้องกัน และถูกเล็งเอง เปลี่ยนการ์ดให้ผู้เล่นได้ระหว่างเกม
-- โฮสต์เปลี่ยนกลางวัน/กลางคืน ประกาศผลจบเกม เปิดเผยการ์ด และกลับห้องรอเพื่อเล่นรอบใหม่
-- นำผู้เล่นออกหรือปิดห้องได้ โฮสต์ไม่นับเป็นผู้เล่นและไม่ได้รับการ์ด
-- มีคำอธิบายการ์ดเดิม 30 บทบาทและรูปเดิม โดยใช้กติกาที่โฮสต์ประกาศ
+## สิ่งที่แก้จากรุ่นที่ build ล้มเหลว
 
-**ความสามารถและการโหวตเป็นการเล่นกันเอง** พูดคุยหรือโทรกันนอกเว็บแล้วแจ้งโฮสต์ เว็บไม่มีการใช้พลัง ฆ่า โหวต หาผู้ชนะ หรือส่งแชตอัตโนมัติ เครื่องหมาย “ป้องกัน” / “ถูกเล็ง” ช่วยโฮสต์จำ ไม่เปลี่ยนสถานะมีชีวิตเอง
+- ไม่บังคับ `GAME_SERVER_URL` อีกแล้ว และไม่ใช้ URL Render
+- `amplify.yml` ใช้ Node.js 24 และ `npm run build:amplify` → output **dist**
+- build หน้าเว็บไม่ต้องติดตั้ง dependencies ไม่พยายามรัน `server.js` บน Amplify
+- ถ้ายังไม่ตั้ง AppSync: build ผ่านเป็นหน้าแจ้ง “ยังไม่พร้อมเล่น” ปุ่มสร้าง/เข้าห้องยังใช้ไม่ได้ เพื่อให้ตั้งค่าตามขั้นตอนด้านล่างก่อน
+- ถ้าตั้งตัวแปร AppSync เพียงบางตัวหรือใส่ endpoint ผิด: build แจ้งข้อผิดพลาดเพื่อไม่ deploy เว็บที่ตั้งค่าเสีย
 
-## ตัดออกแล้ว
+**Build ผ่านไม่เท่ากับเกมพร้อมเล่น** ต้องสร้าง AppSync ตั้งค่าครบ และทดสอบโฮสต์กับผู้เล่นด้วย
 
-ไม่มี Admin, DB/DynamoDB, AWS SDK, S3, Elastic Beanstalk, GitHub bug reporting, บัญชีผู้เล่น, ประวัติ, ห้องทดลอง/bot, ระบบสำรอง, snapshot, lease หรือกู้ห้องหลังเซิร์ฟเวอร์พัง
+## ขั้นตอนที่ต้องทำใน AWS
 
-ข้อมูลห้องอยู่ใน RAM เท่านั้น เซิร์ฟเวอร์พัก/รีสตาร์ต/อัปเดต = ห้องหาย ต้องสร้างใหม่ ไม่มีการเขียนข้อมูลเกมลงดิสก์ โทเคนใน sessionStorage มีไว้ระบุเจ้าของห้องหรือผู้เล่นระหว่างรีเฟรช/เน็ตหลุดขณะที่เซิร์ฟเวอร์เดิมยังทำงาน ไม่ใช่ระบบกู้ข้อมูลเซิร์ฟเวอร์
+### 1. สร้าง AppSync Event API ครั้งเดียว
 
-## Deploy ฟรีจาก GitHub
+1. ล็อกอิน AWS Console เลือก region **Asia Pacific (Sydney) / ap-southeast-2** ให้เหมือน Amplify ที่ใช้อยู่
+2. เปิดบริการ **AWS AppSync** → **Create API** → เลือก **Event API** (ไม่ใช่ GraphQL API)
+3. ตั้งชื่อ เช่น `werewolf-basic-events` แล้ว Create
+4. ตรวจ Authentication ว่า **API_KEY** ใช้กับทั้ง **Connect / Publish / Subscribe** ตามค่าเริ่มต้นของ Event API
+5. ตรวจว่ามี Channel namespace ชื่อ **default** ซึ่ง AWS สร้างให้ตามค่าเริ่มต้น หากไม่มี ให้สร้าง namespace ชื่อนี้ ใช้สิทธิ์ API key ตาม API ไม่เพิ่ม data source หรือ integration
+6. ไปหน้า Settings ของ API จด **HTTP endpoint** และ **Realtime/WebSocket endpoint** และไป Authentication/API keys คัดลอก API key ที่ยังไม่หมดอายุ
 
-**ใช้ GitHub เก็บโค้ด แล้วให้ Render Free รันเกม** GitHub Pages รัน Node.js/Socket.IO server นี้ไม่ได้ เพราะเป็น static hosting
+ใช้ **AppSync API key** ที่ขึ้นต้น `da2-` เท่านั้น ไม่ใช่ IAM access key, secret access key หรือรหัสผ่าน AWS ค่า AppSync key ในเกมนี้ต้องอยู่ใน frontend เพื่อให้เล่นได้โดยไม่สมัครบัญชี จึงมองเห็นได้จากเว็บ; ไม่ใช่รหัสลับของโฮสต์หรือผู้เล่น อย่าใช้ key ร่วมกับ API ของงานอื่น
 
-### วิธีที่ 1: ใช้ปุ่มติดตั้ง
+ไม่มีขั้นตอนสร้างฐานข้อมูลหรือ deploy backend ผ่าน Amplify Gen 2 ไม่ต้องเพิ่ม backend deployment role ให้ Amplify สำหรับโค้ดชุดนี้ AppSync เป็นบริการ realtime ที่ตั้งค่าครั้งเดียวผ่าน console
 
-1. เปิดลิงก์ **เปิดหน้าติดตั้ง Render ฟรี** ด้านบน
-2. ล็อกอินหรือสมัคร Render และอนุญาตเข้าถึง GitHub repo นี้หากระบบถาม
-3. ตรวจว่า Blueprint มี **Web Service เพียงหนึ่งตัว** ชื่อ `werewolf-basic` และ Plan เป็น **Free** ไม่มี database, disk หรือบริการเสริม
-4. เลือกสร้าง Blueprint / Deploy รอ build เสร็จ
-5. เปิด URL `https://…onrender.com` ที่ Render แสดง โฮสต์และผู้เล่นใช้ URL เดียวกัน
+### 2. ตั้งตัวแปรในแอป Amplify ที่มีอยู่
 
-ใช้ branch `main` เพียงอันเดียวสำหรับแก้โค้ดและ deploy ชุดเกมพื้นฐานอยู่ใน `main` แล้ว หากเคยสร้างบริการ Render จาก branch เก่า ให้เปลี่ยน Settings → Branch เป็น `main` แล้ว deploy อีกครั้ง
+เปิด **Amplify → werewolf-online → Hosting → Environment variables → Manage variables** แล้วใส่ให้ครบสามตัว:
 
-### วิธีที่ 2: เลือกค่าผ่านหน้าเว็บ Render
-
-เปิด https://dashboard.render.com/ → **New → Web Service → Git Provider → GitHub** แล้วเลือก repo `tanawutmalirum29-ux/werewolf-online`
-
-| ช่อง | ค่า |
+| Variable | Value |
 | --- | --- |
-| Name | `werewolf-basic` |
-| Branch | `main` |
-| Region | Singapore |
-| Language / Runtime | Node |
-| Root Directory | เว้นว่าง |
-| Build Command | `npm ci --omit=dev` |
-| Start Command | `npm start` |
-| Instance Type | **Free** |
-| Environment | `NODE_ENV=production` |
-| Health Check Path (ถ้ามีช่อง) | `/health` |
-| Auto-Deploy | On Commit |
+| `APPSYNC_HTTP_URL` | HTTP endpoint จาก AppSync รูปแบบ `https://APIID.appsync-api.ap-southeast-2.amazonaws.com/event` |
+| `APPSYNC_REALTIME_URL` | WebSocket endpoint รูปแบบ `wss://APIID.appsync-realtime-api.ap-southeast-2.amazonaws.com/event/realtime` |
+| `APPSYNC_API_KEY` | AppSync API key ตัวจริงที่ยังไม่หมดอายุ เช่น `da2-...` |
 
-แล้วเลือก **Deploy Web Service** ไม่ต้องใส่ secret, database URL, AWS key หรือรหัส Admin เซิร์ฟเวอร์รับ `PORT` ที่ Render กำหนดให้อัตโนมัติ
+**ตัวอย่างในตารางเป็น placeholder ห้ามคัดลอกมาใช้ตรง ๆ** คัดลอก endpoint และ key ของ API ที่คุณเพิ่งสร้าง ตรวจ `/event` และ `/event/realtime` ให้ครบ ไม่ใส่ path ซ้ำ, query string หรือช่องว่าง
 
-### ข้อจำกัดของฟรี
+เลือกใช้ค่ากับ branch **main** หากมี branch override ตรวจว่าไม่มีค่าต่างจากที่ตั้งไว้ แล้ว Save ลบ `GAME_SERVER_URL` และ `ALLOWED_ORIGINS` เก่าที่เคยใส่ใน Amplify ได้ รุ่น AWS ไม่ใช้ทั้งสองตัวนี้
 
-ตรวจเอกสาร Render วันที่ 7 ต.ค. 2026:
+### 3. Deploy main อีกครั้ง
 
-- ไม่มี HTTP request หรือ WebSocket message เข้า 15 นาที → service พัก เปิดใหม่อาจรอประมาณหนึ่งนาที
-- server อาจ restart ได้ และการ push/auto-deploy ทำให้ห้องใน RAM หาย อัปเดตตอนห้องว่าง
-- workspace ได้ 750 free instance hours ต่อเดือน แชร์กับ web services ฟรีอื่นใน workspace
-- bandwidth และ build minutes มีโควตา ตรวจ Monthly Included Usage ใน dashboard
-- หากไม่เพิ่มวิธีชำระเงิน เมื่อเกินบางโควตาระบบจะพักบริการ/หยุด build; หากผูกวิธีชำระเงินอาจมีค่าการใช้งานเกินโควตา จึงตรวจ billing ก่อนใช้
-- เหมาะกับกลุ่มเล่นเล็ก/งานทดลอง ไม่รับรองรองรับผู้เล่นจำนวนมากโดยไม่ทดสอบโหลด จำกัดในโค้ดไว้สูงสุด 40 คนต่อห้อง และ 100 ห้องต่อ process ไม่ใช่การรับประกัน capacity ของ Free
+1. เปิด branch **main** ของแอป `werewolf-online` ใน Amplify
+2. ตรวจ repository เป็น `tanawutmalirum29-ux/werewolf-online` และใช้ `amplify.yml` จาก `main` เวอร์ชันล่าสุด Root directory เว้นว่าง
+3. หากจำเป็นต้องกรอก build settings เอง ให้ใช้:
 
-ไม่มีการเพิ่ม ping service ภายนอกหรือระบบกันพักฟรี
+```yaml
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - nvm install 24
+        - nvm use 24
+    build:
+      commands:
+        - npm run build:amplify
+  artifacts:
+    baseDirectory: dist
+    files:
+      - '**/*'
+```
 
-## Deploy หน้าเว็บบน AWS Amplify จาก GitHub
+4. เลือก **Redeploy this version** ของ deployment ที่ใช้ commit ใหม่ล่าสุด หรือรอ auto-deploy จากการ push main อย่าเลือก commit เก่าที่ใช้ `GAME_SERVER_URL`
+5. รอ BUILD และ DEPLOY ผ่าน แล้วเปิด URL ที่ Amplify แสดง
 
-รองรับ **Amplify Hosting สำหรับหน้า index / host / player** แล้ว โดยมีเซิร์ฟเวอร์เกม Node.js หนึ่งตัวรันแยกอยู่ที่ Render หรือบริการที่รองรับ Socket.IO อยู่ก่อน หน้าเว็บและรูปอยู่บน Amplify ส่วนข้อมูลห้องอยู่ใน RAM ของเซิร์ฟเวอร์เกมเดิม ไม่มี DB, Cognito, AppSync, Lambda หรือระบบสำรองเพิ่ม
+ไม่ใช้ `npm start`, `.next`, SSR, rewrite ทุก path ไป `index.html` หรือ reverse proxy Socket.IO; `host.html`, `player.html` และไฟล์รูป/JavaScript เป็นไฟล์ static ส่วน realtime เชื่อม AppSync โดยตรง
 
-**Amplify อย่างเดียวไม่ใช่ตัวเลือกสำหรับเกมรุ่นนี้** แม้ Amplify Compute รัน Express ได้ แต่ execution instance มีเวลาทำงานสูงสุด 15 นาทีและแยกกัน โค้ดที่เก็บห้องใน Map ของ process เดียวจึงไม่เหมาะกับการนำไปรันตรง ๆ หากต้องการบริการเดียวและตั้งค่าน้อยที่สุด ให้ใช้ Render ตามขั้นตอนด้านบน
+### 4. ทดสอบเกมสองอุปกรณ์
 
-### ตั้งค่า
+1. โฮสต์เปิดเว็บ Amplify → สร้างห้อง → คัดลอก **ลิงก์ชวนเพื่อน**
+2. ผู้เล่นเปิดลิงก์นี้ในอีกอุปกรณ์ ตั้งชื่อ และเข้าห้อง ให้ชื่อปรากฏในหน้าโฮสต์
+3. เลือกบทบาทและแจกการ์ด ผู้เล่นเห็นเฉพาะการ์ดตัวเอง รายชื่อคนอื่นยังไม่แสดงบทบาท
+4. โฮสต์กำหนดคนตาย เปลี่ยนกลางวัน/กลางคืน แล้วจบเกม ตรวจว่าผู้เล่นเห็นผลและทุกบทบาทเมื่อจบ
+5. ทดสอบผู้เล่นรีเฟรช: กลับเข้าห้องได้เมื่อหน้าโฮสต์เดิมยังเปิดและเชื่อมต่ออยู่
+6. ปิดห้องจากหน้าโฮสต์ ผู้เล่นต้องกลับหน้าเข้าห้อง
 
-1. Deploy เซิร์ฟเวอร์เกมบน Render จาก `main` ตามขั้นตอนด้านบนก่อน จด URL HTTPS เช่น `https://your-game.onrender.com` เปิด `/health` แล้วต้องได้ `{"ok":true}`
-2. เปิด AWS Amplify Console ใน region ที่ต้องการ เช่น Sydney (`ap-southeast-2`) → สร้างแอปใหม่ → เลือก GitHub → repo `tanawutmalirum29-ux/werewolf-online` → branch **main**
-3. ใช้ build settings จาก `amplify.yml` ใน repo ไม่ใช้ SSR หรือสร้าง Amplify backend; Root directory เว้นว่าง ชุด build เป็น static frontend
-4. ตั้ง environment variable **GAME_SERVER_URL** เป็น URL HTTPS ของเซิร์ฟเวอร์เกม เช่น `https://your-game.onrender.com` โดยไม่ใส่ `/api`, `/socket.io`, path อื่น, query หรือ credentials ค่านี้เปิดเผยใน frontend ได้ ไม่ใช่ secret
-5. หากต้องกรอก build เอง: `npm ci --omit=dev && npm run build:amplify` และ output directory **dist** (Node.js 24) แล้ว deploy
-6. จดโดเมนหน้าเว็บที่ Amplify ให้ เช่น `https://main.APPID.amplifyapp.com` จากนั้นเพิ่ม environment variable **ALLOWED_ORIGINS** ที่บริการ Render เป็น origin นี้ ต้องไม่มี path หรือ slash ท้าย ตัวอย่างนี้เป็น placeholder ให้ใช้ URL จริงจาก console
-7. Render จะ restart เมื่อเปลี่ยน environment ห้องเก่าจะหาย แล้วเปิดหน้า Amplify สร้างห้องและให้ผู้เล่นเข้าจากลิงก์ของหน้า Amplify เดียวกัน
+**โฮสต์ต้องเปิดแท็บไว้และไม่พักเครื่องตลอดเกม** ถ้าปิด รีเฟรช เบราว์เซอร์หยุดทำงาน หรือมือถือพักหน้าโฮสต์ ห้องอาจหาย/หยุดตอบ ต้องสร้างใหม่ ไม่มีการกู้ห้อง ลองใช้คอมพิวเตอร์เป็นโฮสต์เพื่อให้หน้าเว็บทำงานต่อเนื่อง หากเน็ตหลุดชั่วคราวแต่หน้าโฮสต์ยังอยู่ จะลองเชื่อมต่อ AppSync ใหม่
 
-ถ้าใช้ custom domain ให้เพิ่ม origin ใหม่ใน `ALLOWED_ORIGINS` ด้วย แยกหลาย origin ด้วย comma เช่น `https://main.APPID.amplifyapp.com,https://game.example.com` ไม่ใช้ `*` และไม่จำเป็นต้องเปิด CORS ให้ทุกเว็บ URL frontend และเซิร์ฟเวอร์ต้องเป็น HTTPS
+ใช้ลิงก์ชวนเพื่อนที่เว็บสร้าง เพราะมี fingerprint ของโฮสต์สำหรับตรวจตัวตนระหว่างเชื่อมต่อ รหัสห้อง 5 ตัวอย่างเดียวใช้เข้าห้องได้แต่ไม่มี fingerprint ล่วงหน้า จึงควรส่งลิงก์ให้กลุ่มที่รู้จัก ไม่ส่งลิงก์แท็บโฮสต์หรือโทเคนส่วนตัว
 
-Push `main` แล้วแต่ละบริการจะ deploy ตามการตั้งค่า auto-deploy ของตน; อย่า deploy ระหว่างเล่น เพราะเมื่อเซิร์ฟเวอร์เกม restart ห้องจะหาย การแก้ `GAME_SERVER_URL` ต้อง rebuild หน้า Amplify อีกครั้ง ไม่มีการเขียนข้อมูลห้องไว้ที่ Amplify
+## ขอบเขตเกมและข้อมูล
 
-### ค่าใช้จ่ายและการตรวจสอบ
+- การ์ดเดิม 30 บทบาท รูปและคำอธิบายเดิม สุ่มด้วย Web Crypto
+- โฮสต์เป็นผู้ตัดสิน ไม่นับเป็นผู้เล่น มีสวิตช์ซ่อนบทบาทบนจอโฮสต์
+- เปลี่ยนมีชีวิต/เสียชีวิต ป้องกัน ถูกเล็ง และบทบาทเองได้ เครื่องหมายไม่ฆ่าหรือใช้พลังอัตโนมัติ
+- การ์ดที่เลือกไม่ครบจะเติมชาวบ้าน จำกัด 40 ผู้เล่นต่อห้อง เป็นขีดจำกัดโค้ด ไม่ใช่การรับรอง capacity ที่ทดสอบโหลดแล้ว
+- ส่งข้อมูลแต่ละผู้เล่นแยกกันและเข้ารหัส ECDH P-256 / AES-GCM การส่งซ้ำ/ข้อความถูกแก้ไขถูกปฏิเสธ ก่อนจบไม่ส่งบทบาทคนอื่นหรือโทเคนสมาชิกอื่นให้ผู้เล่น
+- ผู้เล่นเก็บโทเคนใน sessionStorage เพื่อรีเฟรชแท็บตนเองขณะที่โฮสต์ยังเปิดอยู่ ไม่มีการเก็บห้องหรือการ์ดโฮสต์ลง DB/ดิสก์/localStorage
+- สถานะออนไลน์ใช้ heartbeat ประมาณ 30 วินาที คนที่ไม่ตอบเกินประมาณ 90 วินาทีแสดงออฟไลน์ เวลานี้อาจยาวขึ้นถ้าเบราว์เซอร์พัก timer
 
-Amplify **ไม่ใช่ฟรีถาวร** ค่า build, storage และ bandwidth ขึ้นกับโควตา/เครดิต AWS Free Tier และแผนบัญชีของคุณ ตรวจหน้า Billing และ Amplify Pricing ก่อน deploy โดยเฉพาะบัญชีเก่าหรือ paid plan; โค้ดนี้ไม่ได้สร้างทรัพยากร AWS ให้เอง
+## ค่าใช้จ่าย
 
-- Build ล้มเหลวเพราะ `GAME_SERVER_URL` → ตั้ง URL ของเซิร์ฟเวอร์เกมจริงก่อน แล้ว rebuild
-- หน้าเปิดได้แต่บทบาทไม่โหลด/เชื่อมต่อไม่ได้ → ตรวจ `/health` ของเซิร์ฟเวอร์, รอ Render ตื่น และตรวจ `ALLOWED_ORIGINS` ให้ตรงกับ origin ของหน้าเว็บ
-- อย่าเพิ่ม rewrite ทุก path ไป `index.html`; `host.html`, `player.html`, รูปและ JavaScript ต้องถูกเสิร์ฟเป็นไฟล์ของตัวเอง Socket.IO เชื่อมไปเซิร์ฟเวอร์เกมโดยตรง ไม่ผ่าน Amplify proxy
-- ทดสอบสองอุปกรณ์: โฮสต์สร้างห้อง → ผู้เล่นเข้าห้อง → แจกการ์ด → ผู้เล่นเห็นเฉพาะของตัวเอง → โฮสต์เปลี่ยนสถานะและจบเกม
+Amplify และ AppSync **ไม่ใช่ฟรีถาวร** และการเชื่อม GitHub ไม่ได้ทำให้บริการ AWS ทุกตัวฟรี ตรวจ Free Tier/เครดิตและ Billing ของบัญชีตัวเองก่อนสร้าง API
 
-เอกสาร AWS: https://docs.aws.amazon.com/amplify/latest/userguide/ssr-deployment-specification.html และ https://aws.amazon.com/amplify/pricing/
+เอกสาร AppSync ระบุ Free Tier ตามคุณสมบัติบัญชี: 250,000 realtime updates และ 600,000 connection-minutes ต่อเดือนในช่วง 12 เดือน; เกินโควตาหรือหมดช่วงฟรีคิดตามการใช้งาน ส่วน Amplify คิด build/storage/bandwidth ตามแผนและโควตา หน้านี้ไม่ได้ยืนยันว่าบัญชีของคุณยังมีสิทธิ์ฟรี
 
-## เริ่มเล่น
+API key ของเกมเปิดเผยเพื่อให้เข้าเล่นโดยไม่สมัครบัญชี ผู้ที่เข้าถึงเว็บอาจใช้ API และเพิ่มปริมาณการใช้งานได้ จึงเหมาะกับกลุ่มเล็กที่รู้จักกัน ตรวจ usage/billing และวันหมดอายุ key หาก key หมดอายุหรือเปลี่ยน key ต้องแก้ `APPSYNC_API_KEY` แล้ว rebuild/redeploy Amplify
 
-1. คนคุมเกมเปิดหน้าโฮสต์และสร้างห้อง
-2. คัดลอกลิงก์หรือรหัสให้ผู้เล่นเข้า อย่าส่งลิงก์แท็บโฮสต์หรือโทเคนส่วนตัว
-3. ตรวจว่าผู้เล่นออนไลน์ครบ นำรายชื่อคนที่เลิกเล่นออกก่อนแจก
-4. ตั้งจำนวนบทบาทแล้วสุ่มแจก ถ้าจำนวนการ์ดมากกว่าคนระบบจะไม่แจก
-5. ผู้เล่นกดเปิดดูการ์ด กดซ่อนก่อนให้คนอื่นดูจอ และเมื่อสลับแอปหน้าเว็บจะซ่อนการ์ดให้
-6. เล่น/โหวต/แจ้งใช้ความสามารถกับโฮสต์ โฮสต์ทำเครื่องหมายและกำหนดคนที่ตายเอง
-7. โฮสต์กดจบเกมเพื่อเปิดเผยทุกบทบาท หรือกลับห้องรอเพื่อล้างการ์ดแล้วเริ่มใหม่
+## ถ้ายัง deploy หรือเล่นไม่ได้
 
-ก่อนจบเกม ผู้เล่นจะเห็นเฉพาะชื่อและสถานะมีชีวิตของคนอื่น โฮสต์เปลี่ยนการ์ดให้ผู้เล่นได้ เช่น ผู้ถูกสาปกลายเป็นหมาป่า แต่โฮสต์ต้องติดตามเงื่อนไขการใช้พลังและฝ่ายที่ชนะเองทั้งหมด
+| อาการ | ตรวจอะไร |
+| --- | --- |
+| BUILD บอกตั้งค่าครบสามตัว | Environment variables และ branch override ของ main |
+| BUILD บอก endpoint ไม่ถูก | HTTPS `/event` และ WSS `/event/realtime` ของ **Event API** เดียวกัน |
+| หน้าเว็บบอกยังไม่พร้อมเล่น | ยังไม่ได้ตั้งสามตัวแปร หรือกำลังเปิด deployment เก่า ให้ตั้งแล้ว redeploy |
+| เชื่อม AppSync ไม่ได้ | API key ถูกตัว/ยังไม่หมดอายุ, endpoint เป็น Event API, ทั้งสาม auth modes เป็น API_KEY |
+| AppSync ปฏิเสธคำขอ | namespace **default** มีอยู่และใช้ API_KEY สำหรับ publish/subscribe |
+| เข้าห้องไม่ได้/หมดเวลา | โฮสต์ต้องเปิดหน้าและออนไลน์ ลิงก์ต้องเป็นห้องปัจจุบัน หรือห้องหายเพราะรีเฟรชแล้ว |
+| บทบาท/สถานะไม่อัปเดต | หน้าโฮสต์หรือเครือข่ายอาจพัก ต้องเปิดแท็บโฮสต์ไว้ ถ้าห้องหายสร้างใหม่ |
 
-## รันในเครื่อง
+ถ้า BUILD ยังล้มเหลว ให้เปิดรายละเอียด BUILD แล้วส่งท้าย log ประมาณ 30 บรรทัด ไม่ส่ง API key, AWS credentials หรือ S3 pre-signed URL ที่มีโทเคน
 
-ใช้ Node.js 24:
+## รันในเครื่องและทดสอบ
+
+โหมด local ยังคงใช้ Express/Socket.IO ห้องอยู่ใน RAM ของ process สำหรับการพัฒนา ไม่ใช่เซิร์ฟเวอร์ที่ต้อง deploy คู่กับ Amplify:
 
 ```bash
 npm ci
+npm test
 npm start
 ```
 
-เปิด http://localhost:3000 ใช้เพียง Express และ Socket.IO ใน production ไม่ต้องตั้ง environment เพิ่ม
+เปิด http://localhost:3000 ใช้ Node.js 24
 
-## ตรวจสอบ
+ตรวจ build Amplify โดยไม่ตั้งค่า (หน้า setup):
 
 ```bash
-npm test
+npm run build:amplify
 ```
 
-ทดสอบจำนวนการ์ดและการเติมชาวบ้าน, ข้อมูลการ์ดส่วนตัว, สิทธิ์โฮสต์แยกห้อง, การกลับเข้าห้องเมื่อเน็ตหลุด, การเปลี่ยนสถานะ/จบรอบ, การนำออก/ปิดห้อง, WebSocket และ HTTP polling และยืนยันว่า Admin endpoints เดิมไม่อยู่แล้ว
+การทดสอบใน repo ใช้ relay และ WebSocket protocol จำลองเพื่อทดสอบ flow/การเข้ารหัส รวมทั้งโหมด Node local; ต้องทดสอบจริงกับ AppSync หลังตั้งค่าบัญชี AWS ตามขั้นตอนที่ 4 ไม่ใช่ผลยืนยัน deployment บนบัญชี AWS
 
 ## โครงสร้าง
 
-```text
-server.js          HTTP + Socket.IO ห้องใน RAM
-lib/game.js        จำนวนบทบาท แจกการ์ด และข้อมูลที่แต่ละคนเห็น
-roles.json         การ์ด 30 บทบาท
-public/index.html  เลือกโฮสต์หรือผู้เล่น
-public/host.html   โฮสต์คุมห้อง
-public/player.html การ์ดของผู้เล่น
-public/js/app.js   UI ของโฮสต์และผู้เล่น
-public/style.css   หน้าตาและมือถือ
-public/images/     รูปการ์ดเดิม
-render.yaml        Web Service ฟรีหนึ่งตัว
-amplify.yml        Build หน้าเว็บ static สำหรับ Amplify
-scripts/build-amplify.js  สร้าง dist และตั้ง URL เซิร์ฟเวอร์เกม
-public/js/config.js       ค่า same-origin สำหรับรันแบบบริการเดียว
-```
+| ไฟล์ | หน้าที่ |
+| --- | --- |
+| `amplify.yml` | Build หน้าเว็บ static จาก main |
+| `scripts/build-amplify.js` | สร้าง dist และฝังค่า AppSync |
+| `public/index.html`, `public/host.html`, `public/player.html` | 3 หน้าเกม |
+| `public/js/app.js` | UI โฮสต์และผู้เล่น |
+| `public/js/aws-events.js` | AppSync protocol, การเข้ารหัส, คุมห้องในหน้าโฮสต์ |
+| `public/js/random.js`, `lib/game.js` | สุ่มและกติกาพื้นฐาน ใช้ร่วมกับ browser/Node |
+| `roles.json`, `public/images` | บทบาทและรูปการ์ด |
+| `server.js` | Node server สำหรับ local development |
 
 อ้างอิง:
-- https://render.com/docs/free
-- https://render.com/docs/websocket
-- https://render.com/docs/web-services
-- https://render.com/docs/blueprint-spec
-- https://render.com/docs/deploy-to-render
-- https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages
+- https://docs.aws.amazon.com/appsync/latest/eventapi/create-event-api-tutorial.html
+- https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
+- https://docs.aws.amazon.com/appsync/latest/eventapi/configure-event-api-auth.html
+- https://docs.aws.amazon.com/amplify/latest/userguide/setting-env-vars.html
+- https://aws.amazon.com/appsync/pricing/
+- https://aws.amazon.com/amplify/pricing/

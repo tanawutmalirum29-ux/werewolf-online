@@ -5,7 +5,6 @@ frontend:
       commands:
         - nvm install 24
         - nvm use 24
-        - npm ci --omit=dev
     build:
       commands:
         - npm run build:amplify
@@ -13,6 +12,3 @@ frontend:
     baseDirectory: dist
     files:
       - '**/*'
-  cache:
-    paths:
-      - node_modules/**/*

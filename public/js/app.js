@@ -1,7 +1,7 @@
 (() => {
     'use strict';
     const page = document.body.dataset.page;
-    const serverUrl = window.WEREWOLF_CONFIG?.serverUrl || '';
+    const awsMode = window.WEREWOLF_CONFIG?.mode === 'aws';
     const $ = id => document.getElementById(id);
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
     const team = value => ({ wolf:'ฝ่ายหมาป่า', villager:'ฝ่ายชาวบ้าน', solo:'ฝ่ายเดี่ยว', bandit:'ฝ่ายโจร', cult:'ฝ่ายลัทธิ' }[value] || 'ใช้กติกาที่โฮสต์ประกาศ');
@@ -30,7 +30,7 @@
     function ask(event, data = {}) {
         return new Promise((resolve, reject) => {
             if (!socket.connected) return reject(new Error('ยังไม่เชื่อมต่อ รอสักครู่แล้วลองใหม่'));
-            socket.timeout(8000).emit(event, data, (timeout, reply) => {
+            socket.timeout(awsMode ? 15000 : 8000).emit(event, data, (timeout, reply) => {
                 if (timeout) return reject(Object.assign(new Error('คำขอหมดเวลา ลองใหม่อีกครั้ง'), { timeout: true }));
                 if (!reply?.ok) return reject(new Error(reply?.error || 'ทำรายการไม่สำเร็จ'));
                 resolve(reply);
@@ -108,14 +108,16 @@
         event.preventDefault(); task(async () => {
             const name = $('name').value.trim();
             const reply = await ask(page === 'host' ? 'room:create' : 'room:join', { name, roomId: page === 'player' ? $('roomInput').value.trim().toUpperCase() : undefined });
-            remember({ kind: page, name, roomId: reply.roomId, token: reply.token }); receive(reply.state);
+            remember({ kind: page, name, roomId: reply.roomId, token: reply.token, hostFingerprint:reply.hostFingerprint }); receive(reply.state);
         });
     });
     if (page === 'host') {
         $('hostReveal').addEventListener('change', () => state && renderHost());
         $('roleSearch').addEventListener('input', () => state && renderRoles());
         $('copyInvite').addEventListener('click', () => task(async () => {
-            const link = new URL(`/player.html?room=${state.id}`, location.origin).href;
+            const invite = new URL(`/player.html?room=${state.id}`, location.origin);
+            if (socket.inviteFragment) invite.hash = socket.inviteFragment;
+            const link = invite.href;
             try { await navigator.clipboard.writeText(link); notice('คัดลอกลิงก์แล้ว ส่งให้เพื่อนได้เลย'); }
             catch (_) { notice(`ลิงก์ชวนเพื่อน: ${link}`); }
         }));
@@ -146,9 +148,14 @@
     }
     async function start() {
         try {
-            const response = await fetch(`${serverUrl}/api/roles`); if (!response.ok) throw new Error('โหลดบทบาทไม่สำเร็จ รีเฟรชเพื่อลองใหม่');
-            roles = await response.json();
-            socket = io(serverUrl || undefined, { autoConnect:false });
+            if (awsMode) {
+                if (!window.WEREWOLF_CONFIG.events) throw new Error('เว็บยังไม่พร้อมเล่น ให้เจ้าของเว็บตั้งค่า AppSync ตามคู่มือ deploy');
+                roles = window.WEREWOLF_ROLES;
+            } else {
+                const response = await fetch('/api/roles'); if (!response.ok) throw new Error('โหลดบทบาทไม่สำเร็จ รีเฟรชเพื่อลองใหม่');
+                roles = await response.json();
+            }
+            socket = io(undefined, { autoConnect:false });
             socket.on('connect', async () => {
                 connection();
                 if (!session) return;
@@ -156,7 +163,7 @@
                 catch (error) { if (error.timeout) notice(error.message); else entry(error.message); }
             });
             socket.on('disconnect', () => { connection(); if (state) notice('ขาดการเชื่อมต่อ กำลังกลับเข้าห้อง…'); });
-            socket.on('connect_error', () => { connection(); notice('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กำลังลองใหม่'); });
+            socket.on('connect_error', error => { connection(); notice(awsMode ? error.message : 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กำลังลองใหม่'); });
             socket.on('room:state', receive);
             socket.on('room:closed', data => entry(data.message));
             socket.on('room:removed', data => entry(data.message));
@@ -164,5 +171,10 @@
             socket.connect();
         } catch (error) { notice(error.message); }
     }
+    if (awsMode && page === 'host') window.addEventListener('beforeunload', event => {
+        if (state) { event.preventDefault(); event.returnValue = ''; }
+    });
+    window.addEventListener('pagehide', () => socket?.disconnect());
+    window.addEventListener('pageshow', event => { if (event.persisted) socket?.connect(); });
     start();
 })();

@@ -1,0 +1,25 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+test('Amplify builds with no dependencies or game server URL; setup page blocks gameplay until AppSync is configured', t => {
+    const root = path.resolve(__dirname, '..'), dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ww-aws-build-'));
+    t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
+    for (const file of ['scripts', 'public', 'lib', 'roles.json']) fs.cpSync(path.join(root, file), path.join(dir, file), { recursive:true });
+    const build = values => spawnSync(process.execPath, [path.join(dir, 'scripts/build-amplify.js')], { env:{ ...process.env, GAME_SERVER_URL:'', APPSYNC_HTTP_URL:'', APPSYNC_REALTIME_URL:'', APPSYNC_API_KEY:'', ...values }, encoding:'utf8' });
+    const setup = build({}); assert.equal(setup.status, 0, setup.stderr);
+    assert.ok(fs.readFileSync(path.join(dir, 'dist/index.html'), 'utf8').includes('ยังไม่พร้อมเล่น'));
+    assert.ok(fs.readFileSync(path.join(dir, 'dist/js/config.js'), 'utf8').includes('"events":null'));
+    const missing = build({ APPSYNC_HTTP_URL:'https://example.com/event' }); assert.notEqual(missing.status, 0);
+    const configured = build({ APPSYNC_HTTP_URL:'https://example.appsync-api.ap-southeast-2.amazonaws.com/event', APPSYNC_REALTIME_URL:'wss://example.appsync-realtime-api.ap-southeast-2.amazonaws.com/event/realtime', APPSYNC_API_KEY:'da2-test' });
+    assert.equal(configured.status, 0, configured.stderr);
+    for (const file of ['js/aws-events.js','js/roles.js','js/random.js','js/game.js','images/werewolf.jpg']) assert.ok(fs.existsSync(path.join(dir, 'dist', file)), file);
+    assert.ok(!fs.existsSync(path.join(dir, 'dist/server.js')));
+    const html = fs.readFileSync(path.join(dir, 'dist/host.html'), 'utf8');
+    assert.ok(html.includes('/js/aws-events.js')); assert.ok(!html.includes('/socket.io/socket.io.js'));
+    assert.ok(html.includes('อย่ารีเฟรช'));
+    const invalid = build({ APPSYNC_HTTP_URL:'https://example.com/event?key=bad', APPSYNC_REALTIME_URL:'wss://example.com/event/realtime', APPSYNC_API_KEY:'da2-test' }); assert.notEqual(invalid.status, 0);
+});
