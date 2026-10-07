@@ -13,10 +13,10 @@
 content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
 
 <title>Werewolf-Online</title>
-<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
-<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
-<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+<link rel="icon" type="image/x-icon" href="/images/favicon.ico">
+<link rel="icon" type="image/jpeg" sizes="32x32" href="/images/favicon-32x32.jpg">
+<link rel="icon" type="image/jpeg" sizes="16x16" href="/images/favicon-16x16.jpg">
+<link rel="apple-touch-icon" href="/images/apple-touch-icon.jpg">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,17 +28,13 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <body data-page="player" class="lobby-beach is-day">
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="js/error-reporter.js?v=8"></script>
-<script src="js/runtime-audit-engine.js?v=20260926-4"></script>
-<script src="js/runtime-audit-action-registry.js?v=20260926-4"></script>
-<script src="js/runtime-audit.js?v=20260926-4"></script>
-<script src="js/runtime-audit-actions.js?v=20260926-4"></script>
+<script src="js/bug-reporter.js?v=1"></script>
 <script src="js/game-runtime-client.js?v=20260926-7"></script>
 <script src="js/shared.config-client.js?v=1"></script>
 <script src="js/shared.touch-guard.js"></script>
 <script src="js/shared.reset-guard.js"></script>
 <script src="js/shared.server-control.js"></script>
-<script src="js/account.identity.js"></script>
+<script src="js/profile.identity.js"></script>
 
 
 <div class="scene-layer" id="sceneLayer">
@@ -58,13 +54,13 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <div id="connBanner" class="conn-banner hidden">🔌 ขาดการเชื่อมต่อ กำลังพยายามเชื่อมต่อใหม่...</div>
 <div id="gameActionStatus" class="runtime-action-status hidden" role="status" aria-live="polite"></div>
 
-<!-- JOIN CARD : BEACH LOBBY -->
+<!-- JOIN CARD : VILLAGE LOBBY -->
 <div class="card" id="joinCard">
     <div class="lobby-hero">
-        <div class="lobby-kicker"><span class="lobby-kicker-dot"></span> BEACH LOBBY</div>
+        <div class="lobby-kicker"><span class="lobby-kicker-dot"></span> VILLAGE LOBBY</div>
         <div class="lobby-title-row">
             <div>
-                <h2>เลือกห้อง แล้วลงชายหาด</h2>
+                <h2>เลือกห้อง แล้วเข้าหมู่บ้าน</h2>
                 <p class="sub" id="joinSub">กำลังดูห้องที่พร้อมให้เข้าร่วม...</p>
             </div>
             <div class="lobby-sun" aria-hidden="true">☀️</div>
@@ -95,7 +91,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
         <div class="lobby-feature-room" id="playerLobbyFeatureRoom">
             <div class="lobby-feature-topline">
-                <span class="lobby-feature-icon" id="playerLobbyRoomIcon">🏖️</span>
+                <span class="lobby-feature-icon" id="playerLobbyRoomIcon">🌕</span>
                 <span class="lobby-feature-state" id="playerLobbyRoomState">รอห้องเปิด</span>
             </div>
             <div class="lobby-room-code" id="playerLobbyRoomCode">— — —</div>
@@ -129,7 +125,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
     </section>
 
     <button class="lobby-join-btn" id="joinBtn" onclick="join()" type="button">
-        <span class="lobby-join-icon">🏄</span>
+        <span class="lobby-join-icon">🚪</span>
         <span>เข้าร่วมเกม</span>
         <span class="lobby-join-arrow">→</span>
     </button>
@@ -140,7 +136,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
     </div>
 
     <div class="lobby-footnote">
-        <span>🌴</span> ห้องที่เริ่มเกมแล้วจะไม่รับผู้เล่นใหม่
+        <span>🕯️</span> ห้องที่เริ่มเกมแล้วจะไม่รับผู้เล่นใหม่
     </div>
 </div>
 
@@ -415,7 +411,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
     <div class="ww-modal-box playerRoomPickerBox" role="dialog" aria-modal="true" aria-labelledby="playerRoomPickerTitle">
         <div class="playerRoomPickerHeader">
             <div>
-                <div class="playerRoomPickerKicker">BEACH LOBBY</div>
+                <div class="playerRoomPickerKicker">VILLAGE LOBBY</div>
                 <div class="playerRoomPickerTitle" id="playerRoomPickerTitle">ค้นหาห้องที่จะเล่น</div>
                 <div class="playerRoomPickerSub">เลือกห้องจากสถานะจริงของเซิร์ฟเวอร์</div>
             </div>
@@ -445,7 +441,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
         <div id="playerRoomPickerGrid" class="roomPickerGrid"></div>
         <div id="playerRoomPickerEmpty" class="roomPickerEmpty hidden">
-            <div class="roomPickerEmptyIcon">🏝️</div>
+            <div class="roomPickerEmptyIcon">🏚️</div>
             <strong>ยังไม่พบห้อง</strong>
             <span id="playerRoomPickerEmptyText">ลองค้นหาด้วยโค้ดอื่น หรือรอให้มีห้องเปิดใหม่</span>
         </div>

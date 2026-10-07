@@ -8,13 +8,13 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
 <title>Werewolf-Online</title>
 
-<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
-<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
-<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+<link rel="icon" type="image/x-icon" href="/images/favicon.ico">
+<link rel="icon" type="image/jpeg" sizes="32x32" href="/images/favicon-32x32.jpg">
+<link rel="icon" type="image/jpeg" sizes="16x16" href="/images/favicon-16x16.jpg">
+<link rel="apple-touch-icon" href="/images/apple-touch-icon.jpg">
 <meta property="og:title" content="เกมหมาป่าออนไลน์ — Werewolf Online">
 <meta property="og:description" content="เล่นเกมหมาป่ากับเพื่อนออนไลน์ได้ทุกที่">
-<meta property="og:image" content="__WW_IMAGE_BASE__/cover-1200x630.png">
+<meta property="og:image" content="/images/cover-1200x630.jpg">
 <meta property="og:type" content="website">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -204,9 +204,7 @@ html.ww-index-server-closed #wwIndexServerBoot .wwIndexBootEta{display:none;}
         fetch('/api/server-state?boot=1',{cache:'no-store',credentials:'same-origin',headers:{'Accept':'application/json'}})
             .then(function(r){ if(!r.ok) throw new Error('server_state_'+r.status); return r.json(); })
             .then(function(d){
-                if(d&&d.imageBase){
-                    try{ window.WW_IMG_BASE=d.imageBase; }catch(_){}
-                }
+                try{ window.WW_IMG_BASE="/images"; }catch(_){}
                 if(d&&d.serverOpen===false){
                     closed({message:typeof d.noticeMessage==='string'?d.noticeMessage:'',reopenAt:Number(d.reopenAt)||0,serverNow:Number(d.serverNow)||Date.now(),closingInMs:Number(d.closingInMs)||0,imageBase:typeof d.imageBase==='string'?d.imageBase:'',imageVersion:typeof d.imageVersion==='string'?d.imageVersion:'',serverIconUrl:typeof d.serverIconUrl==='string'?d.serverIconUrl:''});
                 }else{
@@ -251,56 +249,37 @@ html.ww-index-server-closed #wwIndexServerBoot .wwIndexBootEta{display:none;}
     </header>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="js/error-reporter.js?v=8"></script>
-<script src="js/runtime-audit-engine.js?v=20260926-2"></script>
-<script src="js/runtime-audit-action-registry.js?v=20260926-4"></script>
-<script src="js/runtime-audit.js?v=20260926-2"></script>
-<script src="js/runtime-audit-actions.js?v=20260926-4"></script>
+<script src="js/bug-reporter.js?v=1"></script>
 <script src="js/game-runtime-client.js?v=20260926-7"></script>
 <script src="js/shared.config-client.js?v=1"></script>
 <script src="js/shared.touch-guard.js"></script>
 <script src="js/shared.reset-guard.js"></script>
 <script src="js/shared.server-control.js?v=20260926-boot-gate-icons-server"></script>
-<script src="js/account.identity.js"></script>
+<script src="js/profile.identity.js"></script>
 <script src="js/ww-ui.js"></script>
 
-<!-- Account chip: บนจอเล็กกดเพื่อเปิด Profile; เมื่อจอใหญ่พอ Profile จะ dock อยู่ข้าง ๆ และซ่อน trigger ซ้ำ -->
-<button class="name-badge hidden" id="nameBadge" type="button" onclick="openStatsModal()" aria-controls="statsModal" aria-label="เปิดโปรไฟล์บัญชี">
+<!-- Profile chip: บนจอเล็กกดเพื่อเปิด Profile; เมื่อจอใหญ่พอ Profile จะ dock อยู่ข้าง ๆ และซ่อน trigger ซ้ำ -->
+<button class="name-badge hidden" id="nameBadge" type="button" onclick="openProfileModal()" aria-controls="profileModal" aria-label="เปิดโปรไฟล์">
     <span class="name-badge-icon">👤</span>
     <span class="name-badge-text" id="nameBadgeText"></span>
 </button>
 
-<!-- Profile: จอเล็กใช้ modal; จอใหญ่ใช้ dock ข้าง Lobby โดยใช้ข้อมูลจาก /api/player-stats ชุดเดียวกัน -->
-<!-- บัญชีเดิมถูกลบ/หาไม่พบ: ห้ามสร้างใหม่อัตโนมัติ ต้องให้ผู้ใช้เริ่มบัญชีใหม่เองและตั้งชื่อใหม่ -->
-<div class="modal-overlay hidden" id="accountRecreateOverlay">
-    <div class="modal-box account-recreate-box">
-        <h3>บัญชีเดิมใช้ไม่ได้แล้ว</h3>
-        <p class="account-recreate-copy">บัญชีเดิมถูกลบหรือไม่พบในระบบแล้ว<br>บัญชีใหม่จะได้รับ <b>Account ID ใหม่</b> และต้องตั้งชื่อใหม่ก่อนเริ่มเล่น</p>
-        <input type="text" id="accountRecreateName" maxlength="24" autocomplete="off" placeholder="ชื่อบัญชีใหม่">
-        <div class="name-error" id="accountRecreateError"></div>
-        <div class="modal-actions">
-            <button class="modal-confirm" id="accountRecreateButton" onclick="startNewAccountAfterDeletion()" style="flex:1">สร้างบัญชีใหม่</button>
-        </div>
-    </div>
-</div>
-
-<div class="modal-overlay hidden" id="statsModal" onclick="if(event.target===this) closeStatsModal()">
-    <div class="modal-box stats-modal-box" role="dialog" aria-modal="true" aria-labelledby="statsModalTitle">
+<!-- Profile: ชื่อผู้เล่นเท่านั้น ไม่มีบัญชี ประวัติ หรือสถิติ -->
+<div class="modal-overlay hidden" id="profileModal" onclick="if(event.target===this) closeProfileModal()">
+    <div class="modal-box profile-modal-box" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle">
         <div class="profile-modal-head">
             <div class="profile-avatar" aria-hidden="true">👤</div>
             <div class="profile-heading">
                 <div class="profile-kicker">PROFILE</div>
-                <h3 id="statsModalTitle">โปรไฟล์</h3>
-                <div class="stats-modal-name" id="statsModalName">กำลังโหลดข้อมูลบัญชี…</div>
+                <h3 id="profileModalTitle">โปรไฟล์</h3>
+                <div class="profile-modal-name" id="profileModalName">โปรไฟล์ผู้เล่น</div>
             </div>
-            <button class="profile-edit-name-btn" id="profileEditNameBtn" type="button" onclick="openRenameAccountPrompt()" aria-label="เปลี่ยนชื่อบัญชี" title="เปลี่ยนชื่อ">✏️</button>
+            <button class="profile-edit-name-btn" id="profileEditNameBtn" type="button" onclick="openRenameProfilePrompt()" aria-label="เปลี่ยนชื่อ" title="เปลี่ยนชื่อ">✏️</button>
         </div>
 
-        <div id="statsModalBody">
-            <div class="stats-loading">กำลังโหลด…</div>
-        </div>
+        <div id="profileModalBody"><div class="profile-simple"><div>โปรไฟล์ผู้เล่น</div><small>ใช้สำหรับแสดงชื่อในเกมเท่านั้น เก็บเฉพาะชื่อโปรไฟล์บนเครื่อง ไม่มีบัญชี ประวัติ หรือสถิติ</small></div></div>
         <div class="modal-actions profile-modal-actions">
-            <button class="modal-confirm" onclick="closeStatsModal()" style="flex:1">ปิดโปรไฟล์</button>
+            <button class="modal-confirm" onclick="closeProfileModal()" style="flex:1">ปิดโปรไฟล์</button>
         </div>
     </div>
 </div>
@@ -336,7 +315,7 @@ html.ww-index-server-closed #wwIndexServerBoot .wwIndexBootEta{display:none;}
             </div>
 
             <!-- ===== ชื่อของคุณ ===== -->
-            <!-- ตั้งได้ครั้งแรกตามกติกาบัญชีเดิม; หลังตั้งแล้วจะย้ายไปแสดงเป็น Account chip และ Profile -->
+            <!-- ตั้งชื่อโปรไฟล์ท้องถิ่นได้จากหน้านี้ และใช้ชื่อเดียวกันใน Host/Player -->
             <div class="name-field" id="nameField">
                 <label for="displayNameInput">ชื่อผู้เล่น</label>
                 <div class="name-input-wrap">

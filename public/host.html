@@ -8,10 +8,10 @@
 content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual">
 
 <title>Werewolf-Online</title>
-<link rel="icon" type="image/x-icon" href="__WW_IMAGE_BASE__/favicon.ico">
-<link rel="icon" type="image/png" sizes="32x32" href="__WW_IMAGE_BASE__/favicon-32x32.png">
-<link rel="icon" type="image/png" sizes="16x16" href="__WW_IMAGE_BASE__/favicon-16x16.png">
-<link rel="apple-touch-icon" href="__WW_IMAGE_BASE__/apple-touch-icon.png">
+<link rel="icon" type="image/x-icon" href="/images/favicon.ico">
+<link rel="icon" type="image/jpeg" sizes="32x32" href="/images/favicon-32x32.jpg">
+<link rel="icon" type="image/jpeg" sizes="16x16" href="/images/favicon-16x16.jpg">
+<link rel="apple-touch-icon" href="/images/apple-touch-icon.jpg">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -23,17 +23,13 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <body data-page="host" class="is-day">
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="js/error-reporter.js?v=8"></script>
-<script src="js/runtime-audit-engine.js?v=20260926-4"></script>
-<script src="js/runtime-audit-action-registry.js?v=20260926-4"></script>
-<script src="js/runtime-audit.js?v=20260926-4"></script>
-<script src="js/runtime-audit-actions.js?v=20260926-4"></script>
+<script src="js/bug-reporter.js?v=1"></script>
 <script src="js/game-runtime-client.js?v=20260926-7"></script>
 <script src="js/shared.config-client.js?v=1"></script>
 <script src="js/shared.touch-guard.js"></script>
 <script src="js/shared.reset-guard.js"></script>
 <script src="js/shared.server-control.js"></script>
-<script src="js/account.identity.js"></script>
+<script src="js/profile.identity.js"></script>
 
 
 <div class="day-night-badge hidden" id="dayNightBadge">
@@ -51,7 +47,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
         <div class="host-heading-row">
             <div>
                 <div class="eyebrow" id="eyebrowText">ห้องควบคุมผู้เล่าเรื่อง</div>
-                <div class="host-title">ผู้เล่าเรื่อง <span class="host-title-accent">Beach Control</span></div>
+                <div class="host-title">ผู้เล่าเรื่อง <span class="host-title-accent">Village Control</span></div>
             </div>
             <div class="host-live-pill" id="hostLivePill"><span class="host-live-dot"></span><span id="hostLiveText">พร้อมควบคุม</span></div>
         </div>
@@ -82,8 +78,8 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
     <div class="setup-steps" id="setupSteps" aria-hidden="true">
         <div class="setup-step is-current"><span>1</span><div><b>ตั้งค่าห้อง</b><small>กติกาและการเข้าร่วม</small></div></div>
-        <div class="setup-step"><span>2</span><div><b>จัดบทบาท</b><small>กำหนดจำนวนใบ</small></div></div>
-        <div class="setup-step"><span>3</span><div><b>สร้างห้อง</b><small>เปิดให้ผู้เล่นเข้า</small></div></div>
+        <div class="setup-step"><span>2</span><div><b>สร้างห้อง</b><small>รับรหัสและรอผู้เล่น</small></div></div>
+        <div class="setup-step"><span>3</span><div><b>จัดบทบาทในห้อง</b><small>เลือกอาชีพก่อนเริ่มเกม</small></div></div>
     </div>
 
     <div class="layout host-workspace">
@@ -103,12 +99,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
                 </div>
                 <div class="card-body">
                     <div class="tester-section">
-                        <div class="tester-section-title"><span class="tester-section-icon">🔒</span><span>รหัสผ่านห้อง (กันแอดมินคนอื่นแย่งคุม)</span></div>
-                        <p class="sub">แอดมิน/จอคนอื่นที่เลือกห้องนี้จากกริด "ห้องที่ยังเปิดอยู่" ต้องใส่รหัสนี้ก่อนถึงจะเข้าคุมได้ ปล่อยว่าง = ไม่ล็อก</p>
-                        <input type="text" id="setupPassInput" class="ww-modal-input" placeholder="ตั้งรหัสผ่านห้อง (ปล่อยว่าง = ไม่ล็อก)" maxlength="20" autocomplete="off">
-                    </div>
-                    <div class="tester-section">
-                        <div class="tester-section-title"><span class="tester-section-icon">🎫</span><span>รหัสห้อง (ฝั่งผู้เล่นเข้าร่วม)</span></div>
+                        <div class="tester-section-title"><span class="tester-section-icon">🎫</span><span>รหัสเข้าห้องสำหรับผู้เล่น</span></div>
                         <p class="sub">รหัสที่ผู้เล่นต้องกรอกตอนเข้าร่วม (นอกจากโค้ดห้อง) ปล่อยว่าง = ใครรู้โค้ดห้องก็เข้าได้เลย</p>
                         <input type="text" id="setupJoinCodeInput" class="ww-modal-input" placeholder="ตั้งรหัสห้องฝั่งผู้เล่น (ปล่อยว่าง = ไม่ต้องใช้รหัส)" maxlength="20" autocomplete="off">
                     </div>
@@ -136,10 +127,10 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
             <div class="card host-role-card" id="roleSettingsCard">
                 <div class="card-head">
                     <div>
-                        <h2>ตั้งค่าบทบาท</h2>
+                        <h2>จัดบทบาท</h2>
                         <p class="sub">เลือกบทบาทและจำนวนให้ตรงกับผู้เล่นในห้อง</p>
                     </div>
-                    <button class="collapse-btn" id="roleCollapseBtn" onclick="toggleRoleCard()" aria-label="ย่อ/ขยายการ์ดตั้งค่าบทบาท" aria-expanded="true">
+                    <button class="collapse-btn" id="roleCollapseBtn" onclick="toggleRoleCard()" aria-label="ย่อ/ขยายการ์ดจัดบทบาท" aria-expanded="true">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="6 9 12 15 18 9"></polyline>
                         </svg>
@@ -150,7 +141,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
                     <section class="host-preset-panel" id="hostPresetPanel" aria-labelledby="hostPresetTitle">
                         <div class="host-preset-head">
-                            <div><span class="runtime-kicker">GAME PRESET</span><h3 id="hostPresetTitle">ตั้งค่ารูปแบบเกม</h3><p class="sub">กดใช้ชุดตั้งต้นได้ แล้วแก้บทบาทต่อเองได้ทันที</p></div>
+                            <div><span class="runtime-kicker">GAME PRESET</span><h3 id="hostPresetTitle">ตั้งค่ารูปแบบเกม</h3><p class="sub">เลือกชุดตั้งต้นหรือเพิ่มอาชีพให้ครบจำนวนผู้เล่น แล้วเริ่มเกม</p></div>
                             <span class="preset-current" id="presetCurrentLabel">กำหนดเอง</span>
                         </div>
                         <div class="host-preset-actions" id="hostPresetActions">
@@ -315,12 +306,6 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
         <button class="vote-modal-close" onclick="closeRoomSettings()">✕</button>
         <div class="vote-modal-scroll">
 
-            <div class="tester-section">
-                <div class="tester-section-title"><span class="tester-section-icon">🔒</span><span>รหัสผ่านห้อง (กันแอดมินคนอื่นแย่งคุม)</span></div>
-                <p class="sub">ถ้าตั้งรหัสผ่านไว้ แอดมิน/จอคนอื่นที่กดเลือกห้องนี้จากกริด "ห้องที่ยังเปิดอยู่" จะต้องใส่รหัสผ่านนี้ให้ถูกก่อนถึงจะเข้าคุมห้องได้ (คนละอย่างกับ "รหัสห้อง" ด้านบนที่บอกผู้เล่นไว้เข้าร่วมเกม) ปล่อยว่างไว้ = ไม่ต้องใส่รหัสผ่าน</p>
-                <input type="text" id="roomSettingsPassInput" class="ww-modal-input" placeholder="ตั้งรหัสผ่านห้อง (ปล่อยว่าง = ไม่ล็อก)" maxlength="20" autocomplete="off">
-            </div>
-
             <!-- "ชื่อแอดมินคุมห้อง" เคยตั้ง/แก้ได้จากตรงนี้ — เอาออกแล้ว เพราะเป็นช่องโหว่: โฮสต์คนอื่น
                  ที่ล็อกอินเข้าห้องคนอื่น (ไม่ใช่เจ้าของ) จะเห็นชื่อของห้องนั้นดึงมาโชว์ในช่องนี้ กด
                  "บันทึก" เฉยๆ (แค่จะแก้อย่างอื่น) ก็จะดันไปเขียนทับชื่อถาวรของเครื่องตัวเองด้วยชื่อของ
@@ -328,8 +313,8 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
                  ตั้งครั้งเดียวต่อเครื่อง แก้ทีหลังก็กลับไปแก้ที่หน้าแรกได้เลย ไม่ผูกกับห้องไหนห้องหนึ่ง -->
 
             <div class="tester-section">
-                <div class="tester-section-title"><span class="tester-section-icon">🎫</span><span>รหัสห้อง (ฝั่งผู้เล่นเข้าร่วม)</span></div>
-                <p class="sub">คนละอย่างกับ "รหัสผ่านห้อง" ด้านบน — รหัสนี้บอกให้ผู้เล่นกรอกตอนเข้าร่วมห้อง (นอกเหนือจากโค้ดห้องที่เห็นบนสุด) ปล่อยว่างไว้ = ใครรู้โค้ดห้องก็เข้าร่วมได้เลยไม่ต้องมีรหัสเพิ่ม</p>
+                <div class="tester-section-title"><span class="tester-section-icon">🎫</span><span>รหัสเข้าห้องสำหรับผู้เล่น</span></div>
+                <p class="sub">รหัสสำหรับผู้เล่นตอนเข้าร่วม นอกเหนือจากโค้ดห้อง ปล่อยว่าง = ไม่ต้องใช้รหัสเพิ่ม</p>
                 <input type="text" id="roomSettingsJoinCodeInput" class="ww-modal-input" placeholder="ตั้งรหัสห้องฝั่งผู้เล่น (ปล่อยว่าง = ไม่ต้องใช้รหัส)" maxlength="20" autocomplete="off">
             </div>
 
@@ -398,13 +383,6 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
                 <button class="btn-add-bot btn-add-bot-action" onclick="addBot()"><span class="btn-add-bot-icon">+</span>เพิ่มบอท</button>
                 <button class="btn-add-bot btn-add-bot-action" style="margin-top:8px;" onclick="addBotsToFillAllRoles()"><span class="btn-add-bot-icon">+</span>เพิ่มบอทให้ครบเท่าจำนวนอาชีพทั้งหมดในเกม</button>
 
-                <div id="botAIMasterRow" class="testerConditionRow" style="margin-top:12px;">
-                    <div>
-                        <div class="tcLabel">🧠 บอทเล่นเองอัตโนมัติ (ทั้งห้อง)</div>
-                        <div class="tcSub" id="botAIMasterSub">บอทที่ไม่มีคนเข้าสิงจะเล่นเอง (กัด/โหวต/ใช้สกิล)</div>
-                    </div>
-                    <div class="tcToggle" id="botAIMasterToggle" onclick="toggleRoomBotAI()"></div>
-                </div>
 
                 <div id="botList" class="testerConditionList" style="margin-top:12px;"></div>
             </div>
@@ -421,7 +399,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
         <div id="gameOverList" class="gameOverList"></div>
         <hr class="divider">
         <div class="gameover-progress" id="gameOverProgress">รอผู้เล่นกด "ดำเนินการต่อ"... (0/0)</div>
-        <p class="sub" style="margin:10px 0 14px;">ปิดป๊อปอัปนี้แล้วไปที่การ์ด "ตั้งค่าบทบาท" เพื่อแก้ไขจำนวนบทบาทได้ถ้าต้องการ แล้วกด "🌙 เริ่มเกม" ที่นั่นเพื่อเริ่มรอบใหม่</p>
+        <p class="sub" style="margin:10px 0 14px;">ปิดป๊อปอัปนี้แล้วไปที่การ์ด "จัดบทบาท" เพื่อแก้ไขจำนวนบทบาทได้ถ้าต้องการ แล้วกด "🌙 เริ่มเกม" ที่นั่นเพื่อเริ่มรอบใหม่</p>
         <button class="btn btn-ghost btn-block" onclick="goEditRolesAfterGameOver()">✏️ ไปแก้ไขบทบาท / เริ่มเกมใหม่</button>
     </div>
 </div>
@@ -430,7 +408,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 <div class="floating-bar">
     <div class="floating-context" id="floatingContext">
         <div class="floating-context-kicker" id="floatingPhaseTitle">เตรียมเกม</div>
-        <div class="floating-context-copy" id="floatingPhaseHint">ตั้งค่าห้องและบทบาทให้พร้อมก่อนเปิดเกม</div>
+        <div class="floating-context-copy" id="floatingPhaseHint">ตั้งค่าเข้าห้องก่อน แล้วจัดอาชีพหลังสร้างห้อง</div>
     </div>
     <button class="btn btn-create-room setup-only" id="createRoomBtn" onclick="confirmCreateRoom()">
         ✅ สร้างห้อง
@@ -463,7 +441,7 @@ content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable
 
 <script src="js/fluid-layout.js"></script>
 <script src="js/ww-ui.js"></script>
-<script src="js/host.main.js?v=20260925-2"></script>
+<script src="js/host.main.js?v=20261007-guest-cleanup-1"></script>
 
 <!-- ===== ป้ายเวอร์ชัน (แสดงผลอย่างเดียว) ===== -->
 <!-- ป้ายเวอร์ชันมุมซ้ายบน — ขาวจาง ๆ ดึงค่ามาจาก /api/config (appVersion) ให้ตรงกับเลข
