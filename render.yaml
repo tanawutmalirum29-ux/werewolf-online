@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     region: singapore
-    branch: codex/basic-free-deploy
+    branch: main
     buildCommand: npm ci --omit=dev
     startCommand: npm start
     autoDeployTrigger: commit

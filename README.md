@@ -2,7 +2,7 @@
 
 เกมแจกการ์ดและคุมห้องแบบพื้นฐาน เหลือหน้า **index / host / player** โฮสต์เป็นผู้ตัดสินเกมเอง ผู้เล่นเห็นการ์ดของตัวเอง
 
-[เปิดหน้าติดตั้ง Render ฟรี](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Ftanawutmalirum29-ux%2Fwerewolf-online%2Ftree%2Fcodex%2Fbasic-free-deploy)
+[เปิดหน้าติดตั้ง Render ฟรี](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2Ftanawutmalirum29-ux%2Fwerewolf-online%2Ftree%2Fmain)
 
 ## ทำอะไรได้บ้าง
 
@@ -36,7 +36,7 @@
 4. เลือกสร้าง Blueprint / Deploy รอ build เสร็จ
 5. เปิด URL `https://…onrender.com` ที่ Render แสดง โฮสต์และผู้เล่นใช้ URL เดียวกัน
 
-ชุดแก้ไขอยู่ branch `codex/basic-free-deploy` จึงติดตั้งจาก branch นี้ได้เลย ไม่ต้อง merge เพื่อทดสอบ หาก merge เข้า main แล้ว ให้เปลี่ยน branch ใน Render และ `render.yaml` เป็น `main` เพื่อให้การอัปเดตตรงกัน
+ใช้ branch `main` เพียงอันเดียวสำหรับแก้โค้ดและ deploy ชุดเกมพื้นฐานอยู่ใน `main` แล้ว หากเคยสร้างบริการ Render จาก branch เก่า ให้เปลี่ยน Settings → Branch เป็น `main` แล้ว deploy อีกครั้ง
 
 ### วิธีที่ 2: เลือกค่าผ่านหน้าเว็บ Render
 
@@ -45,7 +45,7 @@
 | ช่อง | ค่า |
 | --- | --- |
 | Name | `werewolf-basic` |
-| Branch | `codex/basic-free-deploy` |
+| Branch | `main` |
 | Region | Singapore |
 | Language / Runtime | Node |
 | Root Directory | เว้นว่าง |
