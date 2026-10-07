@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: werewolf-basic
+    runtime: node
+    plan: free
+    region: singapore
+    branch: codex/basic-free-deploy
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    autoDeployTrigger: commit
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
