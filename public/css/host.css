@@ -1,30 +1,33 @@
 :root{
-    --bg:#04141d;
-    --panel:#0a293480;
-    --panel-solid:#0d2b36;
-    --line:rgba(255,255,255,.08);
-    --ink:#eafaf7;
-    --ink-dim:#8fbcbb;
-    --moon:#5eead4;
-    --moon-soft:rgba(94,234,212,.16);
+    --forest:#0b1028;
+    --village:#05070f;
+    --mist-c:rgba(120,110,190,.16);
+    --bg:#070b1a;
+    --panel:#121630b8;
+    --panel-solid:#141a36;
+    --line:rgba(184,164,232,.18);
+    --ink:#e6e9f7;
+    --ink-dim:#9aa3c7;
+    --moon:#7fd8ee;
+    --moon-soft:rgba(127,216,238,.16);
     --wolf:#ef4444;
     --wolf-soft:rgba(239,68,68,.14);
     --safe:#22c55e;
     --safe-soft:rgba(34,197,94,.14);
-    --mark:#fbbf24;
-    --mark-soft:rgba(251,191,36,.14);
+    --mark:#d8b86a;
+    --mark-soft:rgba(216,184,106,.14);
     --r-sm:10px;
     --r-md:16px;
     --r-lg:22px;
-    /* ฉากชายหาด: ท้องฟ้า/ทะเล/หาดทราย — สลับค่าใน body.is-day */
-    --sky-top:#040d16;
-    --sky-mid:#0a2b3d;
-    --sea:#0a3a49;
-    --sea-deep:#072b36;
-    --sand:#2c2114;
-    --sand-deep:#1a130b;
-    --glow-core:#eafffa;
-    --glow-soft:rgba(94,234,212,.55);
+    /* ฉากหมู่บ้าน: ท้องฟ้า/หมอก/พื้นดิน — สลับค่าใน body.is-day */
+    --sky-top:#050816;
+    --sky-mid:#1c1b4a;
+    --sea:#10163a;
+    --sea-deep:#0a0e26;
+    --sand:#070a18;
+    --sand-deep:#03050d;
+    --glow-core:#f4f1e4;
+    --glow-soft:rgba(190,200,255,.45);
     --horizon:42%;
     --shoreline:70%;
     /* Player grid standard: cards never grow beyond this reference width.
@@ -51,12 +54,7 @@ body{
     max-width:100vw;
     overflow-x:hidden;
     background:
-        radial-gradient(circle 60px at 84% 13%, var(--glow-core), var(--glow-soft) 55%, transparent 72%),
-        radial-gradient(ellipse 900px 260px at 50% var(--shoreline), rgba(255,255,255,.05), transparent 70%),
-        linear-gradient(180deg,
-            var(--sky-top) 0%, var(--sky-mid) var(--horizon),
-            var(--sea) var(--horizon), var(--sea-deep) var(--shoreline),
-            var(--sand) var(--shoreline), var(--sand-deep) 100%);
+        linear-gradient(180deg,var(--sky-top),var(--sky-mid) 42%,var(--sea) 58%,var(--sea-deep) 74%,var(--sand) 88%,var(--sand-deep));
     background-attachment:fixed;
     transition:background 1.1s ease;
     color:var(--ink);
@@ -74,17 +72,14 @@ body{
     cursor:pointer;
 }
 
-/* คลื่นทะเลบางๆ เหนือแนวหาด */
+/* หมอกในหมู่บ้านบางๆ เหนือแนวหาด */
 body::after{
     content:"";
     position:fixed;
     inset:0;
     pointer-events:none;
     background-image:
-        radial-gradient(ellipse 160px 10px at 15% var(--shoreline), rgba(255,255,255,.16), transparent 70%),
-        radial-gradient(ellipse 200px 12px at 45% var(--shoreline), rgba(255,255,255,.12), transparent 70%),
-        radial-gradient(ellipse 180px 10px at 75% var(--shoreline), rgba(255,255,255,.14), transparent 70%),
-        radial-gradient(ellipse 150px 9px at 92% var(--shoreline), rgba(255,255,255,.1), transparent 70%);
+        none;
     opacity:.6;
     z-index:0;
 }
@@ -96,12 +91,7 @@ body::before{
     inset:0;
     pointer-events:none;
     background-image:
-        radial-gradient(1px 1px at 12% 12%, rgba(234,255,250,.7), transparent 40%),
-        radial-gradient(1px 1px at 78% 8%, rgba(234,255,250,.55), transparent 40%),
-        radial-gradient(1.5px 1.5px at 60% 20%, rgba(234,255,250,.6), transparent 40%),
-        radial-gradient(1px 1px at 32% 28%, rgba(234,255,250,.45), transparent 40%),
-        radial-gradient(1px 1px at 90% 22%, rgba(234,255,250,.5), transparent 40%),
-        radial-gradient(1.5px 1.5px at 8% 34%, rgba(234,255,250,.4), transparent 40%);
+        none;
     opacity:.85;
     transition:opacity .9s ease;
     z-index:0;
@@ -109,16 +99,16 @@ body::before{
 body.is-day::before{
     opacity:0;
 }
-/* โทนกลางวัน: ท้องฟ้าสีฟ้าสด ทะเลสีเทอร์ควอยซ์ หาดทรายสีทอง */
+/* โทนกลางวัน: ท้องฟ้าเทาอมม่วง หมอกสีอินดิโก้ พื้นดินสีทอง */
 body.is-day{
-    --sky-top:#7dd3fc;
-    --sky-mid:#38bdf8;
-    --sea:#06b6d4;
-    --sea-deep:#0891b2;
-    --sand:#fde68a;
-    --sand-deep:#f3c34d;
-    --glow-core:#fff8dc;
-    --glow-soft:rgba(251,191,36,.65);
+    --sky-top:#3a4466;
+    --sky-mid:#8a88a8;
+    --sea:#6a7092;
+    --sea-deep:#4a5276;
+    --sand:#323a5a;
+    --sand-deep:#222844;
+    --glow-core:#ebe3cc;
+    --glow-soft:rgba(216,184,106,.35);
 }
 
 /* ป้ายบอกกลางวัน/กลางคืน — ลอยมุมขวาบน สลับสีตาม body.is-day/is-night */
@@ -137,8 +127,8 @@ body.is-day{
     backdrop-filter:blur(10px);
     transition:background .9s ease, border-color .9s ease, color .9s ease;
     background:var(--moon-soft);
-    border:1px solid rgba(94,234,212,.4);
-    color:#99f6e4;
+    border:1px solid rgba(127,216,238,.4);
+    color:#bfe9f5;
 }
 .day-night-badge.hidden{ display:none; }
 .day-night-badge .dn-icon{
@@ -147,7 +137,7 @@ body.is-day{
 }
 body.is-day .day-night-badge{
     background:var(--mark-soft);
-    border-color:rgba(251,191,36,.45);
+    border-color:rgba(154,83,6,.45);
     color:var(--mark);
 }
 
@@ -190,8 +180,8 @@ a, button, input, select{
 }
 
 @keyframes glowPulse{
-    0%,100%{ box-shadow:0 0 0 0 rgba(94,234,212,.35); }
-    50%{ box-shadow:0 0 0 10px rgba(94,234,212,0); }
+    0%,100%{ box-shadow:0 0 0 0 rgba(127,216,238,.35); }
+    50%{ box-shadow:0 0 0 10px rgba(127,216,238,0); }
 }
 
 @media (prefers-reduced-motion: reduce){
@@ -294,7 +284,7 @@ a, button, input, select{
     border:1px solid var(--moon-soft);
     border-radius:999px;
     background:
-        radial-gradient(ellipse at center, rgba(94,234,212,.14), transparent 70%),
+        radial-gradient(ellipse at center, rgba(127,216,238,.14), transparent 70%),
         var(--panel);
     backdrop-filter:blur(10px);
 }
@@ -303,7 +293,7 @@ a, button, input, select{
     content:"";
     position:absolute;
     inset:8px;
-    border:1px dashed rgba(94,234,212,.35);
+    border:1px dashed rgba(127,216,238,.35);
     border-radius:999px;
     pointer-events:none;
 }
@@ -322,7 +312,7 @@ a, button, input, select{
     font-size:52px;
     letter-spacing:.18em;
     color:#fff;
-    text-shadow:0 0 28px rgba(94,234,212,.55);
+    text-shadow:0 0 28px rgba(127,216,238,.55);
     line-height:1;
 }
 
@@ -480,7 +470,7 @@ select, .hostMsgInput{
     padding:12px 14px;
     border:1px solid var(--line);
     border-radius:var(--r-sm);
-    background:#082530;
+    background:#141a36;
     color:var(--ink);
     font-size:14px;
     outline:none;
@@ -515,13 +505,13 @@ select{
     padding:12px 18px;
     border:none;
     border-radius:var(--r-sm);
-    background:linear-gradient(135deg,#5eead4,#0d9488);
+    background:linear-gradient(135deg,#7fd8ee,#2a2250);
     color:#fff;
     font-weight:600;
     font-size:14px;
     cursor:pointer;
     transition:transform .15s, box-shadow .15s, filter .15s;
-    box-shadow:0 4px 18px rgba(94,234,212,.28);
+    box-shadow:0 4px 18px rgba(127,216,238,.28);
 }
 
 .btn:hover{
@@ -555,14 +545,14 @@ select{
 }
 
 .btn-resolve{
-    background:linear-gradient(135deg,#f59e0b,#b45309);
-    box-shadow:0 4px 18px rgba(245,158,11,.28);
+    background:linear-gradient(135deg,#d8b86a,#d8b86a);
+    box-shadow:0 4px 18px rgba(216,184,106,.28);
 }
 
 .btn-night{
-    background:linear-gradient(135deg,#115e59,#042f2e);
+    background:linear-gradient(135deg,#3a3174,#1c2346);
     box-shadow:0 4px 18px rgba(60,40,160,.35);
-    border:1px solid rgba(94,234,212,.4);
+    border:1px solid rgba(127,216,238,.4);
 }
 
 .btn-start-game{
@@ -616,15 +606,15 @@ select{
     padding:6px 4px 8px;
     border-radius:var(--r-sm);
     border:1px solid var(--line);
-    background:#082530;
+    background:#141a36;
     cursor:pointer;
     transition:.15s;
     font-family:"IBM Plex Sans Thai",sans-serif;
 }
 
 .quick-add-chip:hover{
-    border-color:rgba(94,234,212,.5);
-    background:rgba(94,234,212,.08);
+    border-color:rgba(127,216,238,.5);
+    background:rgba(127,216,238,.08);
 }
 
 .quick-add-chip:active{
@@ -664,7 +654,7 @@ select{
     display:flex;
     align-items:center;
     justify-content:center;
-    box-shadow:0 0 0 2px #082530;
+    box-shadow:0 0 0 2px #141a36;
 }
 
 /* role chips */
@@ -680,7 +670,7 @@ select{
     align-items:center;
     justify-content:space-between;
     gap:12px;
-    background:#082530;
+    background:#141a36;
     border:1px solid var(--line);
     border-radius:var(--r-sm);
     padding:10px 14px;
@@ -701,7 +691,7 @@ select{
     object-fit:cover;
     border-radius:8px;
     border:1px solid var(--line);
-    background:#061a20;
+    background:#0b0f24;
     flex-shrink:0;
 }
 
@@ -722,7 +712,7 @@ select{
     padding:0;
     border:1px solid var(--line);
     border-radius:8px;
-    background:#0d333e;
+    background:#1a2142;
     color:var(--ink);
     font-size:16px;
     font-weight:700;
@@ -821,7 +811,7 @@ select{
     padding:8px 6px;
     border-radius:var(--r-sm);
     border:1px solid var(--line);
-    background:#082530;
+    background:#141a36;
     color:var(--ink-dim);
     cursor:pointer;
     transition:.15s;
@@ -829,13 +819,13 @@ select{
 }
 
 .gridColsBtn:hover{
-    border-color:rgba(94,234,212,.4);
+    border-color:rgba(127,216,238,.4);
 }
 
 .gridColsBtn.active{
     background:var(--moon-soft);
     border-color:var(--moon);
-    color:#99f6e4;
+    color:#bfe9f5;
 }
 
 .grid-cols-input{
@@ -844,7 +834,7 @@ select{
     padding:9px 10px;
     border-radius:var(--r-sm);
     border:1px solid var(--line);
-    background:#082530;
+    background:#141a36;
     color:var(--ink);
     font-size:13px;
     font-family:"IBM Plex Sans Thai",sans-serif;
@@ -852,7 +842,7 @@ select{
 
 .grid-cols-input:focus{
     outline:none;
-    border-color:rgba(94,234,212,.5);
+    border-color:rgba(127,216,238,.5);
 }
 
 .player-filter-chips{
@@ -867,7 +857,7 @@ select{
     padding:8px 12px;
     border-radius:999px;
     border:1px solid var(--line);
-    background:#082530;
+    background:#141a36;
     color:var(--ink-dim);
     cursor:pointer;
     transition:.15s;
@@ -875,13 +865,13 @@ select{
 }
 
 .filterChip:hover{
-    border-color:rgba(94,234,212,.4);
+    border-color:rgba(127,216,238,.4);
 }
 
 .filterChip.active{
     background:var(--moon-soft);
     border-color:var(--moon);
-    color:#99f6e4;
+    color:#bfe9f5;
 }
 
 .player.search-hidden{
@@ -901,7 +891,7 @@ select{
     padding:8px 12px;
     border-radius:var(--r-sm);
     border:1px solid var(--line);
-    background:#082530;
+    background:#141a36;
     color:var(--ink-dim);
     cursor:pointer;
     transition:.15s;
@@ -910,13 +900,13 @@ select{
 }
 
 .viewModeBtn:hover{
-    border-color:rgba(94,234,212,.4);
+    border-color:rgba(127,216,238,.4);
 }
 
 .viewModeBtn.active{
     background:var(--moon-soft);
     border-color:var(--moon);
-    color:#99f6e4;
+    color:#bfe9f5;
 }
 
 /* ---- simple list view ----
@@ -950,7 +940,7 @@ select{
 }
 
 .simple-row{
-    background:#0c2e38;
+    background:#151b3a;
     border:1px solid rgba(255,255,255,.14);
     border-radius:var(--r-sm);
     transition:border-color .2s, background .2s;
@@ -988,7 +978,7 @@ select{
 }
 
 .simple-row:hover{
-    border-color:rgba(94,234,212,.35);
+    border-color:rgba(127,216,238,.35);
 }
 
 .simple-row.dead{
@@ -1115,7 +1105,7 @@ select{
    - ทุกสิ่งใต้ .player-inner ถูกย่อ/ขยายด้วย transform เดียวกัน ไม่มี minimum และไม่มีการซ่อนองค์ประกอบ
 */
 .player{
-    background:#0c2e38;
+    background:#151b3a;
     border:1px solid rgba(255,255,255,.14);
     border-radius:var(--r-md);
     box-shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 2px 8px rgba(0,0,0,.25);
@@ -1153,8 +1143,8 @@ select{
 }
 
 .player:hover{
-    border-color:rgba(94,234,212,.5);
-    background:#0d333e;
+    border-color:rgba(127,216,238,.5);
+    background:#1a2142;
 }
 
 .player.dead{
@@ -1208,15 +1198,15 @@ select{
     width:100%;
     box-sizing:border-box;
     cursor:pointer;
-    background:rgba(94,234,212,.12);
-    border:1px solid rgba(94,234,212,.3);
-    color:#5eead4;
+    background:rgba(127,216,238,.12);
+    border:1px solid rgba(127,216,238,.3);
+    color:#7fd8ee;
     transition:background .15s, border-color .15s;
 }
 
 .rename-btn:hover{
-    background:rgba(94,234,212,.25);
-    border-color:rgba(94,234,212,.55);
+    background:rgba(127,216,238,.25);
+    border-color:rgba(127,216,238,.55);
 }
 
 .player .ptop{
@@ -1236,7 +1226,7 @@ select{
     text-overflow:ellipsis;
 }
 
-/* เฟส 4 (bot-autonomous-ai-phases.md): badge สถานะคุมบอท ใต้ชื่อในการ์ดผู้เล่นกริดหลัก */
+/* badge สถานะบอททดสอบ/โฮสต์คุม ใต้ชื่อในการ์ดผู้เล่นกริดหลัก */
 .pctrl-badge{
     margin-top:0.15em;
     text-align:center;
@@ -1248,8 +1238,7 @@ select{
     text-overflow:ellipsis;
 }
 .pctrl-badge.pctrl-human{ color:#4ade80; }
-.pctrl-badge.pctrl-ai{ color:#5eead4; }
-.pctrl-badge.pctrl-paused{ color:#fbbf24; }
+.pctrl-badge.pctrl-bot{ color:#c4b5fd; }
 
 /* กริดปุ่มกดของผู้เล่น (บทบาท, แก้ชื่อ, เตะ) —
    บังคับ 2 ช่องต่อแถวเสมอไม่ว่าจอไอแพดหรือมือถือ ไม่ปล่อยให้ wrap เรียงต่อกันแบบสุ่ม */
@@ -1269,7 +1258,7 @@ select{
     letter-spacing:.06em;
     color:var(--moon);
     background:var(--moon-soft);
-    border:1px solid rgba(94,234,212,.3);
+    border:1px solid rgba(127,216,238,.3);
     border-radius:999px;
     padding:0.22em 0.6em;
     white-space:nowrap;
@@ -1295,7 +1284,7 @@ select{
 .randomRole{
     margin-top:0.37em;
     font-size:0.815em;
-    color:#60a5fa;
+    color:#7fd8ee;
 }
 
 .realRole{
@@ -1341,7 +1330,7 @@ select{
 .flag.killed{ background:var(--wolf-soft); color:var(--wolf); border:1px solid rgba(239,68,68,.3); }
 .flag.silenced{ background:rgba(148,163,184,.14); color:#94a3b8; border:1px solid rgba(148,163,184,.3); }
 .flag.transformed{ background:var(--mark-soft); color:var(--mark); border:1px solid rgba(251,191,36,.3); }
-.flag.shield{ background:rgba(56,189,248,.14); color:#38bdf8; border:1px solid rgba(56,189,248,.35); }
+.flag.shield{ background:rgba(47,107,255,.14); color:var(--ink); border:1px solid rgba(47,107,255,.45); }
 
 .shieldFlag:not(:empty){ margin-top:0.43em; }
 
@@ -1373,8 +1362,8 @@ select{
 }
 
 .toggle:active{
-    background:rgba(94,234,212,.12);
-    border-color:rgba(94,234,212,.3);
+    background:rgba(127,216,238,.12);
+    border-color:rgba(127,216,238,.3);
 }
 
 /* 1.82em = 20px ÷ 11px (font-size เดิมของ .toggle) — อยู่ในบริบท font-size ของ .toggle ที่ครอบมัน
@@ -1385,7 +1374,7 @@ select{
     height:1.82em;
     border:1px solid var(--line);
     border-radius:0.45em;
-    background:#0d333e;
+    background:#1a2142;
     cursor:pointer;
     position:relative;
     transition:.15s;
@@ -1476,8 +1465,8 @@ select{
     border-color:#f97316;
 }
 @keyframes toggleAimedPulseMurderer{
-    0%,100%{ box-shadow:0 0 0 0 rgba(249,115,22,.45); }
-    50%{ box-shadow:0 0 0 4px rgba(249,115,22,.2); }
+    0%,100%{ box-shadow:0 0 0 0 rgba(216,184,106,.45); }
+    50%{ box-shadow:0 0 0 4px rgba(216,184,106,.2); }
 }
 
 /* ผู้ยุยง — ชมพู */
@@ -1524,16 +1513,16 @@ select{
     border-color:#eab308;
 }
 @keyframes toggleAimedPulseBandit{
-    0%,100%{ box-shadow:0 0 0 0 rgba(234,179,8,.45); }
-    50%{ box-shadow:0 0 0 4px rgba(234,179,8,.2); }
+    0%,100%{ box-shadow:0 0 0 0 rgba(216,184,106,.45); }
+    50%{ box-shadow:0 0 0 4px rgba(216,184,106,.2); }
 }
 
 /* ช่อง "ใบ้" (ยายแก่เลือกเป้า) — ใช้สีม่วงแยกจาก "เล็งฆ่า" (แดง) ไม่ให้สับสนว่าเป็นการฆ่า
    ครอบคลุมทั้งตอน "กำลังเลือกอยู่" (silenceAimIds) และตอน "โฮสต์ติ๊กเองแล้ว" (p.silenced) */
 .toggle-aimed-hint{
     color:var(--moon);
-    border-color:rgba(94,234,212,.5);
-    background:rgba(94,234,212,.1);
+    border-color:rgba(127,216,238,.5);
+    background:rgba(127,216,238,.1);
     animation:toggleAimedPulseHint 1.4s ease-in-out infinite;
 }
 
@@ -1543,8 +1532,8 @@ select{
 }
 
 @keyframes toggleAimedPulseHint{
-    0%,100%{ box-shadow:0 0 0 0 rgba(94,234,212,.45); }
-    50%{ box-shadow:0 0 0 4px rgba(94,234,212,.2); }
+    0%,100%{ box-shadow:0 0 0 0 rgba(127,216,238,.45); }
+    50%{ box-shadow:0 0 0 4px rgba(127,216,238,.2); }
 }
 
 /* ช่อง "ปกป้อง" (หมอ/บอดี้การ์ด/แม่มด เลือกเป้า) — ใช้สีเขียว
@@ -1631,8 +1620,8 @@ select{
 }
 
 .msg.global{
-    background:rgba(59,130,246,.12);
-    border-color:rgba(59,130,246,.25);
+    background:rgba(59,74,143,.12);
+    border-color:rgba(59,74,143,.25);
 }
 
 .msg.private{
@@ -1642,7 +1631,7 @@ select{
 
 .msg.host{
     background:var(--moon-soft);
-    border-color:rgba(94,234,212,.3);
+    border-color:rgba(127,216,238,.3);
 }
 
 /* ชื่อผู้ส่ง + ข้อความ ให้เริ่มอยู่บรรทัดเดียวกันเสมอ (เช่น "ชื่อ:ข้อความ") — เดิม .mname เป็น div
@@ -1710,9 +1699,9 @@ select{
 }
 
 .chat-tab.active-global{
-    border-color:rgba(59,130,246,.5);
-    background:rgba(59,130,246,.12);
-    color:#93c5fd;
+    border-color:rgba(59,74,143,.5);
+    background:rgba(59,74,143,.12);
+    color:#bfe9f5;
 }
 
 .chat-tab.active-wolf{
@@ -1737,7 +1726,7 @@ select{
     line-height:1;
 }
 
-.chat-tab.active-global .tab-badge{ background:rgba(59,130,246,.35); }
+.chat-tab.active-global .tab-badge{ background:rgba(59,74,143,.35); }
 .chat-tab.active-wolf .tab-badge{ background:rgba(239,68,68,.35); }
 
 .chat-box{
@@ -1751,8 +1740,8 @@ select{
 }
 
 .btn-vote{
-    background:linear-gradient(135deg,#f59e0b,#d97706);
-    box-shadow:0 4px 18px rgba(245,158,11,.28);
+    background:linear-gradient(135deg,#d8b86a,#d8b86a);
+    box-shadow:0 4px 18px rgba(216,184,106,.28);
 }
 
 .btn-vote.active{
@@ -1764,8 +1753,8 @@ select{
 .vote-panel{
     margin-top:16px;
     padding:14px;
-    background:rgba(245,158,11,.07);
-    border:1px solid rgba(245,158,11,.25);
+    background:rgba(216,184,106,.07);
+    border:1px solid rgba(216,184,106,.25);
     border-radius:var(--r-md);
 }
 
@@ -1853,7 +1842,7 @@ select{
     font-family:"JetBrains Mono",monospace;
     font-size:15px;
     font-weight:700;
-    color:#fbbf24;
+    color:#d8b86a;
     margin:-4px 0 10px;
 }
 
@@ -1889,8 +1878,8 @@ select{
 }
 
 .modePopupRow.shielded{
-    border-color:rgba(56,189,248,.35);
-    background:rgba(56,189,248,.06);
+    border-color:rgba(127,216,238,.35);
+    background:rgba(127,216,238,.06);
 }
 
 .modePopupName{
@@ -1952,8 +1941,8 @@ select{
 .btn-reopen-popup{
     width:auto;
     min-width:160px;
-    background:linear-gradient(135deg,#5eead4,#0f766e);
-    box-shadow:0 4px 18px rgba(94,234,212,.28);
+    background:linear-gradient(135deg,#7fd8ee,#3b4a8f);
+    box-shadow:0 4px 18px rgba(127,216,238,.28);
 }
 
 /* ---- room picker grid ---- */
@@ -1970,7 +1959,7 @@ select{
     margin:0 0 12px;
     border:1px solid var(--line);
     border-radius:var(--r-sm);
-    background:#082530;
+    background:#141a36;
     color:var(--ink);
     box-sizing:border-box;
     outline:none;
@@ -2014,12 +2003,12 @@ select{
     padding:14px;
     border:1px solid var(--line);
     border-radius:var(--r-md);
-    background:#082530;
+    background:#141a36;
 }
 
 .roomPickCard.roomPickNew{
     border-style:dashed;
-    border-color:rgba(94,234,212,.4);
+    border-color:rgba(127,216,238,.4);
     background:var(--moon-soft);
     align-items:flex-start;
     justify-content:center;
@@ -2053,7 +2042,7 @@ select{
     justify-content:space-between;
     gap:8px;
     padding:8px 12px;
-    background:#082530;
+    background:#141a36;
     border:1px solid var(--line);
     border-radius:var(--r-sm);
     margin-bottom:6px;
@@ -2084,7 +2073,7 @@ select{
     border-radius:var(--r-sm);
     margin-bottom:5px;
     font-size:13px;
-    background:#082530;
+    background:#141a36;
     border:1px solid var(--line);
 }
 
@@ -2213,7 +2202,7 @@ select{
     overflow-y:auto;
     padding:22px;
     background:var(--panel-solid);
-    border:1px solid rgba(245,158,11,.3);
+    border:1px solid rgba(216,184,106,.3);
     border-radius:var(--r-lg);
     box-shadow:0 20px 60px rgba(0,0,0,.5);
     animation:rise .3s ease both;
@@ -2278,7 +2267,7 @@ select{
    จริงจัง แยกกันชัดเจนเป็นบล็อกๆ แทนหัวข้อลอยๆ เหมือนป๊อปอัปทั่วไป ===== */
 
 .tester-modal{
-    border-color:rgba(94,234,212,.35);
+    border-color:rgba(127,216,238,.35);
 }
 
 .tester-section + .tester-section{
@@ -2303,7 +2292,7 @@ select{
     flex-shrink:0;
     border-radius:9px;
     background:var(--moon-soft);
-    border:1px solid rgba(94,234,212,.3);
+    border:1px solid rgba(127,216,238,.3);
     font-size:14px;
 }
 
@@ -2356,7 +2345,7 @@ select{
     flex-shrink:0;
     border-radius:50%;
     background:var(--moon-soft);
-    border:1px solid rgba(94,234,212,.3);
+    border:1px solid rgba(127,216,238,.3);
     font-size:15px;
 }
 
@@ -2368,8 +2357,8 @@ select{
     gap:8px;
     padding:12px 16px;
     border-radius:var(--r-sm);
-    border:1.5px dashed rgba(94,234,212,.4);
-    background:rgba(94,234,212,.06);
+    border:1.5px dashed rgba(127,216,238,.4);
+    background:rgba(127,216,238,.06);
     color:var(--ink);
     font-weight:600;
     font-size:14px;
@@ -2390,8 +2379,8 @@ select{
     transform:none;
 }
 .btn-add-bot:disabled:hover{
-    border-color:rgba(94,234,212,.4);
-    background:rgba(94,234,212,.06);
+    border-color:rgba(127,216,238,.4);
+    background:rgba(127,216,238,.06);
     transform:none;
 }
 
@@ -2411,7 +2400,7 @@ select{
 /* สโครลบาร์บางแบบมีธีม แทนสโครลบาร์เทาเริ่มต้นของเบราว์เซอร์ ให้เข้ากับพื้นมืด/โทนม่วงของเกม */
 .vote-modal-scroll{
     scrollbar-width:thin;
-    scrollbar-color:rgba(94,234,212,.4) transparent;
+    scrollbar-color:rgba(127,216,238,.4) transparent;
 }
 
 .vote-modal-scroll::-webkit-scrollbar{
@@ -2419,12 +2408,12 @@ select{
 }
 
 .vote-modal-scroll::-webkit-scrollbar-thumb{
-    background:rgba(94,234,212,.35);
+    background:rgba(127,216,238,.35);
     border-radius:999px;
 }
 
 .vote-modal-scroll::-webkit-scrollbar-thumb:hover{
-    background:rgba(94,234,212,.55);
+    background:rgba(127,216,238,.55);
 }
 
 html.modal-open,
@@ -2436,7 +2425,7 @@ html.modal-open body{
 /* ===== GAME OVER SUMMARY ===== */
 .gameover-modal{
     max-width:480px;
-    border-color:rgba(94,234,212,.4);
+    border-color:rgba(127,216,238,.4);
 }
 
 .gameover-title{
@@ -2503,8 +2492,8 @@ html.modal-open body{
 .btn-tester{
     width:100%;
     margin-top:10px;
-    background:rgba(94,234,212,.12);
-    border:1px solid rgba(94,234,212,.35);
+    background:rgba(127,216,238,.12);
+    border:1px solid rgba(127,216,238,.35);
     color:var(--ink);
 }
 
@@ -2578,10 +2567,10 @@ html.modal-open body{
 .prole-bot-clickable:hover{
     transform:scale(1.08);
     filter:brightness(1.12);
-    box-shadow:0 0 0 2px rgba(94,234,212,.28);
+    box-shadow:0 0 0 2px rgba(127,216,238,.28);
 }
 .prole-bot-clickable:focus-visible{
-    outline:2px solid #5eead4;
+    outline:2px solid #7fd8ee;
     outline-offset:2px;
 }
 
@@ -2638,17 +2627,17 @@ html.modal-open body{
 }
 @keyframes wwFadeIn{ from{opacity:0;} to{opacity:1;} }
 .ww-modal-box{
-    background:#0e3742; color:#fff; border-radius:16px; padding:26px 22px;
+    background:#141a36; color:#fff; border-radius:16px; padding:26px 22px;
     max-width:360px; width:100%; box-shadow:0 12px 40px rgba(0,0,0,.55);
     text-align:center; border:1px solid rgba(255,255,255,.08);
 }
 .ww-modal-msg{ font-size:15.5px; line-height:1.55; margin-bottom:20px; white-space:pre-line; }
 .ww-modal-input{
     width:100%; padding:12px 14px; margin-bottom:16px; border-radius:10px;
-    border:1px solid rgba(255,255,255,.15); background:#082530; color:#fff;
+    border:1px solid rgba(255,255,255,.15); background:#141a36; color:#fff;
     font-size:15px; font-family:inherit; text-align:center;
 }
-.ww-modal-input:focus{ outline:none; border-color:#14b8a6; }
+.ww-modal-input:focus{ outline:none; border-color:#3a3174; }
 .ww-modal-actions{ display:flex; gap:10px; }
 /* ใช้กับ wwChoice ที่มีตัวเลือกมากกว่า 2 ปุ่ม — เรียงเป็นแนวตั้งแทนแนวนอนกันปุ่มบีบแคบเกินไป */
 .ww-modal-actions-col{ flex-direction:column; }
@@ -2656,12 +2645,12 @@ html.modal-open body{
     flex:1; padding:12px 14px; border:none; border-radius:10px;
     font-size:14.5px; font-weight:700; cursor:pointer; font-family:inherit;
 }
-.ww-modal-ok{ background:#14b8a6; color:#fff; }
-.ww-modal-ok:active{ background:#0d9488; }
+.ww-modal-ok{ background:#3a3174; color:#fff; }
+.ww-modal-ok:active{ background:#2a2250; }
 .ww-modal-cancel{ background:#374151; color:#e5e7eb; }
 .ww-modal-ok.ww-modal-danger{ background:#dc2626; }
 .ww-modal-ok.ww-modal-danger:active{ background:#b91c1c; }
-.ww-modal-cancel:active{ background:#123f4b; }
+.ww-modal-cancel:active{ background:#1c2346; }
 
 
 /* ==========================================================================
@@ -2714,7 +2703,7 @@ body.setup-mode .floating-bar .btn-create-room{ min-width:200px; }
 /* ==========================================================================
    DAY THEME (body.is-day) — UI สว่างรับกับฉากกลางวัน
    --------------------------------------------------------------------------
-   ปัญหาเดิม: ตอนกลางวันฉากเปลี่ยนเป็นฟ้า/ทะเลสว่าง แต่ UI ยังใช้ชุดสีกลางคืนเดิม
+   ปัญหาเดิม: ตอนกลางวันฉากเปลี่ยนเป็นฟ้า/หมอกสว่าง แต่ UI ยังใช้ชุดสีกลางคืนเดิม
    (ตัวอักษรขาว/เทอร์ควอยซ์อ่อน + การ์ดพื้นน้ำเงินเข้ม) ทำให้ตัวอักษรที่วางบนฉากตรงๆ
    (ป้ายห้อง, รหัสห้อง, คำใบ้, ป้ายวันที่) มองไม่เห็น และการ์ด/กริดผู้เล่นมืดตัดกับฉาก
 
@@ -2734,13 +2723,13 @@ body.is-day .app{
     /* body ตั้ง color:var(--ink) ไว้ที่ระดับราก ลูกหลานจึง "สืบทอดค่าสีสว่างที่คำนวณแล้ว" ไม่ใช่โทเค็น
        — ต้องตั้ง color ใหม่ที่ .app ด้วย ข้อความที่ไม่ได้กำหนดสีเอง (เช่นเนื้อความแชท) จะได้เป็นสีเข้ม */
     color:var(--ink);
-    --panel:rgba(255,255,255,.82);
-    --panel-solid:#f3fbfe;
-    --line:rgba(8,74,96,.20);
-    --ink:#08323f;
-    --ink-dim:#2a5968;
-    --moon:#0c6b85;
-    --moon-soft:rgba(14,116,144,.13);
+    --panel:rgba(236,234,246,.84);
+    --panel-solid:#f1eff8;
+    --line:rgba(40,44,90,.22);
+    --ink:#1f2447;
+    --ink-dim:#4a5073;
+    --moon:#3b4a8f;
+    --moon-soft:rgba(59,74,143,.13);
     --wolf:#b91c1c;
     --wolf-soft:rgba(185,28,28,.10);
     --safe:#15803d;
@@ -2749,16 +2738,16 @@ body.is-day .app{
     --mark-soft:rgba(180,83,9,.13);
 
     /* พื้นผิวย่อยที่เคยเป็น #082530 / #0c2e38 / #0d333e (ช่องกรอก ชิป แถว การ์ดผู้เล่น) */
-    --day-surface:rgba(255,255,255,.90);
-    --day-surface-hi:#ffffff;
-    --day-edge:rgba(8,74,96,.22);
-    --day-shadow:0 2px 8px rgba(8,74,96,.14);
+    --day-surface:rgba(240,238,248,.92);
+    --day-surface-hi:#f7f6fc;
+    --day-edge:rgba(40,44,90,.24);
+    --day-shadow:0 2px 8px rgba(30,34,80,.18);
 }
 
 /* ---- ตัวอักษรที่วางบนฉากตรงๆ (ไม่มีการ์ดรอง) ---- */
 body.is-day .eyebrow,
 body.is-day .seal-hint{
-    color:#06303c;
+    color:#1a1f40;
     text-shadow:0 1px 8px rgba(255,255,255,.65);
 }
 
@@ -2766,35 +2755,35 @@ body.is-day .seal-hint{
 body.is-day .seal{
     border:1px solid rgba(255,255,255,.95);
     background:
-        radial-gradient(ellipse at center, rgba(14,116,144,.07), transparent 70%),
-        rgba(255,255,255,.84);
-    box-shadow:0 10px 30px rgba(8,74,96,.22);
+        radial-gradient(ellipse at center, rgba(59,74,143,.07), transparent 70%),
+        rgba(236,234,246,.84);
+    box-shadow:0 10px 30px rgba(40,44,90,.22);
 }
-body.is-day .seal::before{ border-color:rgba(14,116,144,.42); }
-body.is-day .seal-label{ color:#2a5968; }
+body.is-day .seal::before{ border-color:rgba(59,74,143,.42); }
+body.is-day .seal-label{ color:#4a5073; }
 body.is-day .seal-code{
-    color:#0a4256;
+    color:#3b4a8f;
     text-shadow:0 1px 0 #fff, 0 0 22px rgba(255,255,255,.8);
 }
 
 /* ---- ป้ายวัน/คืน + แบนเนอร์แจ้งเตือน: พื้นทึบอ่านชัดบนฟ้า ---- */
 body.is-day .day-night-badge{
     background:rgba(255,255,255,.90);
-    border-color:rgba(180,83,9,.50);
-    color:#8a4a05;
-    box-shadow:0 4px 14px rgba(8,74,96,.18);
+    border-color:rgba(154,83,6,.50);
+    color:#9a5306;
+    box-shadow:0 4px 14px rgba(40,44,90,.18);
 }
 body.is-day .conn-banner{
     background:rgba(255,251,235,.96);
     border-color:rgba(180,83,9,.5);
     color:#8a4a05;
 }
-body.is-day #wwVersionBadge{ color:rgba(8,50,63,.5) !important; }
+body.is-day #wwVersionBadge{ color:rgba(31,36,71,.5) !important; }
 
 /* ---- การ์ดกระจกฝ้า ---- */
 body.is-day .app .card{
     border-color:rgba(255,255,255,.92);
-    box-shadow:0 8px 28px rgba(8,74,96,.16);
+    box-shadow:0 8px 28px rgba(40,44,90,.16);
 }
 body.is-day .app .card h2,
 body.is-day .app .player .pname,
@@ -2803,25 +2792,25 @@ body.is-day .app .msg .mname{
     color:var(--ink);
 }
 body.is-day .app .chat-tab .tab-badge{
-    background:rgba(8,74,96,.14);
+    background:rgba(40,44,90,.14);
     color:var(--ink);
 }
 
 /* ---- ปุ่ม ---- */
 body.is-day .app .btn:not([class*="btn-"]){
-    background:linear-gradient(135deg,#0d84a1,#0a6179);
-    box-shadow:0 4px 14px rgba(8,74,96,.28);
+    background:linear-gradient(135deg,#3a3174,#2a2250);
+    box-shadow:0 4px 14px rgba(40,44,90,.28);
 }
 body.is-day .app .btn-ghost,
 body.is-day .app .btn-tester{
-    background:rgba(255,255,255,.86);
-    border-color:rgba(8,74,96,.30);
+    background:rgba(236,234,246,.84);
+    border-color:rgba(40,44,90,.30);
     color:var(--ink);
-    box-shadow:0 2px 8px rgba(8,74,96,.12);
+    box-shadow:0 2px 8px rgba(40,44,90,.12);
 }
 body.is-day .app .btn-ghost:hover,
 body.is-day .app .btn-tester:hover{
-    background:#fff;
+    background:#eceaf6;
     border-color:var(--moon);
 }
 body.is-day .app .btn-tester.active{
@@ -2860,9 +2849,9 @@ body.is-day .app .viewModeBtn:hover{ border-color:var(--moon); }
 body.is-day .app .gridColsBtn.active,
 body.is-day .app .filterChip.active,
 body.is-day .app .viewModeBtn.active{
-    background:rgba(14,116,144,.16);
+    background:rgba(59,74,143,.16);
     border-color:var(--moon);
-    color:#0a4f64;
+    color:#3b4a8f;
 }
 body.is-day .app select{
     background-image:
@@ -2883,27 +2872,27 @@ body.is-day .app .simple-row:hover{
     border-color:var(--moon);
 }
 body.is-day .app .simple-row .toggle{
-    background:rgba(8,74,96,.05);
-    border-color:rgba(8,74,96,.10);
+    background:rgba(40,44,90,.05);
+    border-color:rgba(40,44,90,.10);
 }
 body.is-day .app .toggle input{
-    background:#fff;
-    border-color:rgba(8,74,96,.38);
+    background:#eceaf6;
+    border-color:rgba(40,44,90,.38);
 }
 body.is-day .app .toggle input:checked{
     background:var(--moon);
     border-color:var(--moon);
 }
-body.is-day .app .toggle{ color:#2a5968; }
+body.is-day .app .toggle{ color:#4a5073; }
 body.is-day .app .toggle:hover{ color:var(--ink); }
 
 /* สีสถานะบนพื้นสว่าง — ใช้เฉดเข้มขึ้นให้คอนทราสต์ผ่าน (ช่องที่ติ๊กแล้วยังใช้สีสดเดิมเป็นพื้น) */
 body.is-day .app .kick-btn{ color:#b91c1c; background:rgba(185,28,28,.08); border-color:rgba(185,28,28,.38); }
-body.is-day .app .rename-btn{ color:#0e7490; background:rgba(14,116,144,.09); border-color:rgba(14,116,144,.38); }
+body.is-day .app .rename-btn{ color:#3b4a8f; background:rgba(59,74,143,.09); border-color:rgba(59,74,143,.38); }
 body.is-day .app .pctrl-badge.pctrl-human{ color:#15803d; }
-body.is-day .app .pctrl-badge.pctrl-ai{ color:#0e7490; }
+body.is-day .app .pctrl-badge.pctrl-ai{ color:#3b4a8f; }
 body.is-day .app .pctrl-badge.pctrl-paused{ color:#9a5306; }
-body.is-day .app .randomRole{ color:#1d4ed8; }
+body.is-day .app .randomRole{ color:#3b4a8f; }
 body.is-day .app .flag.silenced{ color:#475569; }
 body.is-day .app .flag.shield{ color:#0369a1; }
 body.is-day .app .toggle-aimed-murderer{ color:#c2410c; }
@@ -2915,24 +2904,24 @@ body.is-day .app .toggle-aimed-protect{ color:#15803d; }
 /* ---- แชท ---- */
 body.is-day .app .msg{ background:rgba(255,255,255,.55); }
 body.is-day .app .msg.wolf{ background:var(--wolf-soft); }
-body.is-day .app .msg.global{ background:rgba(59,130,246,.10); }
+body.is-day .app .msg.global{ background:rgba(59,74,143,.10); }
 body.is-day .app .msg.private{ background:var(--safe-soft); }
 body.is-day .app .msg.host{ background:var(--moon-soft); }
-body.is-day .app .chat-tab.active-global{ color:#1d4ed8; background:rgba(59,130,246,.14); }
+body.is-day .app .chat-tab.active-global{ color:#3b4a8f; background:rgba(59,74,143,.14); }
 body.is-day .app .chat-tab.active-wolf{ color:#b91c1c; background:var(--wolf-soft); }
 
 /* ---- บาร์ล่าง (อยู่นอก .app เลยต้องตั้งเอง) ---- */
 body.is-day .floating-bar{
     background:rgba(255,255,255,.78);
     border-top-color:rgba(255,255,255,.95);
-    box-shadow:0 -6px 24px rgba(8,74,96,.16);
+    box-shadow:0 -6px 24px rgba(40,44,90,.16);
 }
 
 /* ปุ่มส้ม (โหวต/สรุปผล) ตัวอักษรขาวบนส้มสว่างคอนทราสต์ต่ำ — เข้มขึ้นเฉพาะตอนกลางวัน */
 body.is-day .floating-bar .btn-vote,
 body.is-day .floating-bar .btn-resolve{
-    background:linear-gradient(135deg,#c2650a,#9a4405);
-    box-shadow:0 4px 14px rgba(154,68,5,.30);
+    background:linear-gradient(135deg,#9a5306,#9a5306);
+    box-shadow:0 4px 14px rgba(154,83,6,.30);
 }
 body.is-day .floating-bar .btn-vote.active{
     background:linear-gradient(135deg,#22a04f,#15803d);
@@ -2942,7 +2931,7 @@ body.is-day .floating-bar .btn-vote.active{
    เปลี่ยนเป็นเทาอมฟ้าทึบ ตัวอักษรเข้ม — ดูออกว่ากดไม่ได้ แต่ยังอ่านออก */
 body.is-day .floating-bar .btn:disabled{
     background:#dbe7eb;
-    color:#4a6875;
+    color:#4a5073;
     opacity:1;
     filter:none;
 }
@@ -2963,7 +2952,7 @@ body.is-day .floating-bar .btn-create-room{
 .ww-toast-success{border-color:rgba(34,197,94,.38);}
 
 /* ============================================================================
-   HOST CONTROL DECK v2 — beach-themed control room
+   HOST CONTROL DECK v2 — village-themed control room
    ---------------------------------------------------------------------------
    เป้าหมาย:
    - แยก hierarchy ให้ชัด: Header > workspace > contextual actions
@@ -2974,13 +2963,13 @@ body.is-day .floating-bar .btn-create-room{
    ============================================================================ */
 
 :root{
-    --host-ocean:#0d8ca6;
-    --host-ocean-deep:#07556a;
-    --host-sand:#e9b54e;
-    --host-sand-soft:rgba(233,181,78,.16);
-    --host-coral:#e8755b;
-    --host-glass:rgba(7,34,45,.76);
-    --host-glass-strong:rgba(7,28,38,.90);
+    --host-ocean:#3b4a8f;
+    --host-ocean-deep:#252d60;
+    --host-sand:#d8b86a;
+    --host-sand-soft:rgba(216,184,106,.16);
+    --host-coral:#a795c9;
+    --host-glass:rgba(18,22,48,.76);
+    --host-glass-strong:rgba(20,26,54,.90);
     --host-shadow:0 18px 45px rgba(0,0,0,.18);
 }
 
@@ -3016,7 +3005,7 @@ body::before, body::after{ z-index:0; }
     color:#fff;
     text-wrap:balance;
 }
-.host-title-accent{ color:var(--sand,#fbbf24); }
+.host-title-accent{ color:var(--sand,#d8b86a); }
 .host-live-pill{
     flex:0 0 auto;
     display:inline-flex;
@@ -3031,7 +3020,7 @@ body::before, body::after{ z-index:0; }
     font-weight:700;
     backdrop-filter:blur(10px);
 }
-.host-live-dot{ width:8px; height:8px; border-radius:50%; background:#34d399; box-shadow:0 0 0 4px rgba(52,211,153,.12); }
+.host-live-dot{ width:8px; height:8px; border-radius:50%; background:#7fd8ee; box-shadow:0 0 0 4px rgba(127,216,238,.12); }
 .host-room-shell{
     display:grid;
     grid-template-columns:minmax(190px,250px) minmax(0,1fr);
@@ -3046,13 +3035,13 @@ body::before, body::after{ z-index:0; }
     align-items:flex-start;
     justify-content:center;
     background:
-        radial-gradient(circle at 50% 32%, rgba(94,234,212,.18), transparent 58%),
-        linear-gradient(145deg, rgba(12,55,69,.90), rgba(5,30,40,.84));
-    border:1px solid rgba(94,234,212,.24);
+        radial-gradient(circle at 50% 32%, rgba(127,216,238,.18), transparent 58%),
+        linear-gradient(145deg, rgba(20,26,54,.90), rgba(11,15,36,.84));
+    border:1px solid rgba(127,216,238,.24);
     box-shadow:var(--host-shadow), inset 0 1px 0 rgba(255,255,255,.06);
     overflow:hidden;
 }
-.seal::before{ inset:7px; border-radius:18px; border-style:solid; border-color:rgba(94,234,212,.18); }
+.seal::before{ inset:7px; border-radius:18px; border-style:solid; border-color:rgba(127,216,238,.18); }
 .seal-label{ font-size:10px; letter-spacing:.18em; opacity:.75; }
 .seal-code{ font-size:38px; letter-spacing:.15em; line-height:1.02; align-self:center; }
 .seal-copy-hint{ font-size:10.5px; color:var(--ink-dim); align-self:center; margin-top:1px; }
@@ -3070,7 +3059,7 @@ body::before, body::after{ z-index:0; }
     padding:13px 12px;
     border-radius:18px;
     border:1px solid rgba(255,255,255,.10);
-    background:rgba(6,29,39,.62);
+    background:rgba(20,26,54,.62);
     box-shadow:0 8px 24px rgba(0,0,0,.10), inset 0 1px 0 rgba(255,255,255,.035);
     backdrop-filter:blur(10px);
 }
@@ -3101,7 +3090,7 @@ body.setup-mode .setup-steps{ display:grid; }
     padding:8px 10px;
     border:1px solid rgba(255,255,255,.10);
     border-radius:14px;
-    background:rgba(4,24,32,.54);
+    background:rgba(20,26,54,.54);
 }
 .setup-step > span{
     width:25px; height:25px; display:grid; place-items:center; flex:0 0 auto;
@@ -3109,8 +3098,8 @@ body.setup-mode .setup-steps{ display:grid; }
 }
 .setup-step b{ display:block; color:#fff; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .setup-step small{ display:block; color:var(--ink-dim); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.setup-step.is-current{ border-color:rgba(94,234,212,.35); background:linear-gradient(135deg,rgba(94,234,212,.12),rgba(94,234,212,.04)); }
-.setup-step.is-current > span{ background:var(--moon); color:#062a32; }
+.setup-step.is-current{ border-color:rgba(127,216,238,.35); background:linear-gradient(135deg,rgba(127,216,238,.12),rgba(127,216,238,.04)); }
+.setup-step.is-current > span{ background:var(--moon); color:#1c2346; }
 
 /* ---------- workspace ---------- */
 .layout{
@@ -3126,7 +3115,7 @@ body.setup-mode .setup-steps{ display:grid; }
     min-width:0;
     border-radius:20px;
     padding:17px;
-    background:linear-gradient(145deg,rgba(8,36,47,.78),rgba(7,28,37,.72));
+    background:linear-gradient(145deg,rgba(20,26,54,.78),rgba(20,26,54,.72));
     border-color:rgba(255,255,255,.10);
     box-shadow:0 12px 34px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.035);
 }
@@ -3201,7 +3190,7 @@ body.setup-mode .setup-steps{ display:grid; }
     max-height:min(88svh,780px);
     border-radius:22px;
     padding:18px;
-    background:linear-gradient(155deg,rgba(8,38,49,.98),rgba(4,27,36,.98));
+    background:linear-gradient(155deg,rgba(20,26,54,.98),rgba(20,26,54,.98));
     box-shadow:0 24px 70px rgba(0,0,0,.42);
 }
 
@@ -3211,7 +3200,7 @@ body.setup-mode .setup-steps{ display:grid; }
     gap:8px;
     align-items:center;
     justify-content:flex-end;
-    background:linear-gradient(180deg,rgba(4,20,28,.68),rgba(4,16,22,.91));
+    background:linear-gradient(180deg,rgba(20,26,54,.68),rgba(20,26,54,.91));
     border-top-color:rgba(255,255,255,.12);
     box-shadow:0 -14px 36px rgba(0,0,0,.18);
 }
@@ -3236,7 +3225,7 @@ body.setup-mode .host-room-shell,
 body.setup-mode .seal-hint,
 body.setup-mode .seal-actions{ display:none; }
 body.setup-mode .host-heading-row{ align-items:flex-start; }
-body.setup-mode .host-live-pill{ background:rgba(233,181,78,.10); border-color:rgba(233,181,78,.22); }
+body.setup-mode .host-live-pill{ background:rgba(154,83,6,.10); border-color:rgba(154,83,6,.22); }
 body.setup-mode .layout{
     grid-template-columns:minmax(0,1fr);
     max-width:1080px;
@@ -3260,28 +3249,28 @@ body.setup-mode .floating-context-kicker{ font-size:11px; }
 body.setup-mode .floating-context-copy{ max-width:300px; }
 
 /* ---------- day palette refinement ---------- */
-body.is-day .host-title{ color:#08323f; text-shadow:0 1px 10px rgba(255,255,255,.55); }
-body.is-day .host-live-pill{ background:rgba(255,255,255,.72); border-color:rgba(8,74,96,.18); color:#0a4f64; }
+body.is-day .host-title{ color:#1f2447; text-shadow:0 1px 10px rgba(255,255,255,.55); }
+body.is-day .host-live-pill{ background:rgba(255,255,255,.72); border-color:rgba(40,44,90,.18); color:#3b4a8f; }
 body.is-day .host-live-dot{ background:#15803d; }
 body.is-day .host-fact,
 body.is-day .setup-step{
     background:rgba(255,255,255,.66);
     border-color:rgba(255,255,255,.95);
-    box-shadow:0 8px 24px rgba(8,74,96,.10);
+    box-shadow:0 8px 24px rgba(40,44,90,.10);
 }
 body.is-day .host-fact b,
-body.is-day .setup-step b{ color:#08323f; }
+body.is-day .setup-step b{ color:#1f2447; }
 body.is-day .seal{
     background:linear-gradient(145deg,rgba(255,255,255,.90),rgba(239,251,255,.82));
     border-color:rgba(255,255,255,.98);
-    box-shadow:0 12px 30px rgba(8,74,96,.15);
+    box-shadow:0 12px 30px rgba(40,44,90,.15);
 }
-body.is-day .seal-code{ color:#0a4256; text-shadow:0 1px 0 #fff,0 0 18px rgba(255,255,255,.75); }
-body.is-day .seal-copy-hint{ color:#2a5968; }
-body.is-day .seal-hint{ color:#06303c; }
-body.is-day .floating-bar{ background:rgba(255,255,255,.84); border-top-color:rgba(255,255,255,.96); }
-body.is-day .floating-context-kicker{ color:#08323f; }
-body.is-day .floating-context-copy{ color:#2a5968; }
+body.is-day .seal-code{ color:#3b4a8f; text-shadow:0 1px 0 #fff,0 0 18px rgba(255,255,255,.75); }
+body.is-day .seal-copy-hint{ color:#4a5073; }
+body.is-day .seal-hint{ color:#1a1f40; }
+body.is-day .floating-bar{ background:rgba(236,234,246,.84); border-top-color:rgba(255,255,255,.96); }
+body.is-day .floating-context-kicker{ color:#1f2447; }
+body.is-day .floating-context-copy{ color:#4a5073; }
 body.is-day .floating-context-kicker::before{ color:#9a5306; }
 
 /* ---------- breakpoint: tablet landscape / large tablet ---------- */
@@ -3395,35 +3384,35 @@ body.is-day .floating-context-kicker::before{ color:#9a5306; }
     .seal-wrap,.card,.player,.simple-row{ animation:none !important; }
 }
 
-/* setup is a relaxed daytime beach workspace rather than the night-game palette */
+/* setup is a relaxed daytime village workspace rather than the night-game palette */
 body.setup-mode{
-    --sky-top:#7dd3fc;
-    --sky-mid:#38bdf8;
-    --sea:#06b6d4;
-    --sea-deep:#0891b2;
-    --sand:#fde68a;
-    --sand-deep:#f3c34d;
-    --glow-core:#fff8dc;
-    --glow-soft:rgba(251,191,36,.68);
-    color:#08323f;
+    --sky-top:#3a4466;
+    --sky-mid:#8a88a8;
+    --sea:#6a7092;
+    --sea-deep:#4a5276;
+    --sand:#323a5a;
+    --sand-deep:#222844;
+    --glow-core:#ebe3cc;
+    --glow-soft:rgba(216,184,106,.35);
+    color:#1f2447;
 }
-body.setup-mode .eyebrow{ color:#0a5368; }
-body.setup-mode .host-title{ color:#08323f; text-shadow:0 1px 10px rgba(255,255,255,.55); }
-body.setup-mode .host-live-pill{ background:rgba(255,255,255,.72); border-color:rgba(8,74,96,.18); color:#0a4f64; }
+body.setup-mode .eyebrow{ color:#4a5073; }
+body.setup-mode .host-title{ color:#1f2447; text-shadow:0 1px 10px rgba(255,255,255,.55); }
+body.setup-mode .host-live-pill{ background:rgba(255,255,255,.72); border-color:rgba(40,44,90,.18); color:#3b4a8f; }
 body.setup-mode .host-fact,
 body.setup-mode .setup-step{
     background:rgba(255,255,255,.72);
     border-color:rgba(255,255,255,.95);
-    color:#08323f;
-    box-shadow:0 8px 24px rgba(8,74,96,.10);
+    color:#1f2447;
+    box-shadow:0 8px 24px rgba(40,44,90,.10);
 }
 body.setup-mode .host-fact b,
-body.setup-mode .setup-step b{ color:#08323f; }
+body.setup-mode .setup-step b{ color:#1f2447; }
 body.setup-mode .host-fact small,
-body.setup-mode .setup-step small{ color:#2a5968; }
-body.setup-mode .card{ background:rgba(255,255,255,.78); border-color:rgba(255,255,255,.92); color:#08323f; box-shadow:0 12px 34px rgba(8,74,96,.12); }
-body.setup-mode .card h2{ color:#08323f; }
-body.setup-mode .card .sub{ color:#2a5968; }
+body.setup-mode .setup-step small{ color:#4a5073; }
+body.setup-mode .card{ background:rgba(255,255,255,.78); border-color:rgba(255,255,255,.92); color:#1f2447; box-shadow:0 12px 34px rgba(40,44,90,.12); }
+body.setup-mode .card h2{ color:#1f2447; }
+body.setup-mode .card .sub{ color:#4a5073; }
 body.setup-mode select,
 body.setup-mode .hostMsgInput,
 body.setup-mode .grid-cols-input,
@@ -3433,16 +3422,16 @@ body.setup-mode .roleBtn,
 body.setup-mode .gridColsBtn,
 body.setup-mode .filterChip,
 body.setup-mode .viewModeBtn{
-    background:rgba(255,255,255,.88); border-color:rgba(8,74,96,.18); color:#08323f;
+    background:rgba(236,234,246,.84); border-color:rgba(40,44,90,.18); color:#1f2447;
 }
-body.setup-mode .testerConditionRow{ background:rgba(255,255,255,.72); border-color:rgba(8,74,96,.16); }
-body.setup-mode .testerConditionRow .tcLabel{ color:#08323f; }
-body.setup-mode .testerConditionRow .tcSub{ color:#2a5968; }
-body.setup-mode .floating-bar{ background:rgba(255,255,255,.86); border-top-color:rgba(255,255,255,.96); }
-body.setup-mode .floating-context-kicker{ color:#08323f; }
-body.setup-mode .floating-context-copy{ color:#2a5968; }
-.host-live-pill.is-connected .host-live-dot{ background:#34d399; }
-.host-live-pill:not(.is-connected) .host-live-dot{ background:#f59e0b; box-shadow:0 0 0 4px rgba(245,158,11,.12); }
+body.setup-mode .testerConditionRow{ background:rgba(255,255,255,.72); border-color:rgba(40,44,90,.16); }
+body.setup-mode .testerConditionRow .tcLabel{ color:#1f2447; }
+body.setup-mode .testerConditionRow .tcSub{ color:#4a5073; }
+body.setup-mode .floating-bar{ background:rgba(236,234,246,.84); border-top-color:rgba(255,255,255,.96); }
+body.setup-mode .floating-context-kicker{ color:#1f2447; }
+body.setup-mode .floating-context-copy{ color:#4a5073; }
+.host-live-pill.is-connected .host-live-dot{ background:#7fd8ee; }
+.host-live-pill:not(.is-connected) .host-live-dot{ background:#d8b86a; box-shadow:0 0 0 4px rgba(216,184,106,.12); }
 
 /* ==========================================================================\n   HOST BEACH CONTROL — FINAL LAYOUT REFINEMENT\n   Purpose: replace the layered/competing legacy layout rules above with one\n   predictable responsive system for setup, lobby and active-game states.\n   ========================================================================== */
 :root{
@@ -3560,7 +3549,7 @@ body{ min-height:100svh; }
     position:absolute;
     top:50%; left:100%;
     width:8px; height:1px;
-    background:rgba(94,234,212,.22);
+    background:rgba(127,216,238,.22);
     transform:translateY(-50%);
 }
 .setup-step:last-child::after{ display:none; }
@@ -3823,13 +3812,13 @@ body:not(.setup-mode) .layout:not(.role-hidden) #rightCol .host-chat-card{ heigh
 }
 
 /* ---- final responsive corrections: explicit state + action-dock flow ---- */
-.host-title-accent{ color:#ffd166 !important; text-shadow:0 2px 16px rgba(255,209,102,.22); }
-.setup-step.is-done > span{ background:rgba(94,234,212,.18); color:var(--ink); border-color:rgba(94,234,212,.35); }
+.host-title-accent{ color:#d8b86a !important; text-shadow:0 2px 16px rgba(216,184,106,.22); }
+.setup-step.is-done > span{ background:rgba(127,216,238,.18); color:var(--ink); border-color:rgba(127,216,238,.35); }
 body.setup-mode .floating-context-kicker::before{ content:none !important; }
-body.setup-mode .floating-context-kicker{ color:#08323f; }
+body.setup-mode .floating-context-kicker{ color:#1f2447; }
 body.setup-mode #setupCard .card-body{ max-height:min(56svh,560px); overflow:auto; overscroll-behavior:contain; }
-body.setup-mode .ww-modal-input{ background:#ffffff !important; color:#08323f !important; border-color:rgba(8,74,96,.22) !important; }
-body.setup-mode .ww-modal-input::placeholder{ color:#5d7480 !important; }
+body.setup-mode .ww-modal-input{ background:#eceaf6 !important; color:#1f2447 !important; border-color:rgba(40,44,90,.22) !important; }
+body.setup-mode .ww-modal-input::placeholder{ color:#3b4a8f !important; }
 
 /* Game mode gets a compressed identity strip so the player board owns the vertical space. */
 body.host-game-mode .seal-wrap{ gap:7px; margin-bottom:9px; }
@@ -3904,13 +3893,13 @@ body.host-game-mode .seal-actions + .seal-actions .btn-close-room{ grid-column:1
 }
 
 /* Setup-mode contrast pass for role picker controls. */
-body.setup-mode .quick-add-chip span{ color:#2a5968 !important; font-weight:600; }
-body.setup-mode .quick-add-chip{ color:#08323f; }
-body.setup-mode .roleBox{ color:#08323f; background:rgba(255,255,255,.82); }
-body.setup-mode .roleBox .name{ color:#08323f; }
-body.setup-mode .roleBox .count{ color:#0e7490; font-weight:800; }
-body.setup-mode .roleBtn{ background:#effbff; color:#08323f; border-color:rgba(8,74,96,.20); }
-body.setup-mode .roleBtn:hover{ background:#dff7fb; color:#08323f; }
+body.setup-mode .quick-add-chip span{ color:#4a5073 !important; font-weight:600; }
+body.setup-mode .quick-add-chip{ color:#1f2447; }
+body.setup-mode .roleBox{ color:#1f2447; background:rgba(236,234,246,.84); }
+body.setup-mode .roleBox .name{ color:#1f2447; }
+body.setup-mode .roleBox .count{ color:#3b4a8f; font-weight:800; }
+body.setup-mode .roleBtn{ background:#f1eff8; color:#1f2447; border-color:rgba(40,44,90,.20); }
+body.setup-mode .roleBtn:hover{ background:#eceaf6; color:#1f2447; }
 
 /* ============================================================================
    FLUID LAYOUT ENGINE — continuous resize pass
@@ -4127,8 +4116,8 @@ body.host-game-mode .layout:not(.role-hidden) #rightCol .host-player-card{
     min-height:42px;
     padding:9px 13px;
     border-radius:12px;
-    border:1px solid rgba(94,234,212,.34);
-    background:rgba(5,33,43,.72);
+    border:1px solid rgba(127,216,238,.34);
+    background:rgba(20,26,54,.72);
     color:#eafffa;
     font-weight:800;
     cursor:pointer;
@@ -4137,16 +4126,16 @@ body.host-game-mode .layout:not(.role-hidden) #rightCol .host-player-card{
     transition:background .18s ease, border-color .18s ease, transform .18s ease;
 }
 .player-focus-btn:hover{
-    background:rgba(13,74,91,.86);
-    border-color:rgba(94,234,212,.62);
+    background:rgba(20,26,54,.86);
+    border-color:rgba(127,216,238,.62);
     transform:translateY(-1px);
 }
 .player-focus-btn:active{ transform:translateY(0); }
 
 body.is-day .player-focus-btn{
     background:rgba(255,255,255,.72);
-    color:#08323f;
-    border-color:rgba(8,74,96,.22);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.22);
 }
 
 /* Focus mode is intentionally an application-level fullscreen panel, not browser fullscreen. */
@@ -4287,7 +4276,7 @@ body.host-player-focus .floating-bar{
         max(10px, calc((100vw - 1320px)/2))
         calc(7px + env(safe-area-inset-bottom,0px));
     gap:7px;
-    background:linear-gradient(180deg,rgba(4,20,28,.72),rgba(4,13,19,.96));
+    background:linear-gradient(180deg,rgba(20,26,54,.72),rgba(20,26,54,.96));
     box-shadow:0 -14px 36px rgba(0,0,0,.30);
 }
 body.host-player-focus .floating-context,
@@ -4392,64 +4381,64 @@ body.is-day .host-player-card{
     background:
         linear-gradient(145deg,rgba(255,255,255,.90),rgba(244,251,253,.84));
     border-color:rgba(255,255,255,.95);
-    color:#08323f;
-    box-shadow:0 14px 34px rgba(8,74,96,.16), inset 0 1px 0 rgba(255,255,255,.72);
+    color:#1f2447;
+    box-shadow:0 14px 34px rgba(40,44,90,.16), inset 0 1px 0 rgba(255,255,255,.72);
 }
 body.is-day .host-player-card .host-card-kicker,
 body.is-day .host-player-card .sub,
 body.is-day .host-player-card .grid-cols-label{
-    color:#2a5968;
+    color:#4a5073;
 }
 body.is-day .host-player-card .host-player-title-wrap h2{
-    color:#08323f;
+    color:#1f2447;
     text-shadow:0 1px 0 rgba(255,255,255,.85);
 }
 body.is-day .host-player-card .player-focus-btn{
-    background:rgba(255,255,255,.84);
-    color:#08323f;
-    border-color:rgba(8,74,96,.22);
-    box-shadow:0 3px 12px rgba(8,74,96,.12);
+    background:rgba(236,234,246,.84);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.22);
+    box-shadow:0 3px 12px rgba(40,44,90,.12);
 }
 body.is-day .host-player-card .player-focus-btn:hover{
-    background:#fff;
-    border-color:rgba(12,107,133,.45);
+    background:#eceaf6;
+    border-color:rgba(40,44,90,.45);
 }
 body.is-day .host-player-card .gridColsBtn,
 body.is-day .host-player-card .grid-cols-input,
 body.is-day .host-player-card .filterChip,
 body.is-day .host-player-card .viewModeBtn{
     background:rgba(255,255,255,.90);
-    color:#245666;
-    border-color:rgba(8,74,96,.18);
-    box-shadow:0 2px 7px rgba(8,74,96,.08);
+    color:#4a5073;
+    border-color:rgba(40,44,90,.18);
+    box-shadow:0 2px 7px rgba(40,44,90,.08);
 }
 body.is-day .host-player-card .gridColsBtn:hover,
 body.is-day .host-player-card .filterChip:hover,
 body.is-day .host-player-card .viewModeBtn:hover{
-    color:#08323f;
-    background:#fff;
-    border-color:#0c6b85;
+    color:#1f2447;
+    background:#eceaf6;
+    border-color:#3b4a8f;
 }
 body.is-day .host-player-card .gridColsBtn.active,
 body.is-day .host-player-card .filterChip.active,
 body.is-day .host-player-card .viewModeBtn.active{
-    background:rgba(14,116,144,.12);
-    color:#0a4f64;
-    border-color:#0c6b85;
-    box-shadow:0 3px 9px rgba(8,74,96,.10);
+    background:rgba(59,74,143,.12);
+    color:#3b4a8f;
+    border-color:#3b4a8f;
+    box-shadow:0 3px 9px rgba(40,44,90,.10);
 }
 body.is-day.host-player-focus .host-player-card{
     background:
         linear-gradient(145deg,rgba(255,255,255,.94),rgba(242,250,252,.90));
-    box-shadow:0 18px 42px rgba(8,74,96,.18), inset 0 1px 0 rgba(255,255,255,.82);
+    box-shadow:0 18px 42px rgba(40,44,90,.18), inset 0 1px 0 rgba(255,255,255,.82);
 }
 body.is-day.host-player-focus .floating-bar{
-    background:rgba(255,255,255,.88);
+    background:rgba(236,234,246,.84);
     border-top-color:rgba(255,255,255,.95);
-    box-shadow:0 -10px 28px rgba(8,74,96,.16);
+    box-shadow:0 -10px 28px rgba(40,44,90,.16);
 }
 body.is-day.host-player-focus .floating-bar .btn{
-    color:#08323f;
+    color:#1f2447;
 }
 
 @media (max-width:480px){
@@ -4462,7 +4451,7 @@ body.is-day.host-player-focus .floating-bar .btn{
    HOST DAY SURFACE CONSISTENCY — FINAL OVERRIDE
    ---------------------------------------------------------------------------
    Every visible Host surface that can appear while the room is in daytime must
-   use the beach/day palette.  Several legacy controls live outside .app or use
+   use the village/day palette.  Several legacy controls live outside .app or use
    fixed dark literals, so they are overridden here at the end of the stylesheet
    to make the daytime state authoritative without changing the night palette.
    ============================================================================ */
@@ -4472,78 +4461,78 @@ body.is-day .app #setupCard,
 body.is-day .app .host-player-card{
     background:linear-gradient(145deg,rgba(255,255,255,.90),rgba(241,250,253,.84));
     border-color:rgba(255,255,255,.96);
-    color:#08323f;
-    box-shadow:0 10px 30px rgba(8,74,96,.14), inset 0 1px 0 rgba(255,255,255,.70);
+    color:#1f2447;
+    box-shadow:0 10px 30px rgba(40,44,90,.14), inset 0 1px 0 rgba(255,255,255,.70);
 }
 
 /* Role management: quick-add chips, role rows and +/- controls */
 body.is-day .app .quick-add-chip{
-    background:rgba(255,255,255,.88) !important;
-    border-color:rgba(8,74,96,.18);
-    color:#08323f;
-    box-shadow:0 2px 8px rgba(8,74,96,.08);
+    background:rgba(236,234,246,.84) !important;
+    border-color:rgba(40,44,90,.18);
+    color:#1f2447;
+    box-shadow:0 2px 8px rgba(40,44,90,.08);
 }
 body.is-day .app .quick-add-chip:hover{
-    background:#fff !important;
-    border-color:rgba(12,107,133,.42);
+    background:#eceaf6 !important;
+    border-color:rgba(40,44,90,.42);
 }
-body.is-day .app .quick-add-chip span{ color:#2a5968; }
+body.is-day .app .quick-add-chip span{ color:#4a5073; }
 body.is-day .app .quick-add-chip .qa-count{
-    background:#0c6b85;
+    background:#3b4a8f;
     color:#fff;
     box-shadow:0 0 0 2px #fff;
 }
-body.is-day .app .roleConfigList{ color:#08323f; }
+body.is-day .app .roleConfigList{ color:#1f2447; }
 body.is-day .app .roleBox{
     background:rgba(255,255,255,.90) !important;
-    border-color:rgba(8,74,96,.18);
-    color:#08323f;
-    box-shadow:0 2px 8px rgba(8,74,96,.07);
+    border-color:rgba(40,44,90,.18);
+    color:#1f2447;
+    box-shadow:0 2px 8px rgba(40,44,90,.07);
 }
-body.is-day .app .roleBox .name{ color:#08323f; }
+body.is-day .app .roleBox .name{ color:#1f2447; }
 body.is-day .app .roleBox .role-icon{
     background:#e9f7fb !important;
-    border-color:rgba(8,74,96,.16);
+    border-color:rgba(40,44,90,.16);
 }
-body.is-day .app .roleBox .count{ color:#0c6b85; }
+body.is-day .app .roleBox .count{ color:#3b4a8f; }
 body.is-day .app .roleBtn{
     background:#f8fdff !important;
-    border-color:rgba(8,74,96,.18);
-    color:#08323f;
+    border-color:rgba(40,44,90,.18);
+    color:#1f2447;
 }
 body.is-day .app .roleBtn:hover{
     background:#e8f8fc !important;
-    color:#08323f;
-    border-color:#0c6b85;
+    color:#1f2447;
+    border-color:#3b4a8f;
 }
-body.is-day .app .config-summary{ color:#2a5968; }
-body.is-day .app .config-summary b{ color:#08323f; }
+body.is-day .app .config-summary{ color:#4a5073; }
+body.is-day .app .config-summary b{ color:#1f2447; }
 body.is-day .app .empty-note{
-    color:#2a5968;
-    border-color:rgba(8,74,96,.20);
+    color:#4a5073;
+    border-color:rgba(40,44,90,.20);
     background:rgba(255,255,255,.48);
 }
 
 /* Chat: make the whole chat rail and its individual message surfaces visibly daytime */
 body.is-day .app .host-chat-card .chat-tabs{
     background:rgba(255,255,255,.34);
-    border:1px solid rgba(8,74,96,.10);
+    border:1px solid rgba(40,44,90,.10);
     border-radius:14px;
     padding:4px;
 }
 body.is-day .app .host-chat-card .chat-tab{
     background:rgba(255,255,255,.62);
-    border-color:rgba(8,74,96,.16);
-    color:#2a5968;
+    border-color:rgba(40,44,90,.16);
+    color:#4a5073;
 }
 body.is-day .app .host-chat-card .chat-tab:hover{
-    background:#fff;
-    color:#08323f;
+    background:#eceaf6;
+    color:#1f2447;
 }
 body.is-day .app .host-chat-card .chat-tab.active-global{
-    background:rgba(59,130,246,.13);
-    border-color:rgba(59,130,246,.38);
-    color:#1d4ed8;
+    background:rgba(59,74,143,.13);
+    border-color:rgba(59,74,143,.38);
+    color:#3b4a8f;
 }
 body.is-day .app .host-chat-card .chat-tab.active-wolf{
     background:rgba(185,28,28,.09);
@@ -4551,26 +4540,26 @@ body.is-day .app .host-chat-card .chat-tab.active-wolf{
     color:#b91c1c;
 }
 body.is-day .app .host-chat-card .chat-tab .tab-badge{
-    background:rgba(8,74,96,.10);
-    color:#08323f;
+    background:rgba(40,44,90,.10);
+    color:#1f2447;
 }
 body.is-day .app .host-chat-card .chat-log{
     background:rgba(255,255,255,.42);
-    border:1px solid rgba(8,74,96,.12);
+    border:1px solid rgba(40,44,90,.12);
     border-radius:14px;
     padding:8px;
-    box-shadow:inset 0 1px 5px rgba(8,74,96,.05);
+    box-shadow:inset 0 1px 5px rgba(40,44,90,.05);
 }
 body.is-day .app .host-chat-card .chat-log:empty::after{
-    color:#2a5968;
-    border-color:rgba(8,74,96,.20);
+    color:#4a5073;
+    border-color:rgba(40,44,90,.20);
     background:rgba(255,255,255,.34);
 }
 body.is-day .app .host-chat-card .msg{
     background:rgba(255,255,255,.76) !important;
-    border-color:rgba(8,74,96,.15);
-    color:#08323f;
-    box-shadow:0 2px 7px rgba(8,74,96,.06);
+    border-color:rgba(40,44,90,.15);
+    color:#1f2447;
+    box-shadow:0 2px 7px rgba(40,44,90,.06);
 }
 body.is-day .app .host-chat-card .msg.wolf{
     background:rgba(254,226,226,.88) !important;
@@ -4586,10 +4575,10 @@ body.is-day .app .host-chat-card .msg.private{
 }
 body.is-day .app .host-chat-card .msg.host{
     background:rgba(224,242,254,.88) !important;
-    border-color:rgba(14,116,144,.20);
+    border-color:rgba(59,74,143,.20);
 }
-body.is-day .app .host-chat-card .msg .mname{ color:#08323f !important; }
-body.is-day .app .host-chat-card .msg .mtype{ color:#2a5968; }
+body.is-day .app .host-chat-card .msg .mname{ color:#1f2447 !important; }
+body.is-day .app .host-chat-card .msg .mtype{ color:#4a5073; }
 body.is-day .app .host-chat-card .msg.death,
 body.is-day .app .host-chat-card .msg.death .mname{ color:#b91c1c !important; }
 
@@ -4606,20 +4595,20 @@ body.is-day .app .tally-row,
 body.is-day .app .simple-row,
 body.is-day .app .player,
 body.is-day .app .modePopupRow{
-    background-color:rgba(255,255,255,.88);
-    color:#08323f;
-    border-color:rgba(8,74,96,.18);
+    background-color:rgba(236,234,246,.84);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.18);
 }
 body.is-day .app .vote-row .vote-name,
 body.is-day .app .modePopupName,
-body.is-day .app .modePopupChoice b{ color:#08323f; }
+body.is-day .app .modePopupChoice b{ color:#1f2447; }
 
 /* Popups are siblings of .app, so they need their own daytime palette. */
 body.is-day .vote-modal{
     background:linear-gradient(145deg,rgba(255,255,255,.98),rgba(241,250,253,.96));
-    color:#08323f;
-    border-color:rgba(8,74,96,.18);
-    box-shadow:0 20px 60px rgba(8,74,96,.24);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.18);
+    box-shadow:0 20px 60px rgba(40,44,90,.24);
 }
 body.is-day .vote-modal .sub,
 body.is-day .vote-panel-title,
@@ -4627,23 +4616,23 @@ body.is-day .modePopupChoice,
 body.is-day .modePopupRoleTag,
 body.is-day .gameover-progress,
 body.is-day .testerConditionRow .tcSub,
-body.is-day .botRow .botRole{ color:#2a5968; }
+body.is-day .botRow .botRole{ color:#4a5073; }
 body.is-day .vote-modal-close{
     background:rgba(255,255,255,.78);
-    border-color:rgba(8,74,96,.18);
-    color:#08323f;
+    border-color:rgba(40,44,90,.18);
+    color:#1f2447;
 }
-body.is-day .vote-modal-close:hover{ background:#fff; border-color:#0c6b85; }
+body.is-day .vote-modal-close:hover{ background:#eceaf6; border-color:#3b4a8f; }
 body.is-day .modePopupRow,
 body.is-day .gameOverRow,
 body.is-day .testerConditionRow,
 body.is-day .botRow{
     background:rgba(255,255,255,.78);
-    border-color:rgba(8,74,96,.16);
-    color:#08323f;
+    border-color:rgba(40,44,90,.16);
+    color:#1f2447;
 }
 body.is-day .modePopupRow.shielded{ background:rgba(224,242,254,.86); }
-body.is-day .modePopupName{ color:#08323f; }
+body.is-day .modePopupName{ color:#1f2447; }
 body.is-day .modePopupForceBtn{
     color:#9f1239;
     background:rgba(251,113,133,.13);
@@ -4651,52 +4640,52 @@ body.is-day .modePopupForceBtn{
 }
 body.is-day .roomSearchInput,
 body.is-day .ww-modal-input{
-    background:#fff !important;
-    color:#08323f !important;
-    border-color:rgba(8,74,96,.20);
+    background:#eceaf6 !important;
+    color:#1f2447 !important;
+    border-color:rgba(40,44,90,.20);
 }
 body.is-day .roomSearchInput::placeholder,
-body.is-day .ww-modal-input::placeholder{ color:#63808b; }
+body.is-day .ww-modal-input::placeholder{ color:#3b4a8f; }
 body.is-day .roomPickCard{
-    background:rgba(255,255,255,.84);
-    color:#08323f;
-    border-color:rgba(8,74,96,.16);
+    background:rgba(236,234,246,.84);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.16);
 }
-body.is-day .roomPickCard.roomPickNew{ background:rgba(14,116,144,.10); }
-body.is-day .roomPickCode{ color:#0a4256; }
+body.is-day .roomPickCard.roomPickNew{ background:rgba(59,74,143,.10); }
+body.is-day .roomPickCode{ color:#3b4a8f; }
 body.is-day .gameOverRow{ background:rgba(255,255,255,.72); }
 body.is-day .gameOverRow.win{ background:rgba(220,252,231,.82); }
 body.is-day .gameOverRow.lose{ background:rgba(254,226,226,.82); }
 body.is-day .tester-section-icon{
-    background:rgba(14,116,144,.11);
-    border-color:rgba(14,116,144,.25);
+    background:rgba(59,74,143,.11);
+    border-color:rgba(59,74,143,.25);
 }
-body.is-day .tester-section-title span:last-child{ color:#08323f; }
+body.is-day .tester-section-title span:last-child{ color:#1f2447; }
 body.is-day .testerConditionRow:hover,
 body.is-day .botRow:hover{ background:rgba(239,250,253,.96); }
 
 /* Generic ww-modal / toast are also outside .app. */
 body.is-day .ww-modal-box{
-    background:linear-gradient(145deg,#ffffff,#effafe);
-    color:#08323f;
-    border-color:rgba(8,74,96,.18);
-    box-shadow:0 12px 40px rgba(8,74,96,.24);
+    background:linear-gradient(145deg,#eceaf6,#effafe);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.18);
+    box-shadow:0 12px 40px rgba(40,44,90,.24);
 }
-body.is-day .ww-modal-msg{ color:#08323f; }
-body.is-day .ww-modal-cancel{ background:#e6eef2; color:#244c5a; }
-body.is-day .ww-modal-input{ background:#fff !important; color:#08323f !important; }
+body.is-day .ww-modal-msg{ color:#1f2447; }
+body.is-day .ww-modal-cancel{ background:#e6eef2; color:#4a5073; }
+body.is-day .ww-modal-input{ background:#eceaf6 !important; color:#1f2447 !important; }
 body.is-day .ww-toast{
     background:rgba(255,255,255,.96);
-    color:#08323f;
-    border-color:rgba(8,74,96,.18);
-    box-shadow:0 12px 35px rgba(8,74,96,.20);
+    color:#1f2447;
+    border-color:rgba(40,44,90,.18);
+    box-shadow:0 12px 35px rgba(40,44,90,.20);
 }
-body.is-day .ww-toast-info{ border-color:rgba(14,116,144,.30); }
+body.is-day .ww-toast-info{ border-color:rgba(59,74,143,.30); }
 
 
 /* HOST FLOATING DOCK — daytime readability + single restart action
    The dock sits outside .app, so its text must have an explicit day palette.
-   Keep the context readable even when the bright beach surface is active. */
+   Keep the context readable even when the bright village surface is active. */
 .floating-context{
     min-height:42px;
     display:flex;
@@ -4712,28 +4701,28 @@ body.is-day .ww-toast-info{ border-color:rgba(14,116,144,.30); }
     line-height:1.4;
 }
 body.is-day .floating-context-kicker{
-    color:#06303c !important;
+    color:#1a1f40 !important;
     font-weight:800;
     text-shadow:0 1px 0 rgba(255,255,255,.72);
 }
 body.is-day .floating-context-copy{
-    color:#245463 !important;
+    color:#4a5073 !important;
     font-weight:600;
     text-shadow:0 1px 0 rgba(255,255,255,.65);
 }
 body.is-day .floating-bar{
-    color:#08323f;
+    color:#1f2447;
 }
 body.is-day .floating-bar .btn-ghost{
-    color:#08323f !important;
-    border-color:rgba(8,74,96,.24);
+    color:#1f2447 !important;
+    border-color:rgba(40,44,90,.24);
     background:rgba(255,255,255,.54);
     box-shadow:none;
 }
 body.is-day .floating-bar .btn-ghost:hover{
-    color:#06303c !important;
-    border-color:#0c6b85;
-    background:rgba(255,255,255,.84);
+    color:#1a1f40 !important;
+    border-color:#3b4a8f;
+    background:rgba(236,234,246,.84);
 }
 
 /* ============================================================================
@@ -4995,7 +4984,7 @@ body.is-day .floating-bar .btn-ghost:hover{
     body.host-game-mode .host-live-dot{
         width:6px;
         height:6px;
-        box-shadow:0 0 0 3px rgba(52,211,153,.12);
+        box-shadow:0 0 0 3px rgba(127,216,238,.12);
     }
 
     /* Keep code + facts side-by-side in landscape: stacking these was the
@@ -5162,7 +5151,7 @@ body.is-day .floating-bar .btn-ghost:hover{
     font-weight:600;
     backdrop-filter:blur(10px);
 }
-.runtime-action-status.pending{border-color:rgba(255,196,96,.45)}
+.runtime-action-status.pending{border-color:rgba(216,184,106,.45)}
 .runtime-action-status.success{border-color:rgba(91,214,142,.42)}
 .runtime-action-status.error{border-color:rgba(255,112,112,.52)}
 .runtime-card{overflow:hidden}
@@ -5174,6 +5163,243 @@ body.is-day .floating-bar .btn-ghost:hover{
 .runtime-timeline-item{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:start;gap:8px;padding:8px 9px;border-radius:10px;background:rgba(255,255,255,.035)}
 .runtime-timeline-icon{font-size:16px;text-align:center}.runtime-timeline-main{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}.runtime-state-version{font:800 9px/1 JetBrains Mono,monospace;opacity:.55}.runtime-timeline-detail{font-size:11px;opacity:.68;margin-top:2px}.runtime-timeline-item time{font:500 9px/1.2 JetBrains Mono,monospace;opacity:.48;white-space:nowrap}.runtime-empty-note{padding:12px;text-align:center;font-size:12px;opacity:.55}
 .host-preset-panel{margin:0 0 14px;padding:12px;border-radius:14px;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025)}
-.host-preset-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-preset-head h3{margin:3px 0 2px;font-size:15px}.host-preset-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}.preset-btn{min-height:36px;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.035);color:inherit;font:700 11px/1.2 inherit;cursor:pointer}.preset-btn:hover{background:rgba(255,255,255,.07)}.preset-btn.active{border-color:rgba(255,205,110,.65);background:rgba(255,205,110,.1);box-shadow:inset 0 0 0 1px rgba(255,205,110,.18)}.preset-recommendation{margin-top:9px;padding:8px 9px;border-radius:9px;background:rgba(255,255,255,.035);font-size:11px;line-height:1.45;opacity:.82}.preset-note{opacity:.6}
+.host-preset-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.host-preset-head h3{margin:3px 0 2px;font-size:15px}.host-preset-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:10px}.preset-btn{min-height:36px;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:rgba(255,255,255,.035);color:inherit;font:700 11px/1.2 inherit;cursor:pointer}.preset-btn:hover{background:rgba(255,255,255,.07)}.preset-btn.active{border-color:rgba(216,184,106,.65);background:rgba(216,184,106,.1);box-shadow:inset 0 0 0 1px rgba(216,184,106,.18)}.preset-recommendation{margin-top:9px;padding:8px 9px;border-radius:9px;background:rgba(255,255,255,.035);font-size:11px;line-height:1.45;opacity:.82}.preset-note{opacity:.6}
 @media (max-width:700px){.runtime-action-status{top:8px;font-size:12px;padding:8px 11px}.host-preset-actions{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-timeline-item{grid-template-columns:24px minmax(0,1fr)}.runtime-timeline-item time{grid-column:2}.host-preset-head{align-items:center}}
 @media (min-width:1300px){.runtime-timeline{max-height:320px}.host-preset-panel{padding:14px}.preset-btn{min-height:40px}}
+
+/* ===== DARK FANTASY VILLAGE — presentation only; original state selectors retained ===== */
+@property --sky-top{syntax:"<color>";inherits:true;initial-value:#050816;}
+@property --sky-mid{syntax:"<color>";inherits:true;initial-value:#1c1b4a;}
+@property --sea{syntax:"<color>";inherits:true;initial-value:#10163a;}
+@property --sea-deep{syntax:"<color>";inherits:true;initial-value:#0a0e26;}
+@property --sand{syntax:"<color>";inherits:true;initial-value:#070a18;}
+@property --sand-deep{syntax:"<color>";inherits:true;initial-value:#03050d;}
+@property --forest{syntax:"<color>";inherits:true;initial-value:#0b1028;}
+@property --village{syntax:"<color>";inherits:true;initial-value:#05070f;}
+@property --mist-c{syntax:"<color>";inherits:true;initial-value:rgba(120,110,190,.16);}
+@property --glow-core{syntax:"<color>";inherits:true;initial-value:#f4f1e4;}
+@property --glow-soft{syntax:"<color>";inherits:true;initial-value:rgba(190,200,255,.45);}
+:root{--bg:#070b1a;--panel:#121630b8;--panel-solid:#141a36;--line:rgba(184,164,232,.18);--ink:#e6e9f7;--ink-dim:#9aa3c7;--moon:#7fd8ee;--moon-soft:rgba(127,216,238,.16);--mark:#d8b86a;--mark-soft:rgba(216,184,106,.14);--sky-top:#050816;--sky-mid:#1c1b4a;--sea:#10163a;--sea-deep:#0a0e26;--sand:#070a18;--sand-deep:#03050d;--glow-core:#f4f1e4;--glow-soft:rgba(190,200,255,.45);--forest:#0b1028;--village:#05070f;--mist-c:rgba(120,110,190,.16);--lantern:#f0b84a;--scene-vignette:transparent;--button-ink:#e6e9f7;}
+body.is-day{--sky-top:#3a4466;--sky-mid:#8a88a8;--sea:#6a7092;--sea-deep:#4a5276;--sand:#323a5a;--sand-deep:#222844;--glow-core:#ebe3cc;--glow-soft:rgba(216,184,106,.35);--forest:#4a5376;--village:#2c3354;--mist-c:rgba(235,235,245,.30);--lantern:transparent;}
+:root:has(body.is-day){--forest:#4a5376;--village:#2c3354;--mist-c:rgba(235,235,245,.30);--lantern:transparent;}
+body.is-day .app{--panel:rgba(236,234,246,.84);--panel-solid:#f1eff8;--line:rgba(40,44,90,.22);--ink:#1f2447;--ink-dim:#4a5073;--moon:#3b4a8f;--moon-soft:rgba(59,74,143,.13);--day-surface:rgba(240,238,248,.92);--day-surface-hi:#f7f6fc;--day-edge:rgba(40,44,90,.24);--day-shadow:0 2px 8px rgba(30,34,80,.18);--wolf:#b91c1c;--safe:#15803d;--mark:#9a5306;color:var(--ink);}
+html{isolation:isolate;background:#070b1a;}
+body{
+    background:linear-gradient(180deg,var(--sky-top) 0%,var(--sky-mid) 42%,var(--sea) 58%,var(--sea-deep) 74%,var(--sand) 88%,var(--sand-deep) 100%);
+    background-attachment:fixed;
+    transition:background 1.5s ease,--sky-top 1.5s ease,--sky-mid 1.5s ease,--sea 1.5s ease,--sea-deep 1.5s ease,--sand 1.5s ease,--sand-deep 1.5s ease,--forest 1.5s ease,--village 1.5s ease,--glow-core 1.5s ease,--glow-soft 1.5s ease;
+}
+body::before,body::after,html::before,html::after{content:"";position:fixed;pointer-events:none;z-index:0;}
+body::before{inset:0;background-repeat:no-repeat;opacity:.85;animation:villageStars 5s ease-in-out infinite;transition:opacity 1.5s ease;}
+body::before{background-image:radial-gradient(circle 5px at calc(84% - 15px) calc(13% - 14px),rgba(70,72,111,.23) 0 85%,transparent 100%),radial-gradient(circle 8px at calc(84% + 13px) calc(13% + 8px),rgba(70,72,111,.16) 0 80%,transparent 100%),radial-gradient(circle 3px at calc(84% + 16px) calc(13% - 17px),rgba(70,72,111,.18) 0 80%,transparent 100%),radial-gradient(circle 64px at 84% 13%,var(--glow-core) 0 45%,var(--glow-soft) 48%,transparent 76%),radial-gradient(1.4px 1.4px at 12% 12%,rgba(218,221,249,0.8),transparent 75%),
+radial-gradient(1px 1px at 32% 8%,rgba(218,221,249,0.6),transparent 75%),
+radial-gradient(1.5px 1.5px at 60% 18%,rgba(218,221,249,0.7),transparent 75%),
+radial-gradient(1px 1px at 90% 20%,rgba(218,221,249,0.65),transparent 75%),
+radial-gradient(1.4px 1.4px at 8% 32%,rgba(218,221,249,0.5),transparent 75%),
+radial-gradient(1px 1px at 45% 29%,rgba(218,221,249,0.65),transparent 75%),
+radial-gradient(1px 1px at 67% 6%,rgba(218,221,249,0.5),transparent 75%),
+radial-gradient(1.5px 1.5px at 84% 30%,rgba(218,221,249,0.7),transparent 75%);}
+body.is-day::before{background-image:radial-gradient(circle 62px at 84% 13%,#d8cfa8 0 44%,var(--glow-soft) 48%,transparent 76%);opacity:.6;animation:none;}
+body::after{
+    inset:auto 0 0;left:0;right:0;bottom:0;height:30vh;min-height:0;border-radius:0;
+    background:linear-gradient(to top,var(--village),var(--forest));
+    clip-path:polygon(0 100%,0 62%,3% 40%,5% 62%,7% 30%,10% 64%,13% 38%,16% 66%,19% 25%,22% 60%,25% 42%,28% 68%,31% 32%,34% 62%,37% 45%,40% 70%,43% 28%,46% 64%,49% 40%,52% 66%,55% 22%,58% 62%,61% 44%,64% 68%,67% 34%,70% 60%,73% 40%,76% 66%,79% 26%,82% 62%,85% 42%,88% 68%,91% 30%,94% 62%,97% 44%,100% 64%,100% 100%);opacity:1;transform:none;
+}
+html::after{
+    left:0;right:0;bottom:0;height:16vh;
+    background:radial-gradient(ellipse 2px 4px at 10% 83%,var(--lantern) 0 65%,transparent 100%),
+        radial-gradient(ellipse 2px 5px at 27% 78%,var(--lantern) 0 65%,transparent 100%),
+        radial-gradient(ellipse 2px 6px at 47.5% 64%,var(--lantern) 0 65%,transparent 100%),
+        radial-gradient(ellipse 2px 4px at 83% 80%,var(--lantern) 0 65%,transparent 100%),var(--village);
+    clip-path:polygon(0 100%,0 74%,6% 74%,10% 48%,14% 74%,22% 74%,22% 58%,27% 34%,32% 58%,32% 74%,44% 74%,46% 52%,47.5% 6%,49% 52%,51% 74%,62% 74%,66% 46%,70% 74%,78% 74%,78% 60%,83% 38%,88% 60%,88% 74%,100% 74%,100% 100%);animation:villageLanterns 5.7s ease-in-out infinite;
+    transition:background-color 1.5s ease;
+}
+html::before{
+    inset:0;left:-4vw;right:-4vw;
+    background:radial-gradient(ellipse 70vw 11vh at 30% 81%,var(--mist-c),transparent 80%),
+        radial-gradient(ellipse 85vw 14vh at 75% 95%,var(--mist-c),transparent 85%),
+        linear-gradient(to top,var(--mist-c),transparent 28%);
+    filter:blur(12px);animation:villageMist 60s ease-in-out infinite;
+    box-shadow:inset 0 0 18vmin 5vmin var(--scene-vignette);
+}
+:root:has(body.is-day)::before{
+    background:radial-gradient(ellipse 180px 40px at 18% 26%,rgba(39,45,77,.17),transparent 80%),
+        radial-gradient(ellipse 230px 50px at 68% 32%,rgba(39,45,77,.15),transparent 80%),
+        radial-gradient(ellipse 85vw 18vh at 38% 88%,var(--mist-c),transparent 85%),
+        linear-gradient(to top,var(--mist-c),transparent 40%);
+}
+:root:has(body.is-day)::after{animation:none;opacity:1;}
+:root:has(body.vote-open){--scene-vignette:rgba(1,3,13,.78);}
+@keyframes villageStars{0%,100%{opacity:.58;}50%{opacity:.88;}}
+@keyframes villageLanterns{0%,100%{opacity:.93;}47%{opacity:1;}53%{opacity:.95;}}
+@keyframes villageMist{0%,100%{transform:translateX(-2%);}50%{transform:translateX(2%);}}
+@keyframes villageCloud{0%,100%{transform:translateX(-12px);}50%{transform:translateX(22px);}}
+.card,.ww-modal-box,.popup,.popup-card,.vote-modal,.vote-modal-box,.gameOverBox{
+    background:var(--panel);border-color:var(--line);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    box-shadow:0 10px 30px rgba(0,0,0,.45);
+}
+.ww-toast{background:#141a36;border-color:rgba(184,164,232,.18);color:#e6e9f7;}
+.btn:not(.btn-danger):not(.btn-kill):not(.btn-killmode):not(.btn-vote),
+button:not(.roleBtn):not(.roleBtnMinus):not(.roleBtnPlus):not(.chat-tab):not(.danger):not(.ww-modal-danger):not(.btn-danger):not(.btn-killmode):not(.btn-vote){
+    background:linear-gradient(135deg,#2a2250,#3a3174);border-color:var(--moon-soft);color:var(--button-ink);
+}
+.btn:hover,button:hover{box-shadow:0 0 14px var(--moon-soft);transform:translateY(-1px);}
+.btn-danger,.btn-killmode,.ww-modal-danger,button.danger{background:var(--wolf);color:#fff;}
+input,textarea,select{color:var(--ink);border-color:var(--line);background:var(--panel-solid);}
+input:focus,textarea:focus,select:focus{outline:2px solid var(--moon);outline-offset:2px;border-color:var(--moon);}
+input::placeholder,textarea::placeholder{color:var(--ink-dim);opacity:1;}
+.day-night-badge{background:rgba(36,28,65,.94);border-color:rgba(184,164,232,.38);color:#e6e9f7;transition:background-color 1.5s ease,color 1.5s ease,border-color 1.5s ease;}
+body.is-day .day-night-badge{background:#eceaf6;border-color:rgba(40,44,90,.24);color:#1f2447;}
+.floating-bar,#bottomBar{--panel:#121630b8;--panel-solid:#141a36;--ink:#e6e9f7;--ink-dim:#b1b9d7;--moon:#7fd8ee;--moon-soft:rgba(127,216,238,.16);background:rgba(12,15,35,.96);color:#e6e9f7;border-color:rgba(184,164,232,.24);}
+body.is-day .floating-bar,body.is-day #bottomBar{background:rgba(12,15,35,.96);color:#e6e9f7;}
+.floating-bar :is(.small,.hint,.bar-title,.bar-subtitle,.floating-phase-hint),#bottomBar :is(.small,.hint){color:#b1b9d7;}
+.eyebrow,.seal-hint,.seal-label,.seal-copy-hint{color:#b1b9d7;opacity:1;}
+body.is-day :is(.eyebrow,.seal-hint){color:#e6e9f7;text-shadow:0 1px 4px #171a32;}
+.player{border-color:rgba(192,194,219,.55);box-shadow:inset 0 0 0 1px rgba(192,194,219,.10);}
+.player.dead,body.is-day .app .player.dead{filter:grayscale(1);opacity:.55;background-image:linear-gradient(145deg,rgba(210,210,233,.15),transparent 60%);}
+body.is-day .app :is(input,textarea,select){background:var(--day-surface);color:var(--ink);border-color:var(--day-edge);}
+body.is-day .app :is(.card,#chatCard){box-shadow:var(--day-shadow);}
+body.is-day .app input::placeholder,body.is-day .app textarea::placeholder{color:#4a5073;}
+#chatCard{background:rgba(16,20,43,.88);border-color:var(--line);color:#e6e9f7;}
+#chatCard .msg{color:var(--ink);}
+#chatCard .msg.global{background:rgba(184,164,232,.10);}
+#chatCard .msg.mine,#chatCard .msg.self{background:rgba(127,216,238,.12);}
+body.is-day .app #chatCard{background:rgba(236,234,246,.92);color:#1f2447;}
+body.is-day .app #chatCard .msg{color:#1f2447;}
+body.is-day .app #chatCard .msg.global{background:rgba(59,74,143,.08);}
+body.is-day .app #chatCard .msg.mine,body.is-day .app #chatCard .msg.self{background:rgba(59,74,143,.14);}
+@media(max-width:480px){
+    html::before{display:none;}
+    :root:has(body.vote-open)::before{display:block;background:none;filter:none;animation:none;}
+    body::before{background-size:auto;animation:none;opacity:.65;}
+    .card,.ww-modal-box,.popup,.popup-card,#chatCard{backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+}
+@media(prefers-reduced-motion:reduce){
+    body::before,body::after,html::before,html::after,.scene-stars,.scene-disc,.scene-layer::before,.scene-layer::after{animation:none!important;transition:none!important;}
+}
+
+:root{--host-ocean:#3b4a8f;--host-ocean-deep:#252d60;--host-sand:#d8b86a;--host-sand-soft:rgba(216,184,106,.14);--host-coral:#a795c9;--host-glass:rgba(18,22,48,.76);--host-glass-strong:rgba(20,26,54,.90);}
+.seal{border-color:rgba(192,194,219,.55);background:radial-gradient(circle at 50% 32%,rgba(127,216,238,.10),transparent 65%),#141a36;box-shadow:0 10px 30px rgba(0,0,0,.35);}
+.seal::before{border-color:rgba(192,194,219,.28);}
+.seal-code{color:#bfe9f5;text-shadow:0 0 16px rgba(127,216,238,.25);}
+body.is-day .seal{background:rgba(236,234,246,.92);border-color:rgba(40,44,90,.30);}
+body.is-day .seal-code{color:#3b4a8f;text-shadow:none;}
+body.is-day :is(.seal-label,.seal-copy-hint){color:#4a5073;}
+.host-title-accent{font-size:0;}
+.host-title-accent::after{content:"Village Control";font-size:clamp(16px,2vw,24px);color:inherit;}
+:root{--role-werewolf:#C1121F;--role-villager:#E8A33D;--role-seer:#3FD6B5;--role-oracle:#3FE0F5;--role-detective:#E0359A;--role-bodyguard:#2F6BFF;--role-doctor:#9BE22B;--role-bandit:#D4E600;--role-witch:#0B8F5A;--role-priest:#B8A4E8;--role-mayor:#C9972B;--role-cult:#6A1B5E;--role-illusion:#1DE9B6;--role-instigator:#5C6F9C;--role-bandit-chief:#6B7B2E;--role-sheriff:#D8D4C0;}
+.roleBox[data-role="มนุษย์หมาป่า"],.quick-add-chip[data-role="มนุษย์หมาป่า"]{--role-accent:var(--role-werewolf);border-color:var(--role-accent);}
+.roleBox[data-role="ชาวบ้าน"],.quick-add-chip[data-role="ชาวบ้าน"]{--role-accent:var(--role-villager);border-color:var(--role-accent);}
+.roleBox[data-role="ผู้มีลาง"],.quick-add-chip[data-role="ผู้มีลาง"]{--role-accent:var(--role-seer);border-color:var(--role-accent);}
+.roleBox[data-role="ผู้มีหยั่งรู้"],.quick-add-chip[data-role="ผู้มีหยั่งรู้"]{--role-accent:var(--role-oracle);border-color:var(--role-accent);}
+.roleBox[data-role="นักสืบ"],.quick-add-chip[data-role="นักสืบ"]{--role-accent:var(--role-detective);border-color:var(--role-accent);}
+.roleBox[data-role="บอดี้การ์ด"],.quick-add-chip[data-role="บอดี้การ์ด"]{--role-accent:var(--role-bodyguard);border-color:var(--role-accent);}
+.roleBox[data-role="หมอ"],.quick-add-chip[data-role="หมอ"]{--role-accent:var(--role-doctor);border-color:var(--role-accent);}
+.roleBox[data-role="อันธพาล"],.quick-add-chip[data-role="อันธพาล"]{--role-accent:var(--role-bandit);border-color:var(--role-accent);}
+.roleBox[data-role="แม่มด"],.quick-add-chip[data-role="แม่มด"]{--role-accent:var(--role-witch);border-color:var(--role-accent);}
+.roleBox[data-role="นักบวช"],.quick-add-chip[data-role="นักบวช"]{--role-accent:var(--role-priest);border-color:var(--role-accent);}
+.roleBox[data-role="นายก"],.quick-add-chip[data-role="นายก"]{--role-accent:var(--role-mayor);border-color:var(--role-accent);}
+.roleBox[data-role="ผู้นำลัทธิ"],.quick-add-chip[data-role="ผู้นำลัทธิ"]{--role-accent:var(--role-cult);border-color:var(--role-accent);}
+.roleBox[data-role="นักเล่นกล"],.quick-add-chip[data-role="นักเล่นกล"]{--role-accent:var(--role-illusion);border-color:var(--role-accent);}
+.roleBox[data-role="ผู้ยุยง"],.quick-add-chip[data-role="ผู้ยุยง"]{--role-accent:var(--role-instigator);border-color:var(--role-accent);}
+.roleBox[data-role="หัวโจร"],.quick-add-chip[data-role="หัวโจร"]{--role-accent:var(--role-bandit-chief);border-color:var(--role-accent);}
+.roleBox[data-role="ศาลเตี้ย"],.quick-add-chip[data-role="ศาลเตี้ย"]{--role-accent:var(--role-sheriff);border-color:var(--role-accent);}
+.roleBox[data-role="หมาป่า"],.quick-add-chip[data-role="หมาป่า"]{--role-accent:var(--role-werewolf);border-color:var(--role-accent);}
+/* Keep setup mode responsive to the existing phase classes during visual preview. */
+body.is-night{--sky-top:#050816;--sky-mid:#1c1b4a;--sea:#10163a;--sea-deep:#0a0e26;--sand:#070a18;--sand-deep:#03050d;--glow-core:#f4f1e4;--glow-soft:rgba(190,200,255,.45);color:#e6e9f7;}
+body.is-day .host-title{color:#e6e9f7;text-shadow:0 1px 4px #171a32;}
+body.is-day .host-title-accent{color:#d8c79a;}
+body.is-day .floating-bar button,body.is-day .floating-bar :is(.floating-phase-title,.floating-phase-hint,.phase-title,.phase-hint){color:#e6e9f7;}
+.floating-bar button:disabled{opacity:1;color:#b1b9d7;}
+body.is-day .floating-bar :is(button,.btn){color:#e6e9f7;}
+body.is-day .floating-bar .btn:disabled{background:#25213f;color:#b1b9d7;opacity:1;}
+.floating-context-kicker{color:#e6e9f7!important;}
+.floating-context-copy{color:#b1b9d7!important;}
+body.is-day .floating-bar :is(.btn,.btn-ghost,.btn-create-room){color:#e6e9f7!important;}
+body.is-day .floating-bar .floating-context-kicker{color:#e6e9f7!important;}
+body.is-day .floating-bar .floating-context-copy{color:#b1b9d7!important;}
+body.setup-mode .setup-step>span{color:#1f2447;}
+body.setup-mode .setup-step.is-current>span{color:#e6e9f7!important;}
+body.is-day .app .runtime-kicker{color:#4a5073;opacity:1;}
+body.is-night .host-title,body.is-night .eyebrow{color:#e6e9f7;text-shadow:0 1px 4px #070b1a;}
+body.is-night .host-title-accent{color:#d8c79a;}
+body.is-night .host-live-pill{color:#1f2447;}
+body.is-night.setup-mode .app{--panel:rgba(18,22,48,.88);--panel-solid:#141a36;--ink:#e6e9f7;--ink-dim:#b1b9d7;--line:rgba(184,164,232,.24);color:var(--ink);}
+body.is-night.setup-mode :is(.setup-step,.tester-section,.config-summary,.empty-note,.quick-add-chip,.roleBox){background:#141a36;border-color:rgba(184,164,232,.24);color:#e6e9f7;}
+body.is-night.setup-mode :is(.tester-section-title span,.quick-add-chip span,.roleBox .name,.tcLabel,.config-summary span,.config-summary b){color:#e6e9f7!important;}
+body.is-night.setup-mode :is(.tester-section .sub,.tcSub,.runtime-kicker,.setup-step small,.empty-note){color:#b1b9d7;opacity:1;}
+body.is-night.setup-mode .setup-step>span{background:#252d60;color:#e6e9f7;}
+body.is-night .floating-bar .floating-context-kicker{color:#e6e9f7!important;}
+body.is-night .floating-bar .floating-context-copy{color:#b1b9d7!important;}
+#wwVersionBadge{color:#b1b9d7!important;opacity:1!important;}
+body.is-day #wwVersionBadge{color:#e6e9f7!important;text-shadow:0 1px 3px #171a32;}
+.conn-banner.runtime-syncing{background:#f1e9d7!important;color:#6a390a!important;border-color:#9a5306!important;}
+body.is-night .floating-bar{background:rgba(12,15,35,.96);color:#e6e9f7;border-color:rgba(184,164,232,.24);}
+body.is-night.setup-mode .setup-step b{color:#e6e9f7;}
+body.is-night.setup-mode :is(.card,.host-preset-panel,.testerConditionRow){background:var(--panel);border-color:var(--line);}
+body.setup-mode .conn-banner.runtime-syncing{display:none;}
+
+.roleBox[data-role="ผู้หยั่งรู้"],.quick-add-chip[data-role="ผู้หยั่งรู้"]{--role-accent:var(--role-oracle);border-color:var(--role-accent);}
+.roleBox[data-role="โจร"],.quick-add-chip[data-role="โจร"]{--role-accent:var(--role-bandit-chief);border-color:var(--role-accent);}
+html{transition:--mist-c 1.5s ease,--village 1.5s ease,--forest 1.5s ease;}
+@media(prefers-reduced-motion:reduce){html{transition:none;}}
+
+@media(max-width:480px){body::before{background-image:radial-gradient(circle 5px at calc(84% - 15px) calc(13% - 14px),rgba(70,72,111,.23) 0 85%,transparent 100%),radial-gradient(circle 8px at calc(84% + 13px) calc(13% + 8px),rgba(70,72,111,.16) 0 80%,transparent 100%),radial-gradient(circle 64px at 84% 13%,var(--glow-core) 0 45%,var(--glow-soft) 48%,transparent 76%),radial-gradient(1px 1px at 12% 12%,rgba(218,221,249,.7),transparent 75%),radial-gradient(1px 1px at 60% 18%,rgba(218,221,249,.6),transparent 75%),radial-gradient(1px 1px at 90% 20%,rgba(218,221,249,.6),transparent 75%);}}
+body.is-day .floating-bar{--panel:#121630b8;--panel-solid:#141a36;--line:rgba(184,164,232,.24);--ink:#e6e9f7;--ink-dim:#b1b9d7;--moon:#7fd8ee;--moon-soft:rgba(127,216,238,.16);}
+
+body.is-night.setup-mode .card :is(h2,h3){color:#e6e9f7;}
+body.is-night.setup-mode .card .sub{color:#b1b9d7;}
+body.is-night.setup-mode :is(.preset-current,.preset-recommendation){background:rgba(184,164,232,.10);color:#e6e9f7;opacity:1;}
+
+/* Keep runtime history legible without fading the small text. */
+.runtime-state-version,.runtime-timeline-detail,.runtime-timeline-item time,.runtime-empty-note{opacity:1;color:var(--ink-dim);}
+body.is-day .app :is(.runtime-state-version,.runtime-timeline-detail,.runtime-timeline-item time,.runtime-empty-note){opacity:1;color:#4a5073;}
+
+body.is-night.setup-mode .app :is(input,textarea,select){background:#0b0f24!important;color:#e6e9f7!important;border-color:rgba(184,164,232,.24)!important;}
+body.is-night.setup-mode .app input::placeholder{color:#b1b9d7!important;}
+
+.runtime-kicker{opacity:1;color:var(--ink-dim);}
+body.is-day .app .runtime-kicker{opacity:1;color:#4a5073;}
+
+body.is-night .host-live-pill{background:#141a36;color:#e6e9f7;}
+body.is-night .seal small{color:#b1b9d7;opacity:1;}
+.btn.btn-danger.btn-close-room{background:#921924;color:#fff;}
+
+body.is-night .host-fact{background:#141a36;border-color:var(--line);color:#e6e9f7;}
+body.is-night .host-fact small{color:#b1b9d7;opacity:1;}
+
+body.is-day .app :is(.runtime-state-version,.runtime-timeline-detail,.runtime-timeline-item time,.runtime-empty-note){color:#3d4265;}
+
+.roleBox[data-role],.quick-add-chip[data-role]{border-color:var(--role-accent,var(--line));}
+body.setup-mode .roleBox[data-role],body.setup-mode .quick-add-chip[data-role]{border-color:var(--role-accent,var(--line));}
+
+/* Create the room first; configure professions in the live host workspace. */
+body.setup-mode #roleSettingsCard,
+body.setup-mode #setupTesterBlock{display:none!important;}
+body.setup-mode #leftCol{display:block;max-width:680px;margin-inline:auto;}
+body.setup-mode .layout{max-width:680px;margin-inline:auto;}
+body.setup-mode #setupCard{width:100%;min-height:0;}
+body.setup-mode #setupCard .card-body{max-height:none;overflow:visible;}
+body.setup-mode .setup-steps{max-width:680px;margin-inline:auto;margin-bottom:16px;}
+body.setup-mode .tester-section{padding:8px 0;}
+body.setup-mode .tester-section+.tester-section{margin-top:6px;padding-top:14px;}
+body.setup-mode .floating-context-kicker::before{content:"STEP 1 · ";}
+body:not(.setup-mode) #roleSettingsCard{border-color:rgba(184,164,232,.42);}
+body.is-day:not(.setup-mode) #roleSettingsCard{border-color:rgba(59,74,143,.32);}
+@media(max-width:480px){
+    body.setup-mode .setup-steps{gap:6px;}
+    body.setup-mode .setup-step{padding:9px 7px;gap:6px;}
+    body.setup-mode .setup-step b{font-size:10px;}
+    body.setup-mode .setup-step>span{width:22px;height:22px;}
+}
+body.is-day .seal-hint{
+    color:#e6e9f7;background:#141a36;border:1px solid rgba(184,164,232,.22);
+    padding:6px 10px;border-radius:8px;text-shadow:none;
+}
+body.host-lobby-mode:not(.host-player-focus) .layout:not(.role-hidden) #leftCol{grid-column:1;grid-row:1;}
+body.host-lobby-mode:not(.host-player-focus) .layout:not(.role-hidden) #rightCol{grid-column:2;grid-row:1;}
+@media(max-width:1019px){
+    body.host-lobby-mode:not(.host-player-focus) .layout:not(.role-hidden) #rightCol{grid-column:1;grid-row:2;}
+}
+
+body.is-day .app .quick-add-chip span{color:#3d4265;opacity:1;}
