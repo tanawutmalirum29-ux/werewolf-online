@@ -1,4 +1,0 @@
-AUTO DEPLOY TEST
-
-If this file appears in the Elastic Beanstalk deployment, GitHub Actions is automatically deploying pushes to main.
-Created: 2026-09-30
