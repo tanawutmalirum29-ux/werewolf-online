@@ -1,6 +1,7 @@
 (() => {
     'use strict';
     const page = document.body.dataset.page;
+    const serverUrl = window.WEREWOLF_CONFIG?.serverUrl || '';
     const $ = id => document.getElementById(id);
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
     const team = value => ({ wolf:'ฝ่ายหมาป่า', villager:'ฝ่ายชาวบ้าน', solo:'ฝ่ายเดี่ยว', bandit:'ฝ่ายโจร', cult:'ฝ่ายลัทธิ' }[value] || 'ใช้กติกาที่โฮสต์ประกาศ');
@@ -145,9 +146,9 @@
     }
     async function start() {
         try {
-            const response = await fetch('/api/roles'); if (!response.ok) throw new Error('โหลดบทบาทไม่สำเร็จ รีเฟรชเพื่อลองใหม่');
+            const response = await fetch(`${serverUrl}/api/roles`); if (!response.ok) throw new Error('โหลดบทบาทไม่สำเร็จ รีเฟรชเพื่อลองใหม่');
             roles = await response.json();
-            socket = io({ autoConnect:false });
+            socket = io(serverUrl || undefined, { autoConnect:false });
             socket.on('connect', async () => {
                 connection();
                 if (!session) return;

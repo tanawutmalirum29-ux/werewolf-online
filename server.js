@@ -6,14 +6,40 @@ const crypto = require('node:crypto');
 const { Server } = require('socket.io');
 const game = require('./lib/game');
 
-function createServer() {
+function createServer({ allowedOrigins = process.env.ALLOWED_ORIGINS || '' } = {}) {
+    const origins = new Set(allowedOrigins.split(',').map(value => value.trim()).filter(Boolean).map(value => {
+        const url = new URL(value);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+            throw new Error('ALLOWED_ORIGINS must contain only comma-separated HTTP(S) origins');
+        }
+        return url.origin;
+    }));
+    function permitsOrigin(req) {
+        const origin = req.headers.origin;
+        if (!origin || origins.has(origin)) return true;
+        try {
+            const url = new URL(origin);
+            return ['http:', 'https:'].includes(url.protocol) && url.origin === origin && url.host === req.headers.host;
+        } catch (_) { return false; }
+    }
     const app = express();
     app.disable('x-powered-by');
     const server = http.createServer(app);
-    const io = new Server(server, { maxHttpBufferSize: 16 * 1024, pingInterval: 25000, pingTimeout: 60000 });
+    const io = new Server(server, {
+        maxHttpBufferSize: 16 * 1024, pingInterval: 25000, pingTimeout: 60000,
+        cors: { origin: [...origins], methods: ['GET', 'POST'] },
+        allowRequest: (req, done) => done(null, permitsOrigin(req))
+    });
     const rooms = new Map(); // All game state is RAM-only. Restart starts with no rooms.
     app.get('/health', (_req, res) => res.json({ ok: true }));
-    app.get('/api/roles', (_req, res) => res.json(game.roles));
+    app.get('/api/roles', (req, res) => {
+        if (!permitsOrigin(req)) return res.sendStatus(403);
+        if (origins.has(req.headers.origin)) {
+            res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+            res.vary('Origin');
+        }
+        res.json(game.roles);
+    });
     app.use((_req, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
     app.use(express.static(path.join(__dirname, 'public')));
 

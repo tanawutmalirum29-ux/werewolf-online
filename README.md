@@ -71,6 +71,37 @@
 
 ไม่มีการเพิ่ม ping service ภายนอกหรือระบบกันพักฟรี
 
+## Deploy หน้าเว็บบน AWS Amplify จาก GitHub
+
+รองรับ **Amplify Hosting สำหรับหน้า index / host / player** แล้ว โดยมีเซิร์ฟเวอร์เกม Node.js หนึ่งตัวรันแยกอยู่ที่ Render หรือบริการที่รองรับ Socket.IO อยู่ก่อน หน้าเว็บและรูปอยู่บน Amplify ส่วนข้อมูลห้องอยู่ใน RAM ของเซิร์ฟเวอร์เกมเดิม ไม่มี DB, Cognito, AppSync, Lambda หรือระบบสำรองเพิ่ม
+
+**Amplify อย่างเดียวไม่ใช่ตัวเลือกสำหรับเกมรุ่นนี้** แม้ Amplify Compute รัน Express ได้ แต่ execution instance มีเวลาทำงานสูงสุด 15 นาทีและแยกกัน โค้ดที่เก็บห้องใน Map ของ process เดียวจึงไม่เหมาะกับการนำไปรันตรง ๆ หากต้องการบริการเดียวและตั้งค่าน้อยที่สุด ให้ใช้ Render ตามขั้นตอนด้านบน
+
+### ตั้งค่า
+
+1. Deploy เซิร์ฟเวอร์เกมบน Render จาก `main` ตามขั้นตอนด้านบนก่อน จด URL HTTPS เช่น `https://your-game.onrender.com` เปิด `/health` แล้วต้องได้ `{"ok":true}`
+2. เปิด AWS Amplify Console ใน region ที่ต้องการ เช่น Sydney (`ap-southeast-2`) → สร้างแอปใหม่ → เลือก GitHub → repo `tanawutmalirum29-ux/werewolf-online` → branch **main**
+3. ใช้ build settings จาก `amplify.yml` ใน repo ไม่ใช้ SSR หรือสร้าง Amplify backend; Root directory เว้นว่าง ชุด build เป็น static frontend
+4. ตั้ง environment variable **GAME_SERVER_URL** เป็น URL HTTPS ของเซิร์ฟเวอร์เกม เช่น `https://your-game.onrender.com` โดยไม่ใส่ `/api`, `/socket.io`, path อื่น, query หรือ credentials ค่านี้เปิดเผยใน frontend ได้ ไม่ใช่ secret
+5. หากต้องกรอก build เอง: `npm ci --omit=dev && npm run build:amplify` และ output directory **dist** (Node.js 24) แล้ว deploy
+6. จดโดเมนหน้าเว็บที่ Amplify ให้ เช่น `https://main.APPID.amplifyapp.com` จากนั้นเพิ่ม environment variable **ALLOWED_ORIGINS** ที่บริการ Render เป็น origin นี้ ต้องไม่มี path หรือ slash ท้าย ตัวอย่างนี้เป็น placeholder ให้ใช้ URL จริงจาก console
+7. Render จะ restart เมื่อเปลี่ยน environment ห้องเก่าจะหาย แล้วเปิดหน้า Amplify สร้างห้องและให้ผู้เล่นเข้าจากลิงก์ของหน้า Amplify เดียวกัน
+
+ถ้าใช้ custom domain ให้เพิ่ม origin ใหม่ใน `ALLOWED_ORIGINS` ด้วย แยกหลาย origin ด้วย comma เช่น `https://main.APPID.amplifyapp.com,https://game.example.com` ไม่ใช้ `*` และไม่จำเป็นต้องเปิด CORS ให้ทุกเว็บ URL frontend และเซิร์ฟเวอร์ต้องเป็น HTTPS
+
+Push `main` แล้วแต่ละบริการจะ deploy ตามการตั้งค่า auto-deploy ของตน; อย่า deploy ระหว่างเล่น เพราะเมื่อเซิร์ฟเวอร์เกม restart ห้องจะหาย การแก้ `GAME_SERVER_URL` ต้อง rebuild หน้า Amplify อีกครั้ง ไม่มีการเขียนข้อมูลห้องไว้ที่ Amplify
+
+### ค่าใช้จ่ายและการตรวจสอบ
+
+Amplify **ไม่ใช่ฟรีถาวร** ค่า build, storage และ bandwidth ขึ้นกับโควตา/เครดิต AWS Free Tier และแผนบัญชีของคุณ ตรวจหน้า Billing และ Amplify Pricing ก่อน deploy โดยเฉพาะบัญชีเก่าหรือ paid plan; โค้ดนี้ไม่ได้สร้างทรัพยากร AWS ให้เอง
+
+- Build ล้มเหลวเพราะ `GAME_SERVER_URL` → ตั้ง URL ของเซิร์ฟเวอร์เกมจริงก่อน แล้ว rebuild
+- หน้าเปิดได้แต่บทบาทไม่โหลด/เชื่อมต่อไม่ได้ → ตรวจ `/health` ของเซิร์ฟเวอร์, รอ Render ตื่น และตรวจ `ALLOWED_ORIGINS` ให้ตรงกับ origin ของหน้าเว็บ
+- อย่าเพิ่ม rewrite ทุก path ไป `index.html`; `host.html`, `player.html`, รูปและ JavaScript ต้องถูกเสิร์ฟเป็นไฟล์ของตัวเอง Socket.IO เชื่อมไปเซิร์ฟเวอร์เกมโดยตรง ไม่ผ่าน Amplify proxy
+- ทดสอบสองอุปกรณ์: โฮสต์สร้างห้อง → ผู้เล่นเข้าห้อง → แจกการ์ด → ผู้เล่นเห็นเฉพาะของตัวเอง → โฮสต์เปลี่ยนสถานะและจบเกม
+
+เอกสาร AWS: https://docs.aws.amazon.com/amplify/latest/userguide/ssr-deployment-specification.html และ https://aws.amazon.com/amplify/pricing/
+
 ## เริ่มเล่น
 
 1. คนคุมเกมเปิดหน้าโฮสต์และสร้างห้อง
@@ -115,6 +146,9 @@ public/js/app.js   UI ของโฮสต์และผู้เล่น
 public/style.css   หน้าตาและมือถือ
 public/images/     รูปการ์ดเดิม
 render.yaml        Web Service ฟรีหนึ่งตัว
+amplify.yml        Build หน้าเว็บ static สำหรับ Amplify
+scripts/build-amplify.js  สร้าง dist และตั้ง URL เซิร์ฟเวอร์เกม
+public/js/config.js       ค่า same-origin สำหรับรันแบบบริการเดียว
 ```
 
 อ้างอิง:

@@ -5,7 +5,7 @@
   "description": "แจกการ์ดหมาป่าและคุมห้องแบบพื้นฐาน ไม่มีฐานข้อมูล",
   "main": "server.js",
   "engines": { "node": "24.x" },
-  "scripts": { "start": "node server.js", "test": "node --test tests/*.test.js" },
+  "scripts": { "start": "node server.js", "test": "node --test tests/*.test.js", "build:amplify": "node scripts/build-amplify.js" },
   "dependencies": { "express": "^4.21.2", "socket.io": "^4.8.1" },
   "devDependencies": { "socket.io-client": "^4.8.1" }
 }

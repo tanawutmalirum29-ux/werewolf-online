@@ -3,16 +3,16 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { io: client } = require('socket.io-client');
 const { createServer } = require('../server');
-async function fixture(t) {
-    const runtime = createServer(), sockets = [];
+async function fixture(t, options) {
+    const runtime = createServer(options), sockets = [];
     await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${runtime.server.address().port}`;
     t.after(async () => {
         for (const socket of sockets) socket.disconnect();
         await new Promise(resolve => runtime.io.close(resolve));
     });
-    async function connect(transport = 'websocket') {
-        const socket = client(url, { transports:[transport], reconnection:false }); sockets.push(socket);
+    async function connect(transport = 'websocket', origin) {
+        const socket = client(url, { transports:[transport], reconnection:false, ...(origin ? { extraHeaders:{ Origin:origin } } : {}) }); sockets.push(socket);
         await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
         return socket;
     }
@@ -65,4 +65,25 @@ test('three pages and role assets are served; admin/API/deployment endpoints are
     }
     for (const page of ['/admin.html', '/api/admin/session', '/api/config', '/ready']) assert.equal((await fetch(url + page)).status, 404, page);
     const socket = await connect('polling'); assert.equal((await ask(socket, 'room:create', { name:'Polling Host' })).ok, true);
+});
+test('Amplify frontend can fetch roles and play across origins with polling and WebSocket; other origins are rejected', async t => {
+    const origin = 'https://main.example.amplifyapp.com';
+    const { url, connect } = await fixture(t, { allowedOrigins:origin });
+    const response = await fetch(url + '/api/roles', { headers:{ Origin:origin } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), origin);
+    assert.ok((await response.json()).length);
+    assert.equal((await fetch(url + '/api/roles', { headers:{ Origin:'https://unlisted.example' } })).status, 403);
+    const host = await connect('polling', origin), player = await connect('websocket', origin);
+    const room = await ask(host, 'room:create', { name:'Amplify Host' });
+    const joined = await ask(player, 'room:join', { roomId:room.roomId, name:'Amplify Player' });
+    assert.equal(joined.ok, true);
+    assert.equal((await ask(host, 'host:deal')).ok, true);
+    const restored = await ask(player, 'room:resume', { kind:'player', roomId:room.roomId, token:joined.token });
+    assert.equal(restored.ok, true);
+    assert.ok(restored.state.self.card);
+    assert.equal(restored.state.players[0].role, undefined);
+    for (const transport of ['polling', 'websocket']) {
+        await assert.rejects(connect(transport, 'https://unlisted.example'));
+    }
 });
