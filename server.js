@@ -1,3 +1,5 @@
+const { ROOM_PRESENCE_REFRESH_MS, initializeRoomActivity, touchRoomActivity, hasLiveRoomMember, roomIdleExpired } = require("./utils/room-idle");
+const { redactRoomViewForPlayer } = require("./utils/room-view");
 const express = require("express");
 const http = require("http");
 const https = require("https");
@@ -7,7 +9,6 @@ const path = require("path");
 const os = require("os");
 const compression = require("compression");
 const crypto = require("crypto");
-const { AsyncLocalStorage } = require("async_hooks");
 const { pipeline } = require("stream/promises");
 const { getAppVersion, getCachedAppVersion, getAppEnvironmentState, getCachedAppEnvironmentState, startAppVersionRefresh } = require("./utils/getAppVersion");
 const {
@@ -23,2156 +24,44 @@ const {
     getSourceBundleObject,
     makeSafeDownloadFilename,
 } = require("./utils/elastic-beanstalk-version-manager");
-const { listBugReplayScenarios, getBugReplayScenario, runBugReplayScenario, createRuntimeAudit } = require("./utils/bug-replay-runner");
-const { getGithubBugReportConfig, buildGithubBugReportStatus, buildGithubBugReportIssue, createGithubBugReportIssue, createGithubScreenshotFiles, screenshotGithubPath, clearAllGithubIssues, listAllGithubIssues, searchGithubIssuesByText, clearAllGithubScreenshotFiles, MAX_SCREENSHOT_BYTES } = require("./utils/github-bug-reports");
-const { DIAGNOSTIC_FEATURE_TAXONOMY_VERSION, FEATURE_LABELS, normalizeDiagnosticFeatureKeys, featureAreaLabel, featureLabels, buildGameDiagnosticProfile } = require("./utils/diagnostic-feature-taxonomy");
+const { getGithubBugReportConfig, buildGithubBugReportStatus, buildGithubBugReportIssue, createGithubBugReportIssue, publicGithubText } = require("./utils/github-bug-reports");
 
 // ============================================================
-// DIAGNOSTICS CENTER — เก็บข้อผิดพลาดจาก server + browser เพื่อให้ Admin ดูได้
-// ระบบนี้ตั้งใจแยกจาก game state และไม่ทำให้หน้า Admin พึ่ง client game JS
-// เพื่อให้แม้ index/host/player มีบั๊ก หน้า Admin ยังเปิดและดูอาการได้
+// LIGHTWEIGHT RUNTIME ERROR COMPATIBILITY
+// Production intentionally has no diagnostic center/replay engine. These tiny helpers
+// keep older gameplay error paths safe while doing no persistence or analysis.
 // ============================================================
-const DIAGNOSTIC_MAX_EVENTS = 700;
-const DIAGNOSTIC_MAX_TEXT = 12000;
-const diagnosticEvents = [];
-const diagnosticPermissionCounts = new Map();
-const diagnosticClientRate = new Map();
-const diagnosticServerBreadcrumbs = [];
-const DIAGNOSTIC_MAX_BREADCRUMBS = 2500;
-const diagnosticAsyncContext = new AsyncLocalStorage();
-let diagnosticSequence = 0;
-const DIAGNOSTIC_REDACT_KEYS = /token|secret|password|authorization|cookie|session/i;
-
-// Public diagnostic shares are capability URLs: anyone holding the random token can read
-// the selected diagnostic snapshot until it expires. Reports are persisted in the existing
-// DynamoDB table so a CloudFront/Elastic Beanstalk request can land on another instance.
-const DIAGNOSTIC_SHARE_VERSION = 4;
-const DIAGNOSTIC_SHARE_TTL_MS = Math.max(15 * 60_000, Math.min(7 * 24 * 60 * 60_000, Number(process.env.DIAGNOSTIC_SHARE_TTL_MS) || 3 * 24 * 60 * 60_000));
-const DIAGNOSTIC_SHARE_MAX_MEMORY = 160;
-const DIAGNOSTIC_SHARE_MAX_BYTES = 320 * 1024;
-const DIAGNOSTIC_SHARE_PARTITION_KEY = "__DIAGNOSTIC_SHARE__";
-const DIAGNOSTIC_SHARE_STAT_PREFIX = "SHARE#";
-const DIAGNOSTIC_INCIDENT_INDEX_PREFIX = "INCIDENT#";
-const DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS = 15 * 60 * 1000;
-const DIAGNOSTIC_SHARE_TOKEN_BYTES = 18;
-const DIAGNOSTIC_CAUSAL_MAX_NODES = 36;
-const DIAGNOSTIC_CAUSAL_MAX_EDGES = 72;
-const DIAGNOSTIC_CAUSAL_WINDOW_MS = 3 * 60 * 1000;
-const DIAGNOSTIC_CAUSAL_STRONG_WINDOW_MS = 15 * 60 * 1000;
-const diagnosticShares = new Map();
-const diagnosticGithubReports = new Map();
-let githubIssueClearInFlight = false;
-let diagnosticGithubBatchInFlight = false;
-let githubScreenshotClearInFlight = false;
-const adminGithubScreenshotUploads = new Map();
-const ADMIN_GITHUB_SCREENSHOT_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
-const DIAGNOSTIC_GITHUB_REPORT_TTL_MS = 24 * 60 * 60 * 1000;
-const DIAGNOSTIC_GITHUB_INCIDENT_TTL_MS = DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS;
-const DIAGNOSTIC_EVENT_DEDUPE_WINDOW_MS = 15 * 1000;
-const DIAGNOSTIC_NOISY_DEDUPE_KINDS = new Set(["network_error", "resource_error", "fetch_aborted"]);
-const DIAGNOSTIC_AWS_SERVICE_PREFIXES = new Set(["dynamodb", "elasticbeanstalk", "s3", "cloudfront"]);
-const diagnosticGithubIncidentReports = new Map();
-const diagnosticGithubIncidentInFlight = new Map();
-const diagnosticGithubEventInFlight = new Map();
-
-// Short-lived capability used only after an authenticated Admin request asks for a
-// historical Elastic Beanstalk source bundle. The browser never receives the EB
-// managed S3 bucket/key; it receives this signed ticket instead. It is deliberately
-// stateless so a load-balanced EB environment can serve the follow-up GET from any
-// healthy instance.
-const ADMIN_VERSION_DOWNLOAD_TTL_MS = 2 * 60 * 1000;
-
-// ============================================================
-// ADMIN BUG REPLAY / SIMULATION RUNNER
-// ============================================================
-// รันชุดจำลองแบบ allow-list และเดินต่อจนครบทุก scenario ในรอบเดียว
-// live UI จำกัด failure rows ที่ส่งขึ้นหน้าจอ แต่ aggregate report เก็บ reference ของทุก failure ที่พบ
-const BUG_REPLAY_MAX_JOBS = 8;
-const BUG_REPLAY_MAX_FAILURES = 12;
-const BUG_REPLAY_JOB_TTL_MS = 30 * 60 * 1000;
-const bugReplayJobs = new Map();
-let bugReplayActiveRunId = "";
-
 function makeDiagnosticId(prefix = "id") {
     const body = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex");
-    return `${prefix}-${body}`;
+    return `${String(prefix || "id")}-${body}`;
 }
-
-function sanitizeDiagnosticPath(value) {
-    const raw = String(value || "");
-    try {
-        if (/^https?:\/\//i.test(raw)) {
-            const u = new URL(raw);
-            return `${u.origin}${u.pathname}`.slice(0, 600);
-        }
-    } catch (_) {}
-    return raw.split(/[?#]/, 1)[0].slice(0, 600);
-}
-
 function safeDiagnosticValue(value, depth = 0) {
     if (depth > 3 || value === null || value === undefined) return value == null ? "" : String(value);
-    if (typeof value === "string") return value.slice(0, 500);
-    if (typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
     if (Array.isArray(value)) return value.slice(0, 12).map((v) => safeDiagnosticValue(v, depth + 1));
     if (typeof value === "object") {
         const out = {};
-        for (const key of Object.keys(value).slice(0, 24)) {
-            if (DIAGNOSTIC_REDACT_KEYS.test(key)) continue;
-            out[String(key).slice(0, 80)] = safeDiagnosticValue(value[key], depth + 1);
-        }
+        for (const key of Object.keys(value).slice(0, 24)) out[String(key).slice(0, 80)] = safeDiagnosticValue(value[key], depth + 1);
         return out;
     }
     return String(value).slice(0, 500);
 }
-
-function inferDiagnosticRoomId(text) {
-    const raw = String(text || "");
-    const m1 = raw.match(/\b(?:room|ห้อง)\s*[:#]?\s*([A-Z0-9]{3,12})\b/i);
-    if (m1) return String(m1[1]).toUpperCase().slice(0, 12);
-    return "";
-}
-
-function inferDiagnosticAction(text) {
-    const raw = String(text || "");
-    const socket = raw.match(/\[socket:([^\]]+)\]/i);
-    if (socket) return `socket:${socket[1]}`.slice(0, 120);
-    const api = raw.match(/\b(POST|PUT|PATCH|DELETE|GET)\s+(\/api\/[^\s]+)/i);
-    if (api) return `${api[1]} ${sanitizeDiagnosticPath(api[2])}`.slice(0, 120);
-    return "";
-}
-
-function nextDiagnosticSequence() {
-    diagnosticSequence += 1;
-    if (diagnosticSequence > 2147483647) diagnosticSequence = 1;
-    return diagnosticSequence;
-}
-
-function diagnosticFingerprint(parts) {
-    const raw = Array.isArray(parts) ? parts.filter((x) => x !== undefined && x !== null).map(String).join("|") : String(parts || "");
-    return crypto.createHash("sha1").update(raw.slice(0, 4000)).digest("hex").slice(0, 16);
-}
-
-function diagnosticAckCode(value) {
-    return String(value?.code || value?.errorCode || value?.ackCode || value?.serverCode || "").trim().toUpperCase();
-}
-
-function isSuccessfulDiagnosticAck(eventName, payload) {
-    // Legacy room-list events intentionally return a raw array, not { ok:true }.
-    if (Array.isArray(payload) && /^(list_open_rooms|list_open_rooms_players)$/.test(String(eventName || ""))) return true;
-    if (payload && typeof payload === "object" && payload.ok === true) return true;
-    return false;
-}
-
-function diagnosticEventCode(event = {}) {
-    const context = event.context || {};
-    const detail = event.detail || {};
-    const authBootstrapError = detail.authObservation?.testerPassBootstrapError || detail.authPresence?.testerPassBootstrapError || "";
-    const hintedCode = String(event.causalHint?.causeCode || "").trim().toUpperCase();
-    // A browser/client hint is never enough to prove an AWS IAM denial. Keep other
-    // client hints (ACK_TIMEOUT, SOCKET_*, etc.) intact, but require server-side
-    // evidence before exposing IAM_ACCESS_DENIED as the event's effective code.
-    const safeHintedCode = hintedCode === "IAM_ACCESS_DENIED" && String(event.source || "").toLowerCase() !== "server" ? "" : hintedCode;
-    return String(
-        context.ackCode || context.serverCode || context.code || context.errorCode ||
-        detail.ackCode || detail.serverCode || detail.code || detail.errorCode ||
-        authBootstrapError || safeHintedCode || ""
-    ).trim().toUpperCase();
-}
-
-function diagnosticIsAuditSummaryEvent(item = {}) {
-    const code = diagnosticEventCode(item);
-    const kind = String(item.kind || item.type || "").toLowerCase();
-    return code === "RUNTIME_AUDIT_SUMMARY" || kind === "runtime_audit_summary";
-}
-
-function diagnosticIsStartupMutationFinding(item = {}) {
-    const code = diagnosticEventCode(item);
-    if (code !== "DOM_MUTATION_BURST") return false;
-    const context = item.context || item.detail || {};
-    if (context.runtimeAuditSynthetic !== true) return false;
-    const firstSeenElapsedMs = Number(context.firstSeenElapsedMs);
-    return Number.isFinite(firstSeenElapsedMs) && firstSeenElapsedMs <= 1500;
-}
-
-function extractRuntimeAuditFindingEvents(owner = {}) {
-    const context = owner?.context && typeof owner.context === "object" ? owner.context : {};
-    const audit = context?.audit && typeof context.audit === "object" ? context.audit : context;
-    const findings = Array.isArray(audit?.findings) ? audit.findings : [];
-    if (!findings.length) return [];
-    const summaryMs = Number(audit?.summary?.durationMs);
-    const ownerAt = diagnosticTimeMs(owner);
-    const startAt = ownerAt && Number.isFinite(summaryMs) ? ownerAt - Math.max(0, summaryMs) : ownerAt;
-    return findings.slice(0, 180).map((finding, index) => {
-        const firstSeenElapsedMs = Number(finding?.firstSeenElapsedMs);
-        const atMs = startAt && Number.isFinite(firstSeenElapsedMs)
-            ? startAt + Math.max(0, firstSeenElapsedMs)
-            : ownerAt;
-        const code = String(finding?.code || "RUNTIME_AUDIT_FINDING").trim().toUpperCase();
-        const severity = String(finding?.severity || "warning").toLowerCase();
-        const category = String(finding?.category || "runtime");
-        const detail = {
-            ...(finding?.detail && typeof finding.detail === "object" ? finding.detail : {}),
-            code,
-            runtimeAuditSynthetic: true,
-            summaryEventId: String(owner?.id || ""),
-            auditCategory: category,
-            firstSeenElapsedMs: Number.isFinite(firstSeenElapsedMs) ? firstSeenElapsedMs : null,
-            lastSeenElapsedMs: Number.isFinite(Number(finding?.lastSeenElapsedMs)) ? Number(finding.lastSeenElapsedMs) : null,
-            findingCount: Number.isFinite(Number(finding?.count)) ? Number(finding.count) : 1,
-        };
-        const id = `${String(owner?.id || "audit")}:finding:${index}:${code}:${Number.isFinite(firstSeenElapsedMs) ? firstSeenElapsedMs : "na"}`;
-        return {
-            id,
-            time: atMs ? new Date(atMs).toISOString() : String(owner?.time || ""),
-            source: String(owner?.source || "client"),
-            type: "runtime_audit",
-            kind: "runtime_audit_finding",
-            page: String(owner?.page || ""),
-            label: code,
-            message: String(finding?.message || code),
-            traceId: String(owner?.traceId || ""),
-            sessionId: String(owner?.sessionId || ""),
-            roomId: String(owner?.roomId || ""),
-            context: detail,
-            severity,
-            causalHint: {
-                failureStage: `runtime_audit.${category}`,
-                causeCode: code,
-                confidence: severity === "critical" || severity === "error" ? "high" : "medium",
-            },
-        };
-    });
-}
-
-function isLikelyAwsIamAction(action = "") {
-    const raw = String(action || "").trim();
-    const match = raw.match(/^([a-z0-9-]+):([A-Za-z0-9*]+)$/i);
-    if (!match) return false;
-    return DIAGNOSTIC_AWS_SERVICE_PREFIXES.has(match[1].toLowerCase());
-}
-
-function hasAuthoritativeIamEvidence({ source = "", message = "", stack = "", permission = null, context = {} } = {}) {
-    if (String(source || "").toLowerCase() !== "server") return false;
-    const text = [message, stack, typeof context === "string" ? context : JSON.stringify(context || {})].join("\n");
-    const explicitAwsException = /\b(?:AccessDeniedException|UnauthorizedOperation)\b/i.test(text);
-    const explicitAwsAction = /\bnot authorized to perform(?::)?\s*([a-z0-9-]+):([A-Za-z0-9*]+)\b/i.exec(text);
-    if (explicitAwsAction && isLikelyAwsIamAction(`${explicitAwsAction[1]}:${explicitAwsAction[2]}`)) return true;
-    if (explicitAwsException) {
-        if (!permission?.action) return true;
-        return isLikelyAwsIamAction(permission.action);
-    }
-    // A structured permission denial is authoritative only when its action is a known
-    // AWS service action used by this application. Values such as node:fs/node:internal
-    // come from the replay/test runtime and must never become IAM_ACCESS_DENIED.
-    return !!permission?.accessDenied && isLikelyAwsIamAction(permission.action);
-}
-
-function classifyDiagnosticCause({ source = "", kind = "", message = "", stack = "", status = 0, context = {}, permission = null, causalHint = null } = {}) {
-    const rawHintCode = String(causalHint?.causeCode || "").toUpperCase();
-    const safeHintCode = rawHintCode === "IAM_ACCESS_DENIED" && String(source || "").toLowerCase() !== "server" ? "" : rawHintCode;
-    const code = String(context?.ackCode || context?.serverCode || context?.code || context?.errorCode || safeHintCode || "").toUpperCase();
-    const text = String(message || "");
-    if (code === "DOM_VIEWPORT_UNAVAILABLE") {
-        return { code, stage: "browser.layout", confidence: "high", explanation: "เบราว์เซอร์ของหน้าเกมมี viewport เป็น 0×0 ทำให้ไม่สามารถคำนวณพื้นที่แสดงผลของ UI ได้" };
-    }
-    if (code === "DOM_GRID_OFFSCREEN") {
-        return { code, stage: "browser.layout", confidence: "high", explanation: "พื้นที่กริดผู้เล่นทั้งก้อนอยู่นอก viewport แม้ viewport มีขนาดจริง จึงต้องตรวจลำดับความสูงของ header/workspace และจังหวะการจัด layout ของ Host" };
-    }
-    if (code === "DOM_OVERFLOW" || code === "DOM_OUTSIDE_VIEWPORT") {
-        return { code, stage: "browser.layout", confidence: "high", explanation: "องค์ประกอบ UI ของหน้าเกมล้นหรืออยู่นอกพื้นที่แสดงผลที่มีอยู่จริง" };
-    }
-    if (hasAuthoritativeIamEvidence({ source, message, stack, permission, context })) {
-        return { code: "IAM_ACCESS_DENIED", stage: "server.persistence", confidence: "high", explanation: "พบหลักฐานจากฝั่งเซิร์ฟเวอร์ว่า AWS ปฏิเสธสิทธิ์ของ operation ที่กำลังทำ" };
-    }
-    if (code === "IAM_ACCESS_DENIED") {
-        // Never turn an untrusted client hint into an IAM diagnosis.
-        return { code: "UNCLASSIFIED", stage: "unknown", confidence: "low", explanation: "มีข้อความ/รหัสที่อ้างถึง IAM แต่ยังไม่มีหลักฐาน AWS ฝั่งเซิร์ฟเวอร์ยืนยัน" };
-    }
-    if (code) {
-        if (/^(ACCOUNT_DELETED|ACCOUNT_SESSION_EXPIRED|ACCOUNT_NOT_FOUND|ACCOUNT_RECREATE_REQUIRED|ACCOUNT_TOKEN_REQUIRED|GOOGLE_REAUTH_REQUIRED|ACCOUNT_AUTH_FAILED|ACCOUNT_EXPIRED)$/.test(code)) {
-            return { code, stage: "account.authentication", confidence: "high", explanation: "เซิร์ฟเวอร์ปฏิเสธตัวตนหรือสถานะบัญชีด้วยรหัสที่ระบุโดยตรง" };
-        }
-        if (/^(TESTER_PASS_REQUIRED|TESTER_PASS_INVALID|TESTER_PASS_UNAVAILABLE|TESTER_AUTH_FAILED|TESTER_SHARED_SECRET_MISSING|TESTER_SHARED_SECRET_MISMATCH)$/.test(code)) {
-            return { code, stage: "tester.authentication", confidence: "high", explanation: "การยืนยันสิทธิ์โหมดผู้ทดสอบไม่ผ่านก่อนเข้าสู่ event หลัก" };
-        }
-        if (/^(ROOM_NOT_FOUND|ROOM_CLOSED|ROOM_FULL|PLAYER_LEFT_GAME)$/.test(code)) {
-            return { code, stage: "room.authorization", confidence: "high", explanation: "เซิร์ฟเวอร์ปฏิเสธการเข้าถึงห้องตามสถานะหรือสิทธิ์ของผู้เล่น" };
-        }
-        if (/^(SERVER_ERROR|INTERNAL_ERROR|ACCOUNT_BOOTSTRAP_FAILED|ACCOUNT_DB_UNAVAILABLE|ACCOUNT_PERSISTENCE_UNAVAILABLE|DB_ERROR|PERSISTENCE_ERROR)$/.test(code)) {
-            return { code, stage: "server.handler", confidence: "high", explanation: "คำขอเข้าถึงเซิร์ฟเวอร์แล้ว แต่ handler หรือ persistence ทำงานไม่สำเร็จ" };
-        }
-        if (code === "ACK_TIMEOUT") return { code, stage: "socket.ack", confidence: "high", explanation: "ส่ง Socket.IO event แล้วไม่ได้รับ ACK ภายในเวลาที่กำหนด" };
-        if (/^(SOCKET_CONNECT_ERROR|SOCKET_EMIT_ERROR|SOCKET_ERROR)$/.test(code)) return { code, stage: "socket.transport", confidence: "high", explanation: "การส่งหรือเชื่อมต่อ Socket.IO มีความผิดพลาดก่อนงานปลายทางเสร็จ" };
-        if (/^HTTP_\d+$/.test(code)) return { code, stage: Number(status) >= 500 ? "http.server" : "http.response", confidence: Number(status) >= 500 ? "high" : "medium", explanation: Number(status) >= 500 ? "HTTP 5xx ยืนยันว่าคำขอล้มเหลวที่ต้นทาง/เซิร์ฟเวอร์" : "HTTP response ไม่สำเร็จและมีรหัสสถานะระบุไว้" };
-        return { code, stage: causalHint?.failureStage || "server.response", confidence: causalHint?.confidence === "high" ? "high" : "medium", explanation: "ตรวจพบรหัสผิดพลาดจากชั้นปลายทางที่สัมพันธ์กับเหตุการณ์นี้" };
-    }
-    if (Number(status) >= 500) return { code: `HTTP_${Number(status)}`, stage: "http.server", confidence: "high", explanation: "HTTP 5xx ยืนยันว่าคำขอล้มเหลวที่ฝั่งเซิร์ฟเวอร์/ต้นทาง" };
-    if (kind === "socket_ack_timeout") return { code: "ACK_TIMEOUT", stage: "socket.ack", confidence: "high", explanation: "ไม่พบ ACK กลับจาก event ที่ส่งไป" };
-    if (kind === "socket_connect_error") return { code: "SOCKET_CONNECT_ERROR", stage: "socket.connect", confidence: "high", explanation: "สร้าง/เชื่อมต่อ Socket.IO ไม่สำเร็จ" };
-    if (kind === "network_error" || kind === "fetch_aborted") return { code: kind === "fetch_aborted" ? "FETCH_ABORTED" : "NETWORK_ERROR", stage: "browser.transport", confidence: "medium", explanation: "เบราว์เซอร์รายงานปัญหาระหว่างส่งหรือรับข้อมูล" };
-    return { code: "UNCLASSIFIED", stage: "unknown", confidence: "low", explanation: "ยังไม่มีหลักฐานพอจะระบุชั้นต้นเหตุแบบฟันธง" };
-}
-
-function diagnosticIsBenignLifecycleEvent(item = {}) {
-    const kind = String(item.kind || item.type || "").toLowerCase();
-    const code = diagnosticEventCode(item);
-    return /^(browser_exit_signal|browser_exit_armed|browser_exit_cancelled|browser_exit_applied|room_closed_after_browser_exit)$/.test(kind)
-        || /^(BROWSER_EXIT_SIGNAL|BROWSER_EXIT_ARMED|BROWSER_EXIT_CANCELLED|BROWSER_EXIT_RECONNECTED|BROWSER_EXIT_KEPT_ROOM_OPEN|BROWSER_EXIT_APPLIED|BROWSER_EXIT_CLOSE_ROOM|ROOM_CLOSED|BROWSER_EXIT_DUPLICATE_IGNORED)$/.test(code);
-}
-
-function diagnosticIsFailureEvent(item = {}) {
-    if (diagnosticIsBenignLifecycleEvent(item)) return false;
-    if (diagnosticIsAuditSummaryEvent(item)) return false;
-    if (diagnosticIsStartupMutationFinding(item)) return false;
-    const severity = String(item.severity || "").toLowerCase();
-    if (severity === "info") return false;
-    const kind = String(item.kind || item.type || "").toLowerCase();
-    const code = diagnosticEventCode(item);
-    const message = String(item.message || item.label || "");
-    if (item.permission?.accessDenied || hasAuthoritativeIamEvidence(item)) return true;
-    if (Number(item.status) >= 400) return true;
-    if (code && !/^(OK|SUCCESS)$/.test(code)) return true;
-    if (/error|fail|exception|denied|timeout|reject|disconnect|close|aborted|invalid|unavailable|ล้มเหลว|ไม่สำเร็จ|ปฏิเสธ/i.test(kind + " " + message)) return true;
-    if (String(item.type || "") === "socket" && /^ack:/.test(String(item.label || "")) && item.detail?.ok === false) return true;
-    return false;
-}
-
-function diagnosticStageForItem(item = {}) {
-    const kind = String(item.kind || "").toLowerCase();
-    const type = String(item.type || "").toLowerCase();
-    const label = String(item.label || "").toLowerCase();
-    const code = diagnosticEventCode(item);
-    if (hasAuthoritativeIamEvidence(item)) return "server.persistence";
-    if (/^tester_/.test(kind) || /^tester[_\.]/.test(code.toLowerCase())) return "tester.authentication";
-    if (/account_/.test(kind) || /account\./.test(code.toLowerCase())) return "account.authentication";
-    if (code === "ACK_TIMEOUT" || label.indexOf("ack.timeout") === 0) return "socket.ack";
-    if (type === "socket" || kind.indexOf("socket_") === 0) {
-        if (label.indexOf("emit:") === 0 || label.indexOf("emit.sent:") === 0) return "socket.client_send";
-        if (label.indexOf("handler.start:") === 0 || label.indexOf("handler.resolve:") === 0 || label.indexOf("handler.return:") === 0) return "socket.server_handler";
-        if (label.indexOf("ack:") === 0) return "socket.server_response";
-        return "socket.transport";
-    }
-    if (/dynamodb|persistence|aws/.test(type + " " + kind + " " + label)) return "server.persistence";
-    if (/http|fetch|network/.test(type + " " + kind + " " + label)) return "browser.transport";
-    if (/browser_exit|pagehide|beforeunload|lifecycle/.test(kind + " " + label + " " + type)) return "browser.lifecycle";
-    if (/resource|javascript|unhandled|window_open/.test(kind)) return "browser.runtime";
-    if (Number(item.status) >= 500) return "http.server";
-    return "unknown";
-}
-
-function diagnosticAuthObservation(item = {}) {
-    if (!item) return null;
-    const detail = item.detail || item.context || {};
-    const observation = detail.authObservation || detail.authPresence || detail.auth || detail.authState || {};
-    if (!observation || typeof observation !== "object") return null;
-    const out = {};
-    for (const key of ["requestedTester","testerPassPresented","testerPassValid","testerGranted","testerPassBootstrapError","hasAccountToken","hasAccountId","hasAdminIntent","isAdmin","hasDiagSession","hasRoomIdentity"]) {
-        if (Object.prototype.hasOwnProperty.call(observation, key)) out[key] = observation[key];
-    }
-    return Object.keys(out).length ? out : null;
-}
-
-
-function diagnosticHumanLabel(item = {}) {
-    const stage = diagnosticStageForItem(item);
-    const code = diagnosticEventCode(item);
-    const kind = String(item.kind || item.type || "event");
-    const label = String(item.label || item.message || kind).slice(0, 180);
-    return code ? `${stage} · ${code} · ${label}` : `${stage} · ${label}`;
-}
-
-function buildDiagnosticTimeline(related = []) {
-    const seen = new Set();
-    const items = (Array.isArray(related) ? related : []).map((item, idx) => ({
-        ...item,
-        __timelineId: item.id || `${item.time || ""}|${item.kind || item.type || ""}|${item.label || item.message || ""}|${idx}`,
-    })).sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
-    return items.filter((item) => {
-        if (seen.has(item.__timelineId)) return false;
-        seen.add(item.__timelineId);
-        return true;
-    }).slice(0, 160).map((item) => ({
-        time: String(item.time || ""),
-        source: String(item.source || "server").slice(0, 32),
-        kind: String(item.kind || item.type || "event").slice(0, 64),
-        label: String(item.label || item.message || "").slice(0, 180),
-        stage: diagnosticStageForItem(item),
-        code: diagnosticEventCode(item),
-        ok: item.detail?.ok === true || item.ok === true,
-        operationId: String(item.operationId || item.detail?.operationId || "").slice(0, 120),
-        requestId: String(item.requestId || item.detail?.requestId || "").slice(0, 120),
-        evidence: safeDiagnosticValue(item.detail || item.context || {}),
-    }));
-}
-
-
-function diagnosticTimeMs(item = {}) {
-    const value = Date.parse(String(item.time || ""));
-    return Number.isFinite(value) ? value : 0;
-}
-
-function diagnosticEventName(item = {}) {
-    const ctx = item.context || item.detail || {};
-    if (ctx.eventName) return String(ctx.eventName);
-    const label = String(item.label || "");
-    const m = label.match(/^(?:ack|handler\.(?:start|resolve|return)):(.+)$/i);
-    return m ? String(m[1]) : "";
-}
-
-function diagnosticSameCorrelation(a = {}, b = {}) {
-    const pairs = [
-        ["operationId", "operation"],
-        ["requestId", "request"],
-        ["clientRequestId", "clientRequest"],
-        ["traceId", "trace"],
-        ["sessionId", "session"],
-        ["roomId", "room"],
-    ];
-    const out = [];
-    for (const [key, label] of pairs) {
-        const av = String(a[key] || a.context?.[key] || a.detail?.[key] || "").trim();
-        const bv = String(b[key] || b.context?.[key] || b.detail?.[key] || "").trim();
-        if (av && bv && av === bv) out.push({ key, label, value: av });
-    }
-    return out;
-}
-
-function diagnosticExplicitCausalDirection(before = {}, after = {}) {
-    const list = (value) => Array.isArray(value) ? value.map((x) => String(x || "")).filter(Boolean) : [];
-    const beforeDownstream = [
-        ...list(before.causalHint?.downstreamEventIds),
-        ...list(before.causalHint?.causesEventIds),
-        ...list(before.context?.downstreamEventIds),
-        ...list(before.context?.causesEventIds),
-    ];
-    const afterUpstream = [
-        ...list(after.causalHint?.upstreamEventIds),
-        ...list(after.causalHint?.causedByEventIds),
-        ...list(after.context?.upstreamEventIds),
-        ...list(after.context?.causedByEventIds),
-    ];
-    if (beforeDownstream.includes(String(after.id || "")) || afterUpstream.includes(String(before.id || ""))) {
-        return { matched: true, direction: "before_to_after", score: 180, confidence: "high", reasons: ["explicit event-to-event causal link recorded by the system"] };
-    }
-    return { matched: false, direction: "", score: 0, confidence: "low", reasons: [] };
-}
-
-function refreshDiagnosticEventAnalysis(event) {
-    if (!event || !event.id) return;
-    try {
-        const related = relatedDiagnosticEventsFor(event);
-        const serverBreadcrumbs = event.serverBreadcrumbs?.length ? event.serverBreadcrumbs : relatedServerBreadcrumbs({ traceId:event.traceId, sessionId:event.sessionId, limit:160 });
-        const allForAnalysis = related.concat(serverBreadcrumbs.map((b) => ({ source:"server", kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
-        event.analysis = buildDiagnosticAnalysis(event, allForAnalysis);
-    } catch (_) {}
-}
-
-function linkDiagnosticEvents(upstreamId, downstreamId, relation = "causes") {
-    const from = diagnosticEvents.find((e) => String(e?.id || "") === String(upstreamId || ""));
-    const to = diagnosticEvents.find((e) => String(e?.id || "") === String(downstreamId || ""));
-    if (!from || !to || from.id === to.id) return false;
-    from.causalHint = (from.causalHint && typeof from.causalHint === "object") ? from.causalHint : {};
-    to.causalHint = (to.causalHint && typeof to.causalHint === "object") ? to.causalHint : {};
-    const add = (obj, key, value) => {
-        obj[key] = Array.isArray(obj[key]) ? obj[key] : [];
-        if (!obj[key].includes(String(value))) obj[key].push(String(value));
-        obj[key] = obj[key].slice(0, 24);
-    };
-    if (relation === "causes") {
-        add(from.causalHint, "downstreamEventIds", to.id);
-        add(to.causalHint, "upstreamEventIds", from.id);
-    } else {
-        add(from.causalHint, "relatedEventIds", to.id);
-        add(to.causalHint, "relatedEventIds", from.id);
-    }
-    // The Admin live feed returns cached analysis. Refresh both endpoints so the relationship
-    // is visible immediately, not only when a share snapshot is created later.
-    refreshDiagnosticEventAnalysis(from);
-    refreshDiagnosticEventAnalysis(to);
-    return true;
-}
-
-function diagnosticSemanticCausalSignal(before = {}, after = {}) {
-    const bk = String(before.kind || before.type || "").toLowerCase();
-    const ak = String(after.kind || after.type || "").toLowerCase();
-    const bl = String(before.label || before.message || "").toLowerCase();
-    const al = String(after.label || after.message || "").toLowerCase();
-    const beforeEvent = diagnosticEventName(before).toLowerCase();
-    const afterEvent = diagnosticEventName(after).toLowerCase();
-    const reasons = [];
-    let score = 0;
-    const add = (points, reason) => { score += points; reasons.push(reason); };
-
-    if (bk === "runtime_audit_finding" && ak === "runtime_audit_summary") add(98, "runtime audit finding was observed before the summary report that packaged it");
-    if (bk === "runtime_audit_finding" && /runtime_audit_summary/.test(ak) && diagnosticEventCode(before) === "DOM_VIEWPORT_UNAVAILABLE") add(100, "viewport failure was observed before the runtime audit summary was emitted");
-    if (bk === "socket" && bl.startsWith("emit:") && ak === "socket_ack_timeout") add(92, "client emitted Socket.IO event, then the same operation timed out waiting for ACK");
-    if (bk === "socket_breadcrumb" && bl.startsWith("handler.start:") && ak === "socket_ack_error") add(78, "server handler started before client received a rejected ACK");
-    if (bk === "socket_handler_error" && ak === "socket_ack_error") add(90, "server handler error preceded client/server ACK rejection");
-    if (/dynamodb|database/.test(bk + " " + bl) && (ak === "socket_handler_error" || ak === "http_error" || ak === "socket_ack_error")) add(88, "database failure preceded a higher-level server failure");
-    if (hasAuthoritativeIamEvidence(before) && (ak === "socket_handler_error" || ak === "http_error" || ak === "socket_ack_error")) add(96, "AWS IAM denial preceded the higher-level operation failure");
-    if (bk === "socket" && bl.startsWith("ack:") && ak === "socket_ack_error") add(100, "server ACK rejection surfaced as the matching client ACK error");
-    if (bk === "socket_ack_error" && ak === "unhandled_rejection") add(86, "socket ACK error preceded an unhandled rejection in the same client flow");
-    if ((bk === "socket_ack_error" || bk === "socket_handler_error") && (ak.includes("disconnect") || al.includes("disconnect"))) add(74, "error preceded Socket.IO disconnect");
-    if ((bk === "network_error" || bk === "http_error" || bk === "fetch_aborted") && /retry/.test(ak + " " + al)) add(78, "transport failure preceded the retry failure");
-    if (/request\.retry\.failed/.test(bl) && ak === "unhandled_rejection") add(70, "failed retry preceded an unhandled rejection");
-    if (diagnosticIsFailureEvent(before) && /navigation|window_open|pagehide/.test(ak + " " + al)) add(68, "failure preceded navigation/lifecycle side effect");
-    if (beforeEvent && afterEvent && beforeEvent === afterEvent && bk === "socket" && bl.startsWith("handler.start:")) add(80, "same Socket.IO event passed from handler start to later event");
-    if (bk === "socket" && bl.startsWith("handler.start:") && ak === "socket" && al.startsWith("ack:") && (!beforeEvent || beforeEvent === afterEvent)) add(84, "same Socket.IO event progressed from handler start to ACK");
-    if ((bk === "socket_connect_error" || /connect_error/.test(bl)) && ak === "socket_ack_timeout") add(82, "Socket connection failure preceded ACK timeout");
-    if ((bk === "socket_ack_timeout" || bk === "socket_connect_error") && (ak === "disconnect" || /disconnect/.test(al))) add(66, "Socket transport failure preceded disconnect");
-
-    return { score: Math.min(100, score), reasons };
-}
-
-function diagnosticCausalPair(before = {}, after = {}) {
-    if (!before || !after || before.id === after.id) return null;
-    const bt = diagnosticTimeMs(before);
-    const at = diagnosticTimeMs(after);
-    if (!bt || !at || at <= bt) return null;
-    const dt = at - bt;
-    const explicit = diagnosticExplicitCausalDirection(before, after);
-    if (explicit.matched && !(diagnosticIsBenignLifecycleEvent(before) || diagnosticIsBenignLifecycleEvent(after))) {
-        return {
-            from: String(before.id || ""),
-            to: String(after.id || ""),
-            score: explicit.score,
-            confidence: explicit.confidence,
-            relation: "probable_cause",
-            timeDeltaMs: dt,
-            reasons: explicit.reasons.slice(0, 8),
-            semanticScore: 100,
-            correlationStrength: 120,
-            explicit: true,
-        };
-    }
-    if (diagnosticIsBenignLifecycleEvent(before) || diagnosticIsBenignLifecycleEvent(after)) return null;
-    const correlations = diagnosticSameCorrelation(before, after);
-    if (!correlations.length) return null;
-    const strongestCorrelation = correlations.some(x => x.key === "operationId") ? 100
-        : correlations.some(x => x.key === "requestId" || x.key === "clientRequestId") ? 95
-        : correlations.some(x => x.key === "traceId") ? 80
-        : correlations.some(x => x.key === "sessionId") ? 58
-        : correlations.some(x => x.key === "roomId") ? 36 : 0;
-    const semantic = diagnosticSemanticCausalSignal(before, after);
-    const allowedWindow = strongestCorrelation >= 95 ? DIAGNOSTIC_CAUSAL_STRONG_WINDOW_MS : DIAGNOSTIC_CAUSAL_WINDOW_MS;
-    if (dt > allowedWindow) return null;
-
-    let score = strongestCorrelation;
-    const reasons = correlations.slice(0, 3).map(x => `same ${x.label}=${x.value}`);
-    if (semantic.score) {
-        score += Math.round(semantic.score * (strongestCorrelation >= 58 ? 0.58 : 0.42));
-        reasons.push(...semantic.reasons.slice(0, 3));
-    }
-    if (dt <= 5_000) { score += 10; reasons.push(`time gap ${dt}ms`); }
-    else if (dt <= 30_000) { score += 6; reasons.push(`time gap ${dt}ms`); }
-    else if (dt <= 120_000) { score += 3; reasons.push(`time gap ${dt}ms`); }
-
-    const beforeFailure = diagnosticIsFailureEvent(before);
-    const afterFailure = diagnosticIsFailureEvent(after);
-    const hasSemantic = semantic.score >= 55;
-    const explicitOperation = correlations.some(x => x.key === "operationId");
-    const explicitRequest = correlations.some(x => x.key === "requestId" || x.key === "clientRequestId");
-    const sameRoomOnly = strongestCorrelation === 36 && correlations.every(x => x.key === "roomId");
-    const roomCausalEvidence = !sameRoomOnly || (semantic.score >= 78 && dt <= 10_000);
-    const probableCausal = hasSemantic && roomCausalEvidence && (strongestCorrelation >= 36 || explicitOperation || explicitRequest) && score >= 68;
-    if (sameRoomOnly && !roomCausalEvidence) return null;
-    const confidence = score >= 115 ? "high" : score >= 88 ? "medium" : "low";
-    let relation = "correlated_event";
-    if (probableCausal && beforeFailure && afterFailure) relation = "probable_cause";
-    else if (probableCausal && afterFailure) relation = "causal_context";
-    else if (probableCausal) relation = "downstream_effect";
-    if (beforeFailure && afterFailure && !probableCausal && strongestCorrelation < 58) return null;
-
-    return {
-        from: String(before.id || ""),
-        to: String(after.id || ""),
-        score: Math.min(180, Math.round(score)),
-        confidence,
-        relation,
-        timeDeltaMs: dt,
-        reasons: reasons.slice(0, 8),
-        semanticScore: semantic.score,
-        correlationStrength: strongestCorrelation,
-    };
-}
-
-function diagnosticCausalClusterForEvent(event, maxNodes = DIAGNOSTIC_CAUSAL_MAX_NODES) {
-    const all = Array.isArray(diagnosticEvents) ? diagnosticEvents.slice() : [];
-    const selected = new Map([[String(event.id || ""), event]]);
-    const frontier = [event];
-    const pairBest = new Map();
-    for (let depth = 0; depth < 2 && frontier.length; depth++) {
-        const next = [];
-        for (const current of frontier) {
-            const scored = [];
-            for (const other of all) {
-                if (!other || other.id === current.id) continue;
-                const pair = current.time && other.time
-                    ? (diagnosticTimeMs(other) < diagnosticTimeMs(current) ? diagnosticCausalPair(other, current) : diagnosticCausalPair(current, other))
-                    : null;
-                if (!pair) continue;
-                const neighborId = pair.from === current.id ? pair.to : pair.from;
-                const threshold = pair.relation === "correlated_event" ? 82 : 62;
-                if (pair.score < threshold) continue;
-                const existing = pairBest.get(neighborId);
-                if (!existing || pair.score > existing.score) pairBest.set(neighborId, pair);
-                if (!selected.has(neighborId)) scored.push({ other, pair });
-            }
-            scored.sort((a,b) => b.pair.score - a.pair.score);
-            for (const item of scored.slice(0, 18)) {
-                const id = String(item.other.id || "");
-                if (!id || selected.has(id)) continue;
-                selected.set(id, item.other);
-                next.push(item.other);
-                if (selected.size >= maxNodes) break;
-            }
-            if (selected.size >= maxNodes) break;
-        }
-        frontier.splice(0, frontier.length, ...next);
-        if (selected.size >= maxNodes) break;
-    }
-    const list = Array.from(selected.values());
-    list.sort((a,b) => diagnosticTimeMs(a) - diagnosticTimeMs(b));
-    return list.slice(0, maxNodes);
-}
-
-function diagnosticCausalNodeSummary(item = {}, primaryId = "") {
-    return {
-        id: String(item.id || "").slice(0, 120),
-        time: String(item.time || ""),
-        source: String(item.source || "").slice(0, 32),
-        kind: String(item.kind || item.type || "event").slice(0, 64),
-        page: String(item.page || "").slice(0, 48),
-        code: diagnosticEventCode(item),
-        stage: diagnosticStageForItem(item),
-        message: publicDiagnosticText(item.message || item.label || "").slice(0, 420),
-        fingerprint: String(item.fingerprint || "").slice(0, 80),
-        primary: String(item.id || "") === String(primaryId || ""),
-    };
-}
-
-function buildDiagnosticCausalGraph(primary = {}, related = []) {
-    const pool = [];
-    const seen = new Set();
-    for (const item of [primary, ...(Array.isArray(related) ? related : [])]) {
-        if (!item || !item.id || seen.has(item.id)) continue;
-        seen.add(item.id);
-        pool.push(item);
-    }
-    pool.sort((a,b) => diagnosticTimeMs(a) - diagnosticTimeMs(b));
-    const nodes = pool.slice(0, DIAGNOSTIC_CAUSAL_MAX_NODES).map(x => diagnosticCausalNodeSummary(x, primary.id));
-    const edgeByKey = new Map();
-    for (let i = 0; i < pool.length; i++) {
-        for (let j = i + 1; j < pool.length; j++) {
-            const pair = diagnosticCausalPair(pool[i], pool[j]);
-            if (!pair) continue;
-            const key = `${pair.from}->${pair.to}`;
-            if (!edgeByKey.has(key) || pair.score > edgeByKey.get(key).score) edgeByKey.set(key, pair);
-        }
-    }
-    const edges = Array.from(edgeByKey.values()).sort((a,b) => b.score - a.score || a.timeDeltaMs - b.timeDeltaMs).slice(0, DIAGNOSTIC_CAUSAL_MAX_EDGES);
-    const nodeNeighbors = new Map(nodes.map((n) => [n.id, { upstream:[], downstream:[], correlated:[] }]));
-    for (const edge of edges) {
-        const from = nodeNeighbors.get(edge.from);
-        const to = nodeNeighbors.get(edge.to);
-        const compactEdge = {
-            eventId: edge.from, targetEventId: edge.to, relation: edge.relation,
-            confidence: edge.confidence, score: edge.score, timeDeltaMs: edge.timeDeltaMs,
-            reasons: Array.isArray(edge.reasons) ? edge.reasons.slice(0, 6) : [],
-        };
-        if (edge.relation === "correlated_event") {
-            if (from) from.correlated.push({ ...compactEdge, targetEventId: edge.to });
-            if (to) to.correlated.push({ ...compactEdge, eventId: edge.from, targetEventId: edge.to });
-        } else {
-            if (from) from.downstream.push({ ...compactEdge, targetEventId: edge.to });
-            if (to) to.upstream.push({ ...compactEdge, eventId: edge.from, targetEventId: edge.to });
-        }
-    }
-    const enrichedNodes = nodes.map((n) => ({
-        ...n,
-        neighborhood: nodeNeighbors.get(n.id) || { upstream:[], downstream:[], correlated:[] },
-    }));
-    const primaryId = String(primary.id || "");
-    const upstream = edges.filter(e => e.to === primaryId && ["probable_cause", "causal_context", "downstream_effect"].includes(e.relation)).sort((a,b) => b.score-a.score);
-    const downstream = edges.filter(e => e.from === primaryId && (e.relation === "probable_cause" || e.relation === "downstream_effect" || e.relation === "causal_context")).sort((a,b) => b.score-a.score);
-    const contextual = edges.filter(e => (e.to === primaryId || e.from === primaryId) && e.relation === "correlated_event").sort((a,b) => b.score-a.score);
-
-    const rootPath = [];
-    const visited = new Set([primaryId]);
-    let cursor = primaryId;
-    for (let hops = 0; hops < 8; hops++) {
-        const edge = edges.filter(e => e.to === cursor && ["probable_cause", "causal_context", "downstream_effect"].includes(e.relation) && !visited.has(e.from)).sort((a,b) => b.score-a.score)[0];
-        if (!edge) break;
-        rootPath.unshift(edge.from);
-        visited.add(edge.from);
-        cursor = edge.from;
-    }
-
-    const nodeById = new Map(enrichedNodes.map(n => [n.id, n]));
-    const incomingCausal = new Map();
-    const outgoingCausal = new Map();
-    for (const edge of edges) {
-        if (!['probable_cause','causal_context','downstream_effect'].includes(edge.relation)) continue;
-        incomingCausal.set(edge.to, (incomingCausal.get(edge.to) || 0) + 1);
-        outgoingCausal.set(edge.from, (outgoingCausal.get(edge.from) || 0) + 1);
-    }
-    const rootCandidates = enrichedNodes.filter(n => {
-        const raw = pool.find(x => x.id === n.id) || n;
-        return diagnosticIsFailureEvent(raw) && !incomingCausal.has(n.id);
-    }).map(n => {
-        const outgoing = edges.filter(e => e.from === n.id && ['probable_cause','causal_context','downstream_effect'].includes(e.relation)).sort((a,b) => b.score-a.score);
-        return { ...n, downstreamCount: outgoing.length, strongestDownstreamScore: outgoing[0]?.score || 0, evidence: outgoing[0]?.reasons?.slice(0, 4) || [] };
-    }).sort((a,b) => (b.strongestDownstreamScore - a.strongestDownstreamScore) || (b.downstreamCount - a.downstreamCount)).slice(0, 8);
-    const terminalEffects = enrichedNodes.filter(n => diagnosticTimeMs(pool.find(x => x.id === n.id) || n) >= diagnosticTimeMs(primary) && !outgoingCausal.has(n.id)).slice(0, 12);
-    return {
-        version: 2,
-        primaryId,
-        nodeCount: enrichedNodes.length,
-        edgeCount: edges.length,
-        nodes: enrichedNodes,
-        edges,
-        upstreamCauseIds: upstream.map(e => e.from).slice(0, 8),
-        downstreamEffectIds: downstream.map(e => e.to).slice(0, 12),
-        correlatedEventIds: contextual.map(e => e.from === primaryId ? e.to : e.from).slice(0, 12),
-        rootPath: rootPath.slice(0, 8).map(id => nodeById.get(id)).filter(Boolean),
-        rootCauseCandidates: rootCandidates,
-        terminalEffects,
-        impact: {
-            causedAnotherLog: downstream.length > 0,
-            downstreamCount: downstream.length,
-            upstreamCount: upstream.length,
-            correlatedCount: contextual.length,
-            downstreamEventIds: downstream.map(e => e.to).slice(0, 12),
-            upstreamEventIds: upstream.map(e => e.from).slice(0, 8),
-            statement: downstream.length
-                ? `เหตุการณ์นี้มีหลักฐานความสัมพันธ์เชิงเหตุ→ผลกับ log ปลายทาง ${downstream.length} รายการใน snapshot`
-                : upstream.length
-                    ? "เหตุการณ์นี้มีหลักฐานต้นน้ำ แต่ยังไม่พบ log ปลายทางที่อธิบายได้ชัดใน snapshot"
-                    : "ยังไม่พบหลักฐานเพียงพอว่าเหตุการณ์นี้ทำให้เกิด log อื่นโดยตรง",
-        },
-    };
-}
-
-function compactDiagnosticAnalysisForShare(analysis = {}, causalGraph = null, eventId = "") {
-    const graph = causalGraph || {};
-    const edges = Array.isArray(graph.edges) ? graph.edges : [];
-    const upstream = edges.filter(e => e.to === eventId && e.relation === "probable_cause").slice(0, 8).map(e => ({ ...e, urlReady: true }));
-    const downstream = edges.filter(e => e.from === eventId && (e.relation === "probable_cause" || e.relation === "downstream_effect" || e.relation === "causal_context")).slice(0, 12).map(e => ({ ...e, urlReady: true }));
-    return publicDiagnosticValue({
-        rootCause: analysis.rootCause || "ยังระบุไม่ได้",
-        causeCode: analysis.causeCode || "UNCLASSIFIED",
-        failureStage: analysis.failureStage || "unknown",
-        rootCauseSource: analysis.rootCauseSource || "unknown",
-        confidence: analysis.confidence || "low",
-        firstFailureAt: analysis.firstFailureAt || "",
-        rootCauseAt: analysis.rootCauseAt || "",
-        lastSeenAt: analysis.lastSeenAt || "",
-        evidence: Array.isArray(analysis.evidence) ? analysis.evidence.slice(0, 12) : [],
-        authEvidence: analysis.authEvidence || {},
-        blockingEvent: analysis.blockingEvent || {},
-        correlation: analysis.correlation || {},
-        nextStep: analysis.nextStep || "",
-        causalImpact: graph.impact || { causedAnotherLog: false, downstreamCount: 0, upstreamCount: 0 },
-        upstreamEdges: upstream,
-        downstreamEdges: downstream,
-        rootCauseCandidates: graph.rootCauseCandidates || [],
-        terminalEffects: graph.terminalEffects || [],
-    });
-}
-
-function buildDiagnosticAnalysis(event, related = []) {
-    const relatedEvents = Array.isArray(related) ? related.slice() : [];
-    const breadcrumbEvidence = [];
-    for (const owner of [event, ...relatedEvents]) {
-        const crumbs = Array.isArray(owner?.breadcrumbs) ? owner.breadcrumbs : [];
-        for (let i = 0; i < crumbs.length; i++) {
-            const crumb = crumbs[i];
-            if (!crumb || typeof crumb !== "object") continue;
-            breadcrumbEvidence.push({
-                source: "client", type: crumb.type || "breadcrumb", kind: "client_breadcrumb",
-                label: crumb.label || "", message: crumb.label || "", time: crumb.time || owner.time || "",
-                detail: crumb.detail || {}, traceId: crumb.traceId || owner.traceId || "", sessionId: crumb.sessionId || owner.sessionId || "",
-                operationId: crumb.detail?.operationId || owner.operationId || "", requestId: crumb.detail?.requestId || owner.requestId || "",
-                __breadcrumbOwnerId: owner.id || "", __breadcrumbIndex: i,
-            });
-        }
-    }
-    const runtimeAuditEvidenceById = new Map();
-    for (const owner of [event, ...relatedEvents]) {
-        for (const finding of extractRuntimeAuditFindingEvents(owner)) {
-            if (!runtimeAuditEvidenceById.has(finding.id)) runtimeAuditEvidenceById.set(finding.id, finding);
-        }
-    }
-    const runtimeAuditEvidence = Array.from(runtimeAuditEvidenceById.values());
-    const evidencePool = relatedEvents.concat(runtimeAuditEvidence, breadcrumbEvidence);
-    const ordered = evidencePool.sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
-    const timeline = buildDiagnosticTimeline(ordered);
-    const eventCode = diagnosticEventCode(event);
-    const cause = classifyDiagnosticCause({ source:event.source, kind:event.kind, message:event.message, stack:event.stack, status:event.status, context:event.context, permission:event.permission, causalHint:event.causalHint });
-    const causalGraph = buildDiagnosticCausalGraph(event, relatedEvents.concat(runtimeAuditEvidence));
-
-    const candidates = ordered.filter(diagnosticIsFailureEvent).map((item, index) => {
-        const code = diagnosticEventCode(item);
-        const stage = diagnosticStageForItem(item);
-        let score = 20;
-        if (hasAuthoritativeIamEvidence(item)) score += 60;
-        else if (item.permission?.accessDenied) score += 12;
-        if (code && !/^(SOCKET_ACK_ERROR|SOCKET_ERROR|NETWORK_ERROR|UNCLASSIFIED)$/.test(code)) score += 45;
-        if (String(item.severity || "").toLowerCase() === "critical") score += 35;
-        else if (String(item.severity || "").toLowerCase() === "error") score += 20;
-        if (item.source === "server") score += 25;
-        if (Number(item.status) >= 500) score += 25;
-        if (item.kind === "runtime_audit_finding") score += 12;
-        if (code === "DOM_VIEWPORT_UNAVAILABLE") score += 18;
-        if (code === "DOM_GRID_OFFSCREEN") score += 24;
-        if (item.type === "socket" && /^ack:/.test(String(item.label || "")) && item.detail?.ok === false) score += 35;
-        if (String(item.kind || "").includes("handler_error")) score += 30;
-        if (String(item.kind || "").includes("unhandled_rejection")) score -= 20;
-        if (item === event) score += 35;
-        score -= Math.min(20, index * 0.5);
-        return { item, score, stage, code };
-    }).sort((a,b) => b.score - a.score);
-
-    const strongest = candidates[0]?.item || event;
-    const strongestCause = strongest === event ? cause : classifyDiagnosticCause({
-        source: strongest.source,
-        kind: strongest.kind,
-        message: strongest.message || strongest.label,
-        stack: strongest.stack || "",
-        status: strongest.status,
-        context: strongest.context || strongest.detail || {},
-        permission: strongest.permission,
-        causalHint: strongest.causalHint,
-    });
-    const effective = strongestCause.code !== "UNCLASSIFIED" ? strongestCause : cause;
-
-    const firstFailure = ordered.find(diagnosticIsFailureEvent) || event;
-    const rootCauseAt = strongest.time || event.time || "";
-    const firstFailureAt = firstFailure.time || event.time || "";
-    const lastSeenAt = ordered.length ? ordered[ordered.length - 1].time : event.time || "";
-
-    const eventName = String(event.context?.eventName || "").trim();
-    const opId = String(event.operationId || event.context?.operationId || "").trim();
-    const reqId = String(event.requestId || event.context?.requestId || event.context?.serverRequestId || "").trim();
-    const sessionId = String(event.sessionId || "").trim();
-    const traceId = String(event.traceId || "").trim();
-
-    const evidence = [];
-    if (eventName) evidence.push(`socket:${eventName}`);
-    if (eventCode) evidence.push(`ack:${eventCode}`);
-    if (opId) evidence.push(`operation:${opId}`);
-    if (reqId) evidence.push(`request:${reqId}`);
-    if (strongest !== event) evidence.push(`root-event:${strongest.kind || strongest.type || "event"}`);
-    if (hasAuthoritativeIamEvidence(strongest)) evidence.push(`iam:${strongest.permission?.action || "AccessDenied"}`);
-    if (strongest.source) evidence.push(`source:${strongest.source}`);
-
-    const chain = [];
-    if (eventName) chain.push({ stage:"socket.client_send", status:"observed", evidence:`ส่ง event ${eventName}${opId ? ` (${opId})` : ""}` });
-    const handlerStart = ordered.find((x) => x.type === "socket" && String(x.label || "").startsWith(`handler.start:${eventName}`));
-    if (handlerStart) chain.push({ stage:"socket.server_handler", status:"started", evidence:"server รับ event เข้า handler แล้ว" });
-    const authObservation = diagnosticAuthObservation(handlerStart);
-    if (eventName && authObservation && authObservation.requestedTester === true && (Object.prototype.hasOwnProperty.call(authObservation, "testerPassPresented") || Object.prototype.hasOwnProperty.call(authObservation, "testerGranted"))) {
-        const passState = authObservation.testerGranted
-            ? "server granted tester auth"
-            : (authObservation.testerPassPresented
-                ? (authObservation.testerPassValid ? "server received a tester pass but tester grant was not active" : "server received an invalid tester pass")
-                : "server did not receive a tester pass");
-        chain.push({ stage:"tester.authentication", status:authObservation.testerGranted ? "granted" : "mismatch", evidence:`auth observation: requestedTester=true; ${passState}` });
-    }
-    const persistenceFailure = ordered.find((x) => x.source === "server" && (hasAuthoritativeIamEvidence(x) || /dynamodb|persistence/i.test(String(x.type || "") + " " + String(x.kind || ""))) && diagnosticIsFailureEvent(x));
-    if (persistenceFailure) chain.push({ stage:"server.persistence", status:"failed", evidence:diagnosticHumanLabel(persistenceFailure) });
-    const ackFailure = ordered.find((x) => x.type === "socket" && String(x.label || "").startsWith("ack:") && x.detail?.ok === false);
-    if (ackFailure) chain.push({ stage:"socket.server_response", status:"rejected", evidence:diagnosticHumanLabel(ackFailure) });
-    if (diagnosticIsFailureEvent(event) && event !== ackFailure) chain.push({ stage:cause.stage, status:"reported", evidence:`client event ${event.kind}` });
-    const disconnect = ordered.find((x) => x.type === "socket" && /disconnect|ack\.timeout/i.test(String(x.label || "")));
-    if (disconnect) chain.push({ stage:diagnosticStageForItem(disconnect), status:"downstream", evidence:diagnosticHumanLabel(disconnect) });
-
-    const downstreamEffects = [];
-    const downstreamItems = ordered.filter((x) => String(x.time || "") > String(rootCauseAt || ""));
-    for (const item of downstreamItems.slice(0, 20)) {
-        const kind = String(item.kind || item.type || "");
-        const label = String(item.label || item.message || "");
-        if (/disconnect|ack\.timeout|navigation|window\.open|pagehide|visibility|request\.failed|request\.retry\.failed|unhandled_rejection/i.test(kind + " " + label)) {
-            downstreamEffects.push({ time:item.time, stage:diagnosticStageForItem(item), evidence:diagnosticHumanLabel(item) });
-        }
-    }
-
-    const serverHandshakeEvent = ordered.find((x) => x.type === "socket" && String(x.label || "") === "auth.handshake");
-    const clientConnectEvent = ordered.find((x) => x.source === "client" && x.type === "socket" && String(x.label || "") === "connect" && x.detail?.authPresence);
-    const authEvidence = {
-        clientConnect: diagnosticAuthObservation(clientConnectEvent),
-        serverHandshake: diagnosticAuthObservation(serverHandshakeEvent),
-        serverHandler: diagnosticAuthObservation(handlerStart),
-    };
-
-    const correlation = {
-        traceId: traceId || "",
-        sessionId: sessionId || "",
-        operationId: opId || "",
-        requestId: reqId || "",
-        clientRequestId: String(event.clientRequestId || event.context?.clientRequestId || "").slice(0, 120),
-        roomId: String(event.roomId || event.context?.roomId || "").slice(0, 32),
-    };
-
-    let confidence = effective.confidence;
-    if (strongest?.source === "server" && diagnosticEventCode(strongest) && strongest.source !== event.source) confidence = "high";
-    if (effective.code === "UNCLASSIFIED" && candidates.length === 0) confidence = "low";
-
-    let rootCause = strongest === event ? effective.explanation : `${effective.explanation} หลักฐานต้นเหตุที่สัมพันธ์ที่สุดคือ ${diagnosticHumanLabel(strongest)}`;
-    const serverHandlerAuth = authEvidence.serverHandler;
-    if (effective.code === "ACCOUNT_TOKEN_REQUIRED" && eventName === "join_room" && serverHandlerAuth?.requestedTester === true && serverHandlerAuth.testerGranted !== true) {
-        const passState = serverHandlerAuth.testerPassPresented
-            ? (serverHandlerAuth.testerPassValid ? "server ได้รับ tester pass แต่ไม่ได้ grant สิทธิ์ tester" : "server ได้รับ tester pass แต่ตรวจแล้วไม่ผ่าน")
-            : "server ไม่ได้รับ tester pass ใน Socket.IO handshake";
-        rootCause = `คำขอ join_room ถูกขอเป็นโหมดผู้ทดสอบ แต่ ${passState}; จากนั้น ACK ฝั่ง server ตอบ ${effective.code} จึงตกลงไปที่ account authentication path และถูกปฏิเสธ`;
-    } else if (effective.code === "TESTER_PASS_INVALID" && eventName === "join_room" && serverHandlerAuth?.requestedTester === true) {
-        rootCause = `server รับคำขอ join_room แบบ tester แต่ tester pass ไม่ผ่านการยืนยัน ทำให้การอนุญาตโหมดผู้ทดสอบถูกปฏิเสธ (${effective.code})`;
-    }
-    const nextStep = effective.code === "UNCLASSIFIED"
-        ? "ไล่จาก timeline ตาม correlation ID โดยตรวจเหตุการณ์แรกที่เปลี่ยนสถานะจากสำเร็จเป็นผิดพลาด; ยังไม่ควรสรุปจากข้อความ generic เพียงอย่างเดียว"
-        : (effective.code === "IAM_ACCESS_DENIED"
-            ? "แก้ IAM action/resource ตามหลักฐาน AWS แล้วทดสอบ operation เดิมซ้ำจาก client เดิม"
-            : (effective.code === "DOM_VIEWPORT_UNAVAILABLE"
-                ? "ตรวจ parent/iframe layout lifecycle ให้พื้นที่แสดงผลมากกว่า 0×0 แล้ว replay หน้า Host ใน Internal Browser; อย่าแก้ที่จำนวนผู้เล่นก่อน"
-                : (effective.code === "DOM_GRID_OFFSCREEN"
-                    ? "ตรวจความสูงของส่วนหัว/toolbar ก่อน #list ใน Host เมื่อจอแคบ, ให้ player grid อยู่ใน viewport แรก แล้ว replay เคส 29 bots ที่ขนาด 696×601"
-                    : "ใช้ Root Cause + Causal Chain + Correlation IDs ในรายงานนี้ตรวจต้นเหตุที่ event ต้นน้ำ ก่อนแก้ผลลัพธ์ปลายทาง")));
-
-    return {
-        rootCause,
-        causeCode: effective.code,
-        failureStage: effective.stage,
-        rootCauseSource: strongest.source || event.source || "unknown",
-        confidence,
-        firstFailureAt,
-        rootCauseAt,
-        lastSeenAt,
-        evidence,
-        relatedEventCount: relatedEvents.length,
-        evidenceItemCount: ordered.length,
-        correlation,
-        authEvidence,
-        blockingEvent: {
-            id: String(strongest.id || ""),
-            kind: String(strongest.kind || strongest.type || ""),
-            source: String(strongest.source || ""),
-            message: String(strongest.message || strongest.label || "").slice(0, 1000),
-            code: diagnosticEventCode(strongest),
-            stage: diagnosticStageForItem(strongest),
-            time: String(strongest.time || ""),
-        },
-        causalChain: chain.slice(0, 10),
-        downstreamEffects: downstreamEffects.slice(0, 10),
-        timeline,
-        competingSignals: candidates.slice(0, 4).map((c) => ({ kind:c.item.kind || c.item.type || "event", source:c.item.source || "", code:c.code, stage:c.stage, score:Math.round(c.score) })),
-        causalImpact: causalGraph.impact,
-        upstreamCauseIds: causalGraph.upstreamCauseIds,
-        downstreamEffectIds: causalGraph.downstreamEffectIds,
-        causalRootPath: causalGraph.rootPath,
-        rootCauseCandidates: causalGraph.rootCauseCandidates || [],
-        terminalEffects: causalGraph.terminalEffects || [],
-        explicitCausalLinks: {
-            upstream: causalGraph.upstreamCauseIds.slice(0, 12),
-            downstream: causalGraph.downstreamEffectIds.slice(0, 12),
-        },
-        nextStep,
-    };
-}
-
-function currentDiagnosticContext() {
-    try { return diagnosticAsyncContext.getStore() || {}; } catch (_) { return {}; }
-}
-
-function addDiagnosticBreadcrumb({ source = "server", type = "server", label = "", traceId = "", sessionId = "", page = "server", detail = {} } = {}) {
-    const event = {
-        time: new Date().toISOString(),
-        source: String(source).slice(0, 24),
-        type: String(type).slice(0, 32),
-        label: String(label).slice(0, 160),
-        traceId: String(traceId || "").slice(0, 120),
-        sessionId: String(sessionId || "").slice(0, 120),
-        page: String(page || "server").slice(0, 48),
-        detail: safeDiagnosticValue(detail),
-    };
-    diagnosticServerBreadcrumbs.push(event);
-    if (diagnosticServerBreadcrumbs.length > DIAGNOSTIC_MAX_BREADCRUMBS) diagnosticServerBreadcrumbs.splice(0, diagnosticServerBreadcrumbs.length - DIAGNOSTIC_MAX_BREADCRUMBS);
-    return event;
-}
-
-function relatedServerBreadcrumbs({ traceId = "", sessionId = "", limit = 60 } = {}) {
-    if (!traceId && !sessionId) return [];
-    const out = [];
-    for (let i = diagnosticServerBreadcrumbs.length - 1; i >= 0 && out.length < limit; i--) {
-        const b = diagnosticServerBreadcrumbs[i];
-        if ((traceId && b.traceId === traceId) || (sessionId && b.sessionId === sessionId)) out.push(b);
-    }
-    return out.reverse();
-}
-
-const DIAGNOSTIC_EXPECTED_PERMISSIONS = [
-    { action: "dynamodb:GetItem", reason: "อ่านข้อมูลบัญชี/สถานะระบบ" },
-    { action: "dynamodb:PutItem", reason: "สร้าง/บันทึกข้อมูลระบบบางส่วน" },
-    { action: "dynamodb:UpdateItem", reason: "แก้ชื่อ/สถิติ/สถานะบัญชี และ snapshot" },
-    { action: "dynamodb:DeleteItem", reason: "ลบข้อมูลบัญชี/ข้อมูลเดิม" },
-    { action: "dynamodb:BatchWriteItem", reason: "ล้าง/ลบข้อมูลหลายรายการ" },
-    { action: "dynamodb:Query", reason: "อ่านบัญชี/สถิติ/ประวัติ" },
-    { action: "dynamodb:Scan", reason: "ค้นหารายการทั้งหมดและล้างข้อมูล" },
-    { action: "elasticbeanstalk:DescribeEnvironments", reason: "อ่าน Running version ของ Elastic Beanstalk (ถ้าตั้ง EB_ENVIRONMENT_NAME)" },
-    { action: "elasticbeanstalk:DescribeApplicationVersions", reason: "อ่านประวัติ Application Version เพื่อแสดง/ดาวน์โหลด/เลือกย้อนกลับ" },
-    { action: "elasticbeanstalk:UpdateEnvironment", reason: "สั่ง environment ให้กลับไปใช้ Application Version เดิม" },
-    { action: "s3:GetObject", reason: "ดาวน์โหลด source bundle ของ Elastic Beanstalk Application Version ลงเครื่อง Admin" },
-];
-
-function trimDiagnosticText(value, max = DIAGNOSTIC_MAX_TEXT) {
-    const text = value instanceof Error ? (value.stack || value.message || String(value)) : String(value ?? "");
-    return text.slice(0, max);
-}
-
-function extractAwsPermissionFailure(text) {
-    const raw = String(text || "");
-    const explicitActionMatch = raw.match(/\bnot authorized to perform(?::)?\s*([a-z0-9-]+):([A-Za-z0-9*]+)\b/i);
-    const genericActionMatch = raw.match(/(?:perform|action)[^\n]*?\b([a-z0-9-]+):([A-Za-z0-9*]+)\b/i);
-    const candidate = explicitActionMatch
-        ? `${explicitActionMatch[1]}:${explicitActionMatch[2]}`
-        : (genericActionMatch ? genericActionMatch[1] : "");
-    const explicitAwsException = /\b(?:AccessDeniedException|UnauthorizedOperation)\b/i.test(raw);
-    const explicitAwsAction = !!explicitActionMatch && isLikelyAwsIamAction(candidate);
-    const action = isLikelyAwsIamAction(candidate) ? candidate : "";
-    const arnMatch = raw.match(/\bresource\s*[:=]?\s*(arn:[^\s"']+)/i);
-    const resource = arnMatch ? arnMatch[1] : "";
-    if (!explicitAwsException && !explicitAwsAction) return null;
-    return { action, resource, accessDenied: true };
-}
-
-function diagnosticNoiseDedupeKey(event = {}) {
-    const kind = String(event.kind || "").toLowerCase();
-    if (!DIAGNOSTIC_NOISY_DEDUPE_KINDS.has(kind)) return "";
-    const correlation = String(event.traceId || event.requestId || event.clientRequestId || event.sessionId || "").trim();
-    if (!correlation) return "";
-    return [
-        String(event.source || ""), String(event.page || ""), kind,
-        String(event.fingerprint || ""), String(event.endpoint || ""), String(event.file || ""),
-        correlation, String(event.status || 0),
-    ].join("|").slice(0, 1800);
-}
-
-function findRecentDiagnosticNoiseDuplicate(event = {}) {
-    const key = diagnosticNoiseDedupeKey(event);
-    if (!key) return null;
-    const now = diagnosticTimeMs(event) || Date.now();
-    for (const existing of diagnosticEvents) {
-        const existingTime = diagnosticTimeMs(existing);
-        if (now - existingTime > DIAGNOSTIC_EVENT_DEDUPE_WINDOW_MS) break;
-        if (diagnosticNoiseDedupeKey(existing) === key) return existing;
-    }
-    return null;
-}
-
-
-let diagnosticGameProfileCache = null;
-let diagnosticGameProfileCacheAt = 0;
-let diagnosticGameProfileSourceMtime = 0;
-
-function parseStaticRoleRegistryForDiagnostics(source) {
-    const text = String(source || '');
-    const blockMatch = text.match(/(?:const|let|var)\s+roles\s*=\s*\{([\s\S]*?)\n\};/);
-    if (!blockMatch) return {};
-    const out = {};
-    const rolePattern = /"([^"]+)"\s*:\s*\{\s*team\s*:\s*"([^"]+)"\s*,\s*score\s*:\s*(-?\d+)/g;
-    for (const match of blockMatch[1].matchAll(rolePattern)) {
-        out[match[1]] = { team:match[2], score:Number(match[3]) || 0 };
-    }
-    return out;
-}
-
-function parseStaticMapForDiagnostics(source, declaration) {
-    const text = String(source || '');
-    const name = String(declaration || '')
-        .replace(/^(?:const|let|var)\s+/, '')
-        .replace(/\s*=.*$/, '')
-        .trim();
-    if (!name) return {};
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`(?:const|let|var)\\s+${escaped}\\s*=\\s*\\{([\\s\\S]*?)\\n\\};`);
-    const match = text.match(re);
-    if (!match) return {};
-    const out = {};
-    for (const item of match[1].matchAll(/([A-Za-z0-9_]+)\s*:\s*["']([^"']*)["']\s*,?/g)) out[item[1]] = item[2];
-    return out;
-}
-
-function parseStaticWinConditionsForDiagnostics(source) {
-    const text = String(source || '');
-    const match = text.match(/const WIN_CONDITIONS\s*=\s*\[([\s\S]*?)\]\s*;/);
-    if (!match) return [];
-    return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-}
-
-function getDiagnosticSourceSnapshot() {
-    try {
-        const file = path.join(__dirname, 'server.js');
-        const stat = fs.statSync(file);
-        const source = fs.readFileSync(file, 'utf8');
-        return { source, mtimeMs:Number(stat.mtimeMs) || 0 };
-    } catch (_) {
-        return { source:'', mtimeMs:0 };
-    }
-}
-
-function buildDiagnosticRuntimeGameSnapshotForReport(roomId = '') {
-    const registry = globalThis.__WEREWOLF_ROOMS__;
-    if (!registry) return { available:false, reason:'runtime_room_registry_not_ready' };
-    const id = String(roomId || '').trim().toUpperCase();
-    if (!id) return { available:false, roomId:'', reason:'room_id_not_available' };
-    const room = registry[id];
-    if (!room) return { available:false, roomId:id, reason:'room_not_present_in_memory' };
-    const players = Array.isArray(room.players) ? room.players : [];
-    const realPlayers = players.filter(p => !p?.isHost);
-    const alive = realPlayers.filter(p => p?.alive !== false);
-    const bots = realPlayers.filter(p => !!p?.isBot);
-    const testers = realPlayers.filter(p => !!p?.isTester);
-    const connected = realPlayers.filter(p => p?.connected !== false);
-    return {
-        available:true,
-        roomId:id,
-        roomType: room?.isTester || String(room?.type || '').toLowerCase() === 'tester' ? 'tester' : 'live',
-        phase: room?.phase || (room?.isNight ? 'night' : (room?.started ? 'day' : 'lobby')),
-        started:!!room?.started,
-        gameOver:!!room?.gameOver,
-        isClosing:!!room?.isClosing,
-        stateVersion:Number(room?.stateVersion) || 0,
-        day:Number(room?.day) || 0,
-        isNight:!!room?.isNight,
-        voteTimerEnabled:!!room?.voteTimerEnabled,
-        revealDeadRole:room?.revealDeadRole !== false,
-        maxPlayers:Number(room?.maxPlayers) || 0,
-        playerCount:realPlayers.length,
-        aliveCount:alive.length,
-        botCount:bots.length,
-        testerCount:testers.length,
-        connectedCount:connected.length,
-        roomPlayerIds:realPlayers.map(p=>String(p?.id||'').slice(0,80)).filter(Boolean).slice(0,80),
-        roleCounts:realPlayers.reduce((acc,p)=>{ const r=String(p?.role||'unknown'); acc[r]=(acc[r]||0)+1; return acc; },{}),
-        settings:{
-            revealDeadRole:room?.revealDeadRole !== false,
-            maxPlayers:Number(room?.maxPlayers) || 0,
-            hasJoinCode:!!String(room?.joinCode||''),
-            hasHostPassword:!!String(room?.hostPassword||''),
-        },
-    };
-}
-
-function getCurrentGameDiagnosticProfile({ roomId = '', force = false } = {}) {
-    const now = Date.now();
-    const sourceInfo = getDiagnosticSourceSnapshot();
-    if (!force && diagnosticGameProfileCache && diagnosticGameProfileSourceMtime === sourceInfo.mtimeMs && now - diagnosticGameProfileCacheAt < 2000) {
-        const cloned = JSON.parse(JSON.stringify(diagnosticGameProfileCache));
-        cloned.generatedAt = new Date().toISOString();
-        if (roomId) cloned.runtime = buildDiagnosticRuntimeGameSnapshotForReport(roomId);
-        return cloned;
-    }
-    const source = sourceInfo.source;
-    const actualRoles = globalThis.__WEREWOLF_ROLES__ || parseStaticRoleRegistryForDiagnostics(source);
-    const actualTeamLabels = globalThis.__WEREWOLF_TEAM_LABELS__ || parseStaticMapForDiagnostics(source, 'teamLabels');
-    const actualWinConditions = globalThis.__WEREWOLF_WIN_CONDITIONS__ || parseStaticWinConditionsForDiagnostics(source);
-    const scenarioCatalog = listBugReplayScenarios('all');
-    const profile = buildGameDiagnosticProfile({
-        source,
-        appVersion:getCachedAppVersion(),
-        roles:actualRoles,
-        teamLabels:actualTeamLabels,
-        winConditions:actualWinConditions,
-        roomSettings:['hostPassword','joinCode','maxPlayers','revealDeadRole','stateVersion'],
-        capabilities:{
-            resetStateFanout: source.includes('admin_reset_started') && source.includes('resetInvalidated'),
-            screenshotNoPreview: !source.includes('adminBrowserCapturePreview'),
-            screenshotMultiSize: source.includes('VIEWPORT_PRESETS') || source.includes('captureMultiple'),
-            screenshotCurrentViewport: source.includes('currentViewport') || source.includes('getCurrentViewport') || source.includes('captureCurrent'),
-            testerIsolation: source.includes('isTester') && source.includes('testerPass'),
-            roomRecoveryFailover: source.includes('roomLeaseEpoch') && source.includes('recoverPersistedRoomById'),
-            externalAssets: source.includes('s3') || source.includes('S3'),
-        },
-        replayScenarios:scenarioCatalog.map((item)=>({ ...item, featureKeys:item.featureKeys || [] })),
-        taxonomyVersion:DIAGNOSTIC_FEATURE_TAXONOMY_VERSION,
-        runtimeSnapshot:buildDiagnosticRuntimeGameSnapshotForReport(roomId),
-    });
-    profile.generatedAt = new Date().toISOString();
-    profile.sourceHash = require('crypto').createHash('sha256').update(source).digest('hex').slice(0,16);
-    profile.reportSchemaVersion = DIAGNOSTIC_SHARE_VERSION;
-    diagnosticGameProfileCache = profile;
-    diagnosticGameProfileCacheAt = now;
-    diagnosticGameProfileSourceMtime = sourceInfo.mtimeMs;
-    return JSON.parse(JSON.stringify(profile));
-}
-
-function diagnosticGameProfileRef(profile) {
-    if (!profile) return null;
-    return {
-        profileVersion:Number(profile.profileVersion)||0,
-        reportSchemaVersion:Number(profile.reportSchemaVersion)||DIAGNOSTIC_SHARE_VERSION,
-        appVersion:String(profile.appVersion||'unknown').slice(0,120),
-        sourceHash:String(profile.sourceHash||'').slice(0,24),
-        featureSetHash:String(profile.featureSetHash||'').slice(0,24),
-        roleCount:Number(profile.roleCount)||0,
-        teamCounts:publicDiagnosticValue(profile.teamCounts || {}),
-        enabledFeatureCount:Array.isArray(profile.mechanics?.enabledKeys) ? profile.mechanics.enabledKeys.length : 0,
-        actionRegistryHash:String(profile.actionRegistry?.hash||'').slice(0,24),
-    };
-}
-
-
-function diagnosticGameProfileSnapshot(profile) {
-    if (!profile) return null;
-    const rolesByTeam = {};
-    for (const [team, names] of Object.entries(profile.mechanics?.rolesByTeam || {})) {
-        rolesByTeam[String(team).slice(0, 40)] = Array.isArray(names) ? names.slice(0, 40).map((x)=>String(x).slice(0, 80)) : [];
-    }
-    return {
-        profileVersion:Number(profile.profileVersion)||0,
-        reportSchemaVersion:Number(profile.reportSchemaVersion)||DIAGNOSTIC_SHARE_VERSION,
-        appVersion:String(profile.appVersion||'unknown').slice(0,120),
-        sourceHash:String(profile.sourceHash||'').slice(0,24),
-        featureSetHash:String(profile.featureSetHash||'').slice(0,24),
-        roleCount:Number(profile.roleCount)||0,
-        rolesByTeam,
-        winConditions:Array.isArray(profile.winConditions) ? profile.winConditions.slice(0,32) : [],
-        implementedFeatureKeys:Array.isArray(profile.currentMechanics?.implementedKeys) ? profile.currentMechanics.implementedKeys.slice(0,80) : [],
-        implementedFeatureLabels:Array.isArray(profile.currentMechanics?.implementedLabels) ? profile.currentMechanics.implementedLabels.slice(0,80) : [],
-        room:{
-            settingKeys:Array.isArray(profile.room?.settingKeys) ? profile.room.settingKeys.slice(0,32) : [],
-            revealDeadRoleSupported:!!profile.room?.revealDeadRoleSupported,
-            revealDeadRoleEditableBeforeStart:!!profile.room?.revealDeadRoleEditableBeforeStart,
-            testerFeatures:Array.isArray(profile.room?.testerFeatures) ? profile.room.testerFeatures.slice(0,16) : [],
-        },
-        actionRegistry:{
-            socketEventCount:Number(profile.actionRegistry?.socketEventCount)||0,
-            httpRouteCount:Number(profile.actionRegistry?.httpRouteCount)||0,
-            hash:String(profile.actionRegistry?.hash||'').slice(0,24),
-        },
-        capabilities:publicDiagnosticValue(profile.capabilities || {}),
-        replay:{
-            scenarioCount:Number(profile.replay?.scenarioCount)||0,
-            featureCoverage:Array.isArray(profile.replay?.featureCoverage) ? profile.replay.featureCoverage.slice(0,60).map((x)=>({key:String(x.key||''),label:String(x.label||''),scenarioCount:Number(x.scenarioCount)||0})) : [],
-        },
-        taxonomy:{version:Number(profile.taxonomy?.version)||0},
-        runtime: profile.runtime ? {
-            available:!!profile.runtime.available,
-            roomType:String(profile.runtime.roomType||'').slice(0,30),
-            phase:String(profile.runtime.phase||'').slice(0,30),
-            started:!!profile.runtime.started,
-            gameOver:!!profile.runtime.gameOver,
-            stateVersion:Number(profile.runtime.stateVersion)||0,
-            day:Number(profile.runtime.day)||0,
-            isNight:!!profile.runtime.isNight,
-            maxPlayers:Number(profile.runtime.maxPlayers)||0,
-            playerCount:Number(profile.runtime.playerCount)||0,
-            aliveCount:Number(profile.runtime.aliveCount)||0,
-            botCount:Number(profile.runtime.botCount)||0,
-            testerCount:Number(profile.runtime.testerCount)||0,
-            connectedCount:Number(profile.runtime.connectedCount)||0,
-            roleCounts:publicDiagnosticValue(profile.runtime.roleCounts || {}),
-            settings: profile.runtime.settings ? {
-                revealDeadRole:profile.runtime.settings.revealDeadRole !== false,
-                maxPlayers:Number(profile.runtime.settings.maxPlayers)||0,
-                hasJoinCode:!!profile.runtime.settings.hasJoinCode,
-                hasHostPassword:!!profile.runtime.settings.hasHostPassword,
-            } : null,
-        } : null,
-    };
-}
-
-function inferDiagnosticFeatureKeysForEvent({ kind='', page='', message='', action='', endpoint='', context={}, data={} } = {}) {
-    const explicit = [];
-    if (Array.isArray(context?.featureKeys)) explicit.push(...context.featureKeys);
-    if (Array.isArray(data?.featureKeys)) explicit.push(...data.featureKeys);
-    const haystack = `${kind} ${page} ${message} ${action} ${endpoint} ${context?.scenarioId || ''} ${context?.testPath || ''}`.toLowerCase();
-    const rules = [
-        [/bug.?replay|replay/,['bug_replay','replay_engine']],
-        [/screenshot|capture/,['screenshots']],
-        [/diagnostic|causal|incident|share/,['diagnostics']],
-        [/github/,['github']],
-        [/reset|wipe|ล้างข้อมูล/,['reset_state','room_reset']],
-        [/room|ห้อง/,['rooms','room_state']],
-        [/join.?code|room.?password|collision/,['room_security']],
-        [/reconnect|recover|failover|handoff/,['reconnect','room_recovery']],
-        [/bot|possession/,['bot_ai','possession']],
-        [/tester|test.?mode/,['tester','tester_conditions']],
-        [/viewport|fullscreen|grid/,['viewport','player_grid']],
-        [/role|บทบาท|อาชีพ/,['roles']],
-        [/wolf|หมาป่า/,['wolf_team']],
-        [/cult|ลัทธิ/,['cult']],
-        [/bandit|โจร|สมรู้ร่วมคิด/,['bandit','accomplice']],
-        [/cupid|กามเทพ|lover|คู่รัก/,['cupid','lovers']],
-        [/instigator|ผู้ยุยง/,['instigator']],
-        [/vote|โหวต|ประหาร/,['voting']],
-        [/night|กลางคืน|resolve/,['night_actions','game_phase']],
-        [/day|กลางวัน/,['day_actions','game_phase']],
-        [/chat|แชท/,['chat']],
-        [/google|oauth|login|auth|session/,['account','session']],
-        [/aws|dynamodb|iam|s3|cloudfront/,['aws']],
-        [/network|fetch|http|socket/,['network','socket']],
-        [/performance|timeout|slow/,['performance']],
-        [/deployment|deploy|version|stale|update/,['deployment','version_drift']],
-    ];
-    for (const [pattern, keys] of rules) if (pattern.test(haystack)) explicit.push(...keys);
-    if (String(page).toLowerCase() === 'admin') explicit.push('admin');
-    if (String(kind).toLowerCase().includes('github')) explicit.push('github');
-    return normalizeDiagnosticFeatureKeys(explicit);
-}
-
-function recordDiagnostic({ source = "server", kind = "error", page = "server", message = "", stack = "", file = "", line = 0, column = 0, status = 0, endpoint = "", data = "", context = null, state = null, breadcrumbs = null, traceId = "", sessionId = "", action = "", operation = "", roomId = "", requestId = "", clientRequestId = "", durationMs = 0, operationId = "", causalHint = null, fingerprint = "" } = {}) {
-    const asyncCtx = currentDiagnosticContext();
-    const fullText = trimDiagnosticText([message, stack, typeof data === "string" ? data : JSON.stringify(data || {})].filter(Boolean).join("\n"));
-    const iam = String(source || "").toLowerCase() === "server" ? extractAwsPermissionFailure(fullText) : null;
-    const eventFeatureKeys = inferDiagnosticFeatureKeysForEvent({ kind, page, message, action, endpoint, context:context || {}, data:typeof data === "object" ? data : {} });
-    const gameProfile = getCurrentGameDiagnosticProfile({ roomId:String(roomId || asyncCtx.roomId || "") });
-    const eventGameProfileRef = diagnosticGameProfileRef(gameProfile);
-    const eventTraceId = String(traceId || asyncCtx.traceId || makeDiagnosticId("tr")).slice(0, 120);
-    const eventSessionId = String(sessionId || asyncCtx.sessionId || "").slice(0, 120);
-    const eventAction = String(action || asyncCtx.action || inferDiagnosticAction(message)).slice(0, 120);
-    const eventRoomId = String(roomId || asyncCtx.roomId || inferDiagnosticRoomId(fullText)).toUpperCase().slice(0, 12);
-    const event = {
-        id: makeDiagnosticId("err"),
-        sequence: nextDiagnosticSequence(),
-        time: new Date().toISOString(),
-        source: String(source).slice(0, 32),
-        kind: String(kind).slice(0, 48),
-        page: String(page).slice(0, 48),
-        message: trimDiagnosticText(message, 4000),
-        stack: trimDiagnosticText(stack, 10000),
-        file: sanitizeDiagnosticPath(file).slice(0, 500),
-        line: Number(line) || 0,
-        column: Number(column) || 0,
-        status: Number(status) || 0,
-        endpoint: sanitizeDiagnosticPath(endpoint).slice(0, 500),
-        data: trimDiagnosticText(typeof data === "string" ? data : JSON.stringify(safeDiagnosticValue(data || {})), 4000),
-        context: safeDiagnosticValue(context || {}),
-        state: safeDiagnosticValue(state || {}),
-        breadcrumbs: Array.isArray(breadcrumbs) ? breadcrumbs.slice(-80).map(safeDiagnosticValue) : [],
-        serverBreadcrumbs: relatedServerBreadcrumbs({ traceId: eventTraceId, sessionId: eventSessionId, limit: 80 }),
-        traceId: eventTraceId,
-        sessionId: eventSessionId,
-        action: eventAction,
-        operation: String(operation || "").slice(0, 80),
-        roomId: eventRoomId,
-        requestId: String(requestId || asyncCtx.requestId || "").slice(0, 120),
-        clientRequestId: String(clientRequestId || asyncCtx.clientRequestId || "").slice(0, 120),
-        durationMs: Number(durationMs) || 0,
-        operationId: String(operationId || context?.operationId || "").slice(0, 120),
-        causalHint: safeDiagnosticValue(causalHint || {}),
-        fingerprint: String(fingerprint || diagnosticFingerprint([kind, message, endpoint, status, diagnosticEventCode({ context })])).slice(0, 80),
-        featureKeys: eventFeatureKeys,
-        featureLabels: featureLabels(eventFeatureKeys),
-        featureArea: eventFeatureKeys[0] || "",
-        gameProfileRef: eventGameProfileRef,
-        gameProfileSnapshot: diagnosticGameProfileSnapshot(gameProfile),
-        permission: iam ? { action: iam.action, resource: iam.resource, accessDenied: true } : null,
-        firstSeenAt: new Date().toISOString(),
-        lastSeenAt: new Date().toISOString(),
-        coalescedCount: 1,
-        coalescedEventIds: [],
-        serverInstance: { hostname: os.hostname(), pid: process.pid, uptimeSec: Math.round(process.uptime()), appVersion: getCachedAppVersion() },
-    };
-    const noiseDuplicate = findRecentDiagnosticNoiseDuplicate(event);
-    if (noiseDuplicate) {
-        noiseDuplicate.coalescedCount = Math.max(1, Number(noiseDuplicate.coalescedCount) || 1) + 1;
-        noiseDuplicate.lastSeenAt = event.time;
-        noiseDuplicate.latestMessage = trimDiagnosticText(event.message, 1200);
-        noiseDuplicate.coalescedEventIds = Array.isArray(noiseDuplicate.coalescedEventIds) ? noiseDuplicate.coalescedEventIds : [];
-        noiseDuplicate.coalescedEventIds.push(event.id);
-        noiseDuplicate.coalescedEventIds = noiseDuplicate.coalescedEventIds.slice(-12);
-        refreshDiagnosticEventAnalysis(noiseDuplicate);
-        return noiseDuplicate;
-    }
-    event.analysis = buildDiagnosticAnalysis(event, [event]);
-    diagnosticEvents.unshift(event);
-    if (diagnosticEvents.length > DIAGNOSTIC_MAX_EVENTS) diagnosticEvents.length = DIAGNOSTIC_MAX_EVENTS;
-    if (iam && iam.action) {
-        const key = `${iam.action}|${iam.resource}`;
-        const prev = diagnosticPermissionCounts.get(key) || { action: iam.action, resource: iam.resource, count: 0, firstSeen: event.time, lastSeen: event.time };
-        prev.count += 1;
-        prev.lastSeen = event.time;
-        diagnosticPermissionCounts.set(key, prev);
-    }
-    return event;
-}
-
-function sanitizeBugReplayText(value, max = 12000) {
-    return String(value ?? "").slice(-max);
-}
-
-function cleanupBugReplayJobs() {
-    const cutoff = Date.now() - BUG_REPLAY_JOB_TTL_MS;
-    for (const [id, job] of bugReplayJobs.entries()) {
-        if (job.finishedAt && job.finishedAt < cutoff) bugReplayJobs.delete(id);
-    }
-    while (bugReplayJobs.size > BUG_REPLAY_MAX_JOBS) {
-        const oldest = [...bugReplayJobs.entries()].sort((a,b) => (a[1].createdAtEpoch || 0) - (b[1].createdAtEpoch || 0))[0];
-        if (!oldest) break;
-        bugReplayJobs.delete(oldest[0]);
-    }
-}
-
-function publicBugReplayJob(job) {
-    if (!job) return null;
-    return {
-        runId: job.runId,
-        status: job.status,
-        mode: job.mode,
-        continueOnFailure: !!job.continueOnFailure,
-        startedAt: job.startedAt,
-        finishedAt: job.finishedAt || null,
-        currentScenarioIndex: Number.isInteger(job.currentScenarioIndex) ? job.currentScenarioIndex : -1,
-        currentScenarioId: job.currentScenarioId || "",
-        currentScenarioTitle: job.currentScenarioTitle || "",
-        currentAction: job.currentAction || "",
-        currentScenarioFeatureKeys: Array.isArray(job.currentScenarioFeatureKeys) ? job.currentScenarioFeatureKeys.slice(0, 40) : [],
-        currentScenarioFeatureLabels: Array.isArray(job.currentScenarioFeatureLabels) ? job.currentScenarioFeatureLabels.slice(0, 40) : [],
-        currentStepIndex: Number.isInteger(job.currentStepIndex) ? job.currentStepIndex : -1,
-        currentTestPath: job.currentTestPath || "",
-        completedScenarios: job.completedScenarios || 0,
-        totalScenarios: job.totalScenarios || 0,
-        completedSteps: job.completedSteps || 0,
-        passedSteps: job.passedSteps || 0,
-        failedSteps: job.failedSteps || 0,
-        slowSteps: job.slowSteps || 0,
-        totalSteps: job.totalSteps || 0,
-        remainingSteps: job.remainingSteps || 0,
-        failureCount: Number(job.totalFailureCount) || (Array.isArray(job.failures) ? job.failures.length : (job.failure ? 1 : 0)),
-        failuresTruncated: (Number(job.totalFailureCount) || 0) > BUG_REPLAY_MAX_FAILURES,
-        auditSummary: job.audit ? job.audit.summary() : null,
-        phase2Reports: Array.isArray(job.phase2Reports) ? job.phase2Reports.slice(-12) : [],
-        report: job.report ? {
-            status: job.report.status || 'pending',
-            reportKind: job.report.reportKind || '',
-            url: job.report.url || '',
-            jsonUrl: job.report.jsonUrl || '',
-            aiUrl: job.report.aiUrl || job.report.jsonUrl || '',
-            jsonDownloadUrl: job.report.jsonDownloadUrl || '',
-            textDownloadUrl: job.report.textDownloadUrl || '',
-            createdAt: job.report.createdAt || '',
-            error: job.report.error || ''
-        } : { status:'pending', reportKind:'', url:'', jsonUrl:'', aiUrl:'', jsonDownloadUrl:'', textDownloadUrl:'', createdAt:'', error:'' },
-        failureEventCount: Array.isArray(job.failureEventIds) ? job.failureEventIds.length : 0,
-        scenarioResults: Array.isArray(job.scenarioResults) ? job.scenarioResults : [],
-        failures: Array.isArray(job.failures) ? job.failures.slice(0, BUG_REPLAY_MAX_FAILURES).map((failure) => ({
-            eventId: failure.eventId || "",
-            scenarioIndex: failure.scenarioIndex,
-            scenarioId: failure.scenarioId,
-            scenarioTitle: failure.scenarioTitle,
-            action: failure.action,
-            testPath: failure.testPath,
-            stepIndex: failure.stepIndex,
-            exitCode: failure.exitCode,
-            signal: failure.signal,
-            timedOut: !!failure.timedOut,
-            durationMs: failure.durationMs,
-        })) : [],
-        stoppedByAdmin: !!job.stoppedByAdmin,
-        stopReason: job.stopReason || "",
-        failedScenario: job.failedScenario ? {
-            index: job.failedScenario.index,
-            id: job.failedScenario.id,
-            title: job.failedScenario.title,
-            action: job.failedScenario.action,
-            description: job.failedScenario.description,
-        } : null,
-        failure: job.failure ? {
-            eventId: job.failure.eventId || "",
-            scenarioIndex: job.failure.scenarioIndex,
-            scenarioId: job.failure.scenarioId,
-            scenarioTitle: job.failure.scenarioTitle,
-            action: job.failure.action,
-            testPath: job.failure.testPath,
-            stepIndex: job.failure.stepIndex,
-            exitCode: job.failure.exitCode,
-            signal: job.failure.signal,
-            timedOut: !!job.failure.timedOut,
-            durationMs: job.failure.durationMs,
-            stdout: sanitizeBugReplayText(job.failure.stdout, 3000),
-            stderr: sanitizeBugReplayText(job.failure.stderr, 5000),
-        } : null,
-        lastOutput: sanitizeBugReplayText(job.lastOutput, 3000),
-    };
-}
-
-function recordBugReplayFailure({ runId, scenarioIndex, summary, failure, job }) {
-    const diagnostic = recordDiagnostic({
-        source: "server",
-        kind: "bug_replay_failure",
-        page: "admin",
-        action: `bug-replay:${summary.id}`,
-        operation: `bug_replay:${runId}`,
-        operationId: runId,
-        message: `Bug Replay พบความผิดปกติในขั้นตอน: ${summary.action} → ${failure.testPath || "unknown test"}`,
-        stack: sanitizeBugReplayText([failure.stderr, failure.stdout].filter(Boolean).join("\n"), 10000),
-        data: {
-            runner: "admin-bug-replay",
-            runId,
-            scenarioIndex,
-            scenarioId: summary.id,
-            scenarioTitle: summary.title,
-            action: summary.action,
-            description: summary.description,
-            stepIndex: failure.stepIndex,
-            testPath: failure.testPath,
-            exitCode: failure.exitCode,
-            signal: failure.signal,
-            timedOut: !!failure.timedOut,
-            durationMs: failure.durationMs,
-            stdout: sanitizeBugReplayText(failure.stdout, 5000),
-            stderr: sanitizeBugReplayText(failure.stderr, 8000),
-            mode: job.mode,
-            featureKeys:Array.isArray(summary.featureKeys) ? summary.featureKeys.slice(0, 40) : [],
-            completedScenarios: job.completedScenarios,
-            completedSteps: job.completedSteps,
-            failedSteps: job.failedSteps,
-            featureLabels:Array.isArray(summary.featureLabels) ? summary.featureLabels.slice(0, 40) : [],
-        },
-        context: {
-            code: "BUG_REPLAY_FAILED",
-            failureStage: "bug_replay.scenario",
-            scenarioId: summary.id,
-            scenarioIndex,
-            action: summary.action,
-            testPath: failure.testPath || "",
-            stepIndex: failure.stepIndex,
-            runId,
-            mode: job.mode,
-        },
-        causalHint: { failureStage:"bug_replay.scenario", causeCode:"BUG_REPLAY_FAILED", confidence:"high" },
-        fingerprint: diagnosticFingerprint(["BUG_REPLAY_FAILED", summary.id, failure.testPath, failure.stderr || failure.stdout]),
-    });
-    return { ...failure, eventId: diagnostic.id, scenarioIndex, scenarioId: summary.id, scenarioTitle: summary.title, action: summary.action };
-}
-
-
-function bugReplayReportScenarioSummary(job) {
-    return (Array.isArray(job?.scenarioResults) ? job.scenarioResults : []).map((scenario) => ({
-        index: Number(scenario.index) || 0,
-        id: String(scenario.id || ''),
-        title: String(scenario.title || ''),
-        action: String(scenario.action || ''),
-        ok: !!scenario.ok,
-        stopped: !!scenario.stopped,
-        stepCount: Number(scenario.stepCount) || 0,
-        failedSteps: Number(scenario.failedSteps) || 0,
-        passedSteps: Number(scenario.passedSteps) || 0,
-        skippedSteps: Number(scenario.skippedSteps) || 0,
-        featureKeys: Array.isArray(scenario.featureKeys) ? scenario.featureKeys.slice(0, 32) : (listBugReplayScenarios('all').find((x)=>x.id===String(scenario.id||''))?.featureKeys || []),
-        featureLabels: Array.isArray(scenario.featureLabels) ? scenario.featureLabels.slice(0, 32) : (listBugReplayScenarios('all').find((x)=>x.id===String(scenario.id||''))?.featureLabels || []),
-        steps: Array.isArray(scenario.steps) ? scenario.steps.map((step) => ({
-            index: Number(step.index) || 0,
-            testPath: String(step.testPath || ''),
-            ok: !!step.ok,
-            skipped: !!step.skipped,
-            timedOut: !!step.timedOut,
-            exitCode: step.exitCode ?? null,
-            signal: step.signal || null,
-            durationMs: Number(step.durationMs) || 0,
-        })) : [],
-    }));
-}
-
-function bugReplayFailureSummary(job, failure, event, token) {
-    const eventId = String(failure?.eventId || event?.id || '');
-    const shareBase = String(job?.publicBaseUrl || '').replace(/\/+$/, '');
-    return {
-        eventId,
-        scenarioIndex: Number(failure?.scenarioIndex) || 0,
-        scenarioId: String(failure?.scenarioId || ''),
-        scenarioTitle: String(failure?.scenarioTitle || ''),
-        action: String(failure?.action || ''),
-        testPath: String(failure?.testPath || ''),
-        stepIndex: Number(failure?.stepIndex) || 0,
-        durationMs: Number(failure?.durationMs) || 0,
-        timedOut: !!failure?.timedOut,
-        exitCode: failure?.exitCode ?? null,
-        signal: failure?.signal || null,
-        message: publicDiagnosticText(event?.message || failure?.stderr || failure?.stdout || 'ไม่ระบุข้อความ'),
-        kind: String(event?.kind || 'bug_replay_failure'),
-        source: String(event?.source || 'server'),
-        time: String(event?.time || ''),
-        fingerprint: String(event?.fingerprint || ''),
-        featureKeys: Array.isArray(event?.featureKeys) ? event.featureKeys.slice(0, 32) : [],
-        featureLabels: Array.isArray(event?.featureLabels) ? event.featureLabels.slice(0, 32) : [],
-        reportUrl: token && eventId ? `${shareBase}/diagnostics/share/${encodeURIComponent(token)}/event/${encodeURIComponent(eventId)}` : '',
-        jsonReportUrl: token && eventId ? `${shareBase}/diagnostics/share/${encodeURIComponent(token)}/event/${encodeURIComponent(eventId)}.json` : '',
-        aiReportUrl: token && eventId ? `${shareBase}/diagnostics/share/${encodeURIComponent(token)}/event/${encodeURIComponent(eventId)}.json` : '',
-    };
-}
-
-function bugReplayShareText(bundle, token = '') {
-    const replay = bundle?.replay || {};
-    const failures = Array.isArray(bundle?.failures) ? bundle.failures : [];
-    const scenarios = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults : [];
-    const rootUrl = bundle?.shareUrls?.html || (bundle?.shareBaseUrl && token ? `${String(bundle.shareBaseUrl).replace(/\/+$/, '')}/diagnostics/share/${encodeURIComponent(token)}` : '');
-    const aiUrl = bundle?.shareUrls?.ai || bundle?.shareUrls?.json || (rootUrl ? `${rootUrl}.json` : '');
-    const lines = [
-        'WEREWOLF BUG REPLAY AGGREGATE REPORT v1',
-        '========================================',
-        `Run ID: ${replay.runId || bundle.reportId || '-'}`,
-        `Mode: ${replay.mode || '-'}`,
-        `Status: ${replay.status || '-'}`,
-        `Created: ${bundle.createdAt || '-'}`,
-        `Finished: ${replay.finishedAt || '-'}`,
-        `Scenarios: ${Number(replay.completedScenarios) || 0} / ${Number(replay.totalScenarios) || scenarios.length}`,
-        `Steps: ${Number(replay.completedSteps) || 0} / ${Number(replay.totalSteps) || 0}`,
-        `Passed steps: ${Number(replay.passedSteps) || 0}`,
-        `Failed steps: ${Number(replay.failedSteps) || 0}`,
-        `Failure points: ${failures.length}`,
-        `Game build at event: ${bundle.gameProfile?.appVersion || '-'}`,
-        `Feature set hash: ${bundle.gameProfile?.featureSetHash || '-'}`,
-        `Role count: ${Number(bundle.gameProfile?.roleCount) || 0}`,
-        `Implemented features: ${(bundle.gameProfile?.implementedFeatureLabels || []).slice(0,18).join(', ') || '-'}`,
-        `Win conditions: ${(bundle.gameProfile?.winConditions || []).join(', ') || '-'}`,
-        `Replay feature coverage: ${(bundle.gameProfile?.replay?.featureCoverage || []).slice(0,18).map((x)=>`${x.label} (${Number(x.scenarioCount)||0})`).join(', ') || '-'}`,
-        ...(bundle.gameProfile?.runtime?.available ? [
-            `Runtime: ${bundle.gameProfile.runtime.roomType || '-'} / ${bundle.gameProfile.runtime.phase || '-'} / players=${Number(bundle.gameProfile.runtime.playerCount)||0} / alive=${Number(bundle.gameProfile.runtime.aliveCount)||0} / bots=${Number(bundle.gameProfile.runtime.botCount)||0}`,
-            `Reveal dead role: ${bundle.gameProfile.runtime.settings?.revealDeadRole === false ? 'off' : 'on'}`,
-        ] : []),
-        rootUrl ? `AGGREGATE REPORT URL: ${rootUrl}` : '',
-        aiUrl ? `AI REPORT URL (JSON): ${aiUrl}` : '',
-        '',
-        'FAILURE INDEX',
-    ];
-    failures.forEach((f, i) => {
-        lines.push(`${i + 1}. ${f.scenarioTitle || f.scenarioId || '-'} | ${f.testPath || '-'} | step ${(Number(f.stepIndex) || 0) + 1}`);
-        lines.push(`   Message: ${f.message || '-'}`);
-        lines.push(`   REPORT: ${f.reportUrl || '-'}`);
-        lines.push(`   JSON: ${f.jsonReportUrl || '-'}`);
-    });
-    lines.push('', 'SCENARIO RESULTS');
-    scenarios.forEach((s, i) => {
-        lines.push(`${i + 1}. ${s.title || s.id || '-'} | ${s.ok ? 'PASS' : (s.stopped ? 'STOPPED' : 'FAILED')} | ${s.passedSteps || 0} passed / ${s.failedSteps || 0} failed / ${s.skippedSteps || 0} skipped`);
-        for (const step of (s.steps || [])) lines.push(`   ${step.ok ? 'PASS' : (step.skipped ? 'SKIP' : 'FAIL')} | ${step.testPath || '-'} | ${Number(step.durationMs) || 0}ms`);
-    });
-    lines.push('', 'RUNTIME AUDIT', JSON.stringify(bundle.audit || {}, null, 2));
-    return lines.filter((x, i) => x !== '' || lines[i - 1] !== '').join('\n');
-}
-
-function bugReplayShareHtml(bundle, token) {
-    const replay = bundle?.replay || {};
-    const failures = Array.isArray(bundle?.failures) ? bundle.failures : [];
-    const scenarios = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults : [];
-    const jsonHref = token ? `./${encodeURIComponent(String(token))}.json` : '';
-    const rows = failures.map((f, i) => {
-        const anchor = f.eventId ? `#failure-${encodeURIComponent(String(f.eventId))}` : '';
-        const link = anchor ? `<a href="${anchor}">เปิดจุดนี้ในรายงาน</a>` : '';
-        const json = '';
-        return `<article class="failure" id="failure-${escapeDiagnosticHtml(f.eventId || String(i + 1))}"><div class="failure-head"><strong>#${i + 1} · ${escapeDiagnosticHtml(f.scenarioTitle || f.scenarioId || 'Unknown')}</strong><span>${escapeDiagnosticHtml(f.kind || 'failure')}</span></div><div class="meta">${escapeDiagnosticHtml(f.testPath || '-')} · step ${(Number(f.stepIndex) || 0) + 1} · ${escapeDiagnosticHtml(f.time || '')}</div><div class="msg">${escapeDiagnosticHtml(f.message || 'ไม่ระบุข้อความ')}</div>${f.stack ? `<details><summary>Stack / evidence</summary><div class="audit">${escapeDiagnosticHtml(f.stack)}</div></details>` : ''}${f.data ? `<details><summary>Context data</summary><div class="audit">${escapeDiagnosticHtml(typeof f.data === 'string' ? f.data : JSON.stringify(f.data, null, 2))}</div></details>` : ''}<div class="links">${link}</div></article>`;
-    }).join('');
-    const scenarioRows = scenarios.map((s, i) => `<tr><td>${i + 1}</td><td>${escapeDiagnosticHtml(s.title || s.id || '-')}</td><td>${s.ok ? 'PASS' : (s.stopped ? 'STOPPED' : 'FAILED')}</td><td>${Number(s.passedSteps) || 0}</td><td>${Number(s.failedSteps) || 0}</td><td>${Number(s.skippedSteps) || 0}</td></tr>`).join('');
-    const text = bugReplayShareText(bundle, token);
-    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta http-equiv="Referrer-Policy" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"><title>Werewolf Bug Replay Aggregate Report</title><style>body{margin:0;background:#0a0d14;color:#e8edf8;font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}main{width:min(1180px,calc(100% - 32px));margin:24px auto}header,.panel{margin-bottom:14px;padding:16px 18px;border:1px solid #222a3b;border-radius:14px;background:#101624}h1,h2{margin:0 0 6px}h1{font-size:20px}h2{font-size:15px}p{margin:0;color:#aab5ca}.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:12px}.kpi{padding:10px;border:1px solid #2a3346;border-radius:10px;background:#0b101c}.kpi b{display:block;font-size:17px}.kpi span{color:#93a0b8;font-size:11px}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.links a{color:#aeb8ff;text-decoration:none;padding:5px 8px;border:1px solid #303a51;border-radius:8px}.failure{padding:13px;margin:8px 0;border:1px solid #3a2b38;border-radius:12px;background:#0c111c}.failure-head{display:flex;justify-content:space-between;gap:10px}.failure-head span{color:#ff9e9e;font-size:11px}.meta{color:#8d9ab0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:4px;overflow-wrap:anywhere}.msg{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere}.scenario-table{width:100%;border-collapse:collapse;font-size:12px}.scenario-table th,.scenario-table td{padding:7px 8px;border-bottom:1px solid #20293b;text-align:left;vertical-align:top}.scenario-table th{color:#8d9ab0}.audit{max-height:420px;overflow:auto;background:#070a11;border:1px solid #222a3b;border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}details summary{cursor:pointer;color:#bdc8df} @media(max-width:760px){main{width:min(100% - 18px,1180px);margin:10px auto}.kpis{grid-template-columns:repeat(2,1fr)}.scenario-table{display:block;overflow:auto}}</style></head><body><main><header><h1>🧪 Werewolf Bug Replay — รายงานรวมทั้งรอบ</h1><p>Run ${escapeDiagnosticHtml(replay.runId || bundle.reportId || '-')} · ${escapeDiagnosticHtml(replay.status || '-')} · สร้าง ${escapeDiagnosticHtml(bundle.createdAt || '-')}</p><div class="kpis"><div class="kpi"><b>${Number(replay.totalScenarios) || scenarios.length}</b><span>Scenarios</span></div><div class="kpi"><b>${Number(replay.completedScenarios) || 0}</b><span>Completed</span></div><div class="kpi"><b>${Number(replay.totalSteps) || 0}</b><span>Total steps</span></div><div class="kpi"><b>${Number(replay.failedSteps) || 0}</b><span>Failed steps</span></div><div class="kpi"><b>${failures.length}</b><span>Failure points</span></div></div><div class="links">${jsonHref ? `<a href="${jsonHref}">JSON รวม</a>` : ''}</div></header><section class="panel"><h2>🚨 Failure points ทั้งหมด (${failures.length})</h2>${rows || '<p>ไม่พบ failure</p>'}</section><section class="panel"><h2>📋 Scenario results</h2><div style="overflow:auto"><table class="scenario-table"><thead><tr><th>#</th><th>Scenario</th><th>Status</th><th>Pass</th><th>Fail</th><th>Skip</th></tr></thead><tbody>${scenarioRows || '<tr><td colspan="6">ไม่มีข้อมูล</td></tr>'}</tbody></table></div></section><section class="panel"><details><summary>🔬 Runtime Audit</summary><div class="audit">${escapeDiagnosticHtml(JSON.stringify(bundle.audit || {}, null, 2))}</div></details></section><section class="panel"><details><summary>📄 Plain-text report</summary><div class="audit">${escapeDiagnosticHtml(text)}</div></details></section></main></body></html>`;
-}
-
-function publicBugReplayFailureEvent(event = {}) {
-    const pub = publicDiagnosticEventForShare(event, false);
-    pub.stack = String(pub.stack || '').slice(0, 900);
-    pub.data = typeof pub.data === 'string' ? pub.data.slice(0, 500) : safeDiagnosticValue(pub.data || {});
-    pub.context = safeDiagnosticValue(pub.context || {});
-    pub.state = {};
-    pub.breadcrumbs = Array.isArray(pub.breadcrumbs) ? pub.breadcrumbs.slice(-4) : [];
-    pub.serverBreadcrumbs = [];
-    delete pub.analysis;
-    return pub;
-}
-
-function buildBugReplayRunBundle(job, { token = '', includeShareUrls = false } = {}) {
-    if (!job) return null;
-    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
-    const createdAt = job.report?.createdAt || new Date().toISOString();
-    const expiresAt = job.report?.expiresAt || new Date(Date.now() + DIAGNOSTIC_SHARE_TTL_MS).toISOString();
-    const eventMap = new Map(diagnosticEvents.map((event) => [String(event.id), event]));
-    const refs = Array.isArray(job.failureRefs) ? job.failureRefs : [];
-    const failures = refs.map((ref) => {
-        const event = eventMap.get(String(ref.eventId || ''));
-        const summary = bugReplayFailureSummary(job, ref, event, token);
-        if (event) {
-            const pub = publicBugReplayFailureEvent(event);
-            return { ...summary, event: pub, stack: String(pub.stack || ''), data: pub.data, context:pub.context };
-        }
-        return summary;
-    });
-    const bundle = {
-        schemaVersion: DIAGNOSTIC_SHARE_VERSION,
-        reportKind: 'BUG_REPLAY_RUN',
-        reportId: job.runId,
-        createdAt,
-        expiresAt,
-        shareBaseUrl: baseUrl,
-        gameProfile: job.gameProfileSnapshot || (failures[0]?.event?.gameProfileSnapshot || null),
-        primary: failures[0]?.event || null,
-        relatedEvents: failures.map((x) => x.event).filter(Boolean).slice(0, 180),
-        causalGraph: { nodes: [], edges: [], nodeCount:0, edgeCount:0 },
-        nodeReports: [],
-        analysis: { rootCause: failures.length ? `Bug Replay พบ ${failures.length} failure point` : 'ไม่พบ failure', causeCode: failures.length ? 'BUG_REPLAY_RUN_FAILURES' : 'BUG_REPLAY_CLEAN', failureStage:'bug_replay', confidence:'high' },
-        replay: {
-            runId: job.runId,
-            mode: job.mode,
-            status: job.status,
-            startedAt: job.startedAt,
-            finishedAt: job.finishedAt || null,
-            totalScenarios: job.totalScenarios,
-            completedScenarios: job.completedScenarios,
-            totalSteps: job.totalSteps,
-            completedSteps: job.completedSteps,
-            passedSteps: job.passedSteps,
-            failedSteps: job.failedSteps,
-            skippedSteps: Math.max(0, job.completedSteps - job.passedSteps - job.failedSteps),
-            totalFailureCount: job.totalFailureCount,
-            stoppedByAdmin: !!job.stoppedByAdmin,
-        },
-        failures,
-        scenarioResults: bugReplayReportScenarioSummary(job),
-        audit: job.audit ? job.audit.snapshot({ timelineLimit:500, findingLimit:220 }) : null,
-    };
-    if (includeShareUrls && token) bundle.shareUrls = diagnosticShareUrls(baseUrl, token);
-    return bundle;
-}
-
-function buildBugReplayFirstFailureBundle(job, { token = '', includeShareUrls = false } = {}) {
-    if (!job) return null;
-    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
-    const createdAt = job.report?.createdAt || new Date().toISOString();
-    const expiresAt = job.report?.expiresAt || new Date(Date.now() + DIAGNOSTIC_SHARE_TTL_MS).toISOString();
-    const firstFailure = job.failure || (Array.isArray(job.failures) ? job.failures[0] : null);
-    const eventId = String(firstFailure?.eventId || '');
-    const event = eventId ? diagnosticEvents.find((item) => String(item.id || '') === eventId) : null;
-    const failureSummary = firstFailure ? bugReplayFailureSummary(job, firstFailure, event, token) : null;
-    let publicEvent = null;
-    if (event) {
-        publicEvent = publicDiagnosticEventForShare(event, true);
-        if (publicEvent) {
-            failureSummary.event = publicEvent;
-            failureSummary.stack = String(publicEvent.stack || '');
-            failureSummary.data = publicEvent.data;
-            failureSummary.context = publicEvent.context;
-        }
-    }
-    const failedScenarioIndex = Number(firstFailure?.scenarioIndex);
-    const scenarioResults = bugReplayReportScenarioSummary(job).filter((scenario) =>
-        Number.isFinite(failedScenarioIndex) ? Number(scenario.index) === failedScenarioIndex : false
-    );
-    const bundle = {
-        schemaVersion: DIAGNOSTIC_SHARE_VERSION,
-        reportKind: 'BUG_REPLAY_FIRST_FAILURE',
-        reportId: `${job.runId}:first-failure`,
-        createdAt,
-        expiresAt,
-        shareBaseUrl: baseUrl,
-        gameProfile: job.gameProfileSnapshot || (publicEvent?.gameProfileSnapshot || null),
-        primary: publicEvent || null,
-        relatedEvents: publicEvent ? [publicEvent] : [],
-        causalGraph: { nodes: [], edges: [], nodeCount:0, edgeCount:0 },
-        nodeReports: [],
-        analysis: {
-            rootCause: firstFailure ? `พบ failure แรกใน ${firstFailure.scenarioTitle || firstFailure.scenarioId || 'scenario'}` : 'ไม่พบ failure',
-            causeCode: firstFailure ? 'BUG_REPLAY_FIRST_FAILURE' : 'BUG_REPLAY_FIRST_FAILURE_CLEAN',
-            failureStage: 'bug_replay.first_failure',
-            confidence: firstFailure ? 'high' : 'medium',
-        },
-        replay: {
-            runId: job.runId,
-            mode: 'first',
-            status: job.status,
-            stopReason: job.stopReason || (firstFailure ? 'first_failure' : ''),
-            firstFailureEventId: eventId,
-            startedAt: job.startedAt,
-            finishedAt: job.finishedAt || null,
-            totalScenarios: job.totalScenarios,
-            completedScenarios: job.completedScenarios,
-            totalSteps: job.totalSteps,
-            completedSteps: job.completedSteps,
-            passedSteps: job.passedSteps,
-            failedSteps: job.failedSteps,
-            skippedSteps: Math.max(0, job.completedSteps - job.passedSteps - job.failedSteps),
-            totalFailureCount: firstFailure ? 1 : 0,
-        },
-        firstFailure: failureSummary,
-        failures: failureSummary ? [failureSummary] : [],
-        scenarioResults,
-        audit: job.audit ? job.audit.snapshot({ timelineLimit:180, findingLimit:90 }) : null,
-    };
-    if (includeShareUrls && token) bundle.shareUrls = diagnosticShareUrls(baseUrl, token);
-    return bundle;
-}
-
-function bugReplayFirstFailureShareText(bundle, token = '') {
-    const replay = bundle?.replay || {};
-    const failure = bundle?.firstFailure || (Array.isArray(bundle?.failures) ? bundle.failures[0] : null);
-    const scenario = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults[0] : null;
-    const rootUrl = bundle?.shareUrls?.html || (bundle?.shareBaseUrl && token ? `${String(bundle.shareBaseUrl).replace(/\/+$/, '')}/diagnostics/share/${encodeURIComponent(token)}` : '');
-    const jsonUrl = bundle?.shareUrls?.json || (rootUrl ? `${rootUrl}.json` : '');
-    const lines = [
-        'WEREWOLF BUG REPLAY FIRST FAILURE REPORT v1',
-        '============================================',
-        `Run ID: ${replay.runId || bundle.reportId || '-'}`,
-        'Mode: first',
-        `Status: ${replay.status || '-'}`,
-        `Stop reason: ${replay.stopReason || '-'}`,
-        `Created: ${bundle.createdAt || '-'}`,
-        `Finished: ${replay.finishedAt || '-'}`,
-        `First failure event: ${replay.firstFailureEventId || failure?.eventId || '-'}`,
-        `Failure points in this report: ${failure ? 1 : 0}`,
-        rootUrl ? `FIRST FAILURE REPORT URL: ${rootUrl}` : '',
-        jsonUrl ? `JSON URL: ${jsonUrl}` : '',
-        '',
-        'FIRST FAILURE',
-        failure ? `Scenario: ${failure.scenarioTitle || failure.scenarioId || '-'}` : 'ไม่พบ failure',
-        failure ? `Test: ${failure.testPath || '-'}` : '',
-        failure ? `Step: ${(Number(failure.stepIndex) || 0) + 1}` : '',
-        failure ? `Action: ${failure.action || '-'}` : '',
-        failure ? `Time: ${failure.time || '-'}` : '',
-        failure ? `Exit code: ${failure.exitCode ?? '-'}` : '',
-        failure ? `Timed out: ${failure.timedOut ? 'YES' : 'NO'}` : '',
-        failure ? `Message: ${failure.message || '-'}` : '',
-        failure ? `Fingerprint: ${failure.fingerprint || '-'}` : '',
-        '',
-        'FAILED SCENARIO STEPS',
-    ];
-    if (scenario) {
-        lines.push(`${scenario.title || scenario.id || '-'} | ${scenario.ok ? 'PASS' : (scenario.stopped ? 'STOPPED' : 'FAILED')}`);
-        for (const step of (scenario.steps || [])) lines.push(`  ${step.ok ? 'PASS' : (step.skipped ? 'SKIP' : 'FAIL')} | ${step.testPath || '-'} | ${Number(step.durationMs) || 0}ms`);
-    } else {
-        lines.push('(ไม่มีข้อมูล scenario)');
-    }
-    lines.push('', 'ROOT CAUSE', `สรุป: ${bundle.analysis?.rootCause || '-'}`, `CAUSE CODE: ${bundle.analysis?.causeCode || '-'}`, `FAILURE STAGE: ${bundle.analysis?.failureStage || '-'}`, `CONFIDENCE: ${bundle.analysis?.confidence || '-'}`);
-    lines.push('', 'RUNTIME AUDIT', JSON.stringify(bundle.audit || {}, null, 2));
-    return lines.filter((x, i) => x !== '' || lines[i - 1] !== '').join('\n');
-}
-
-function bugReplayFirstFailureShareHtml(bundle, token) {
-    const failure = bundle?.firstFailure || (Array.isArray(bundle?.failures) ? bundle.failures[0] : null);
-    const scenario = Array.isArray(bundle?.scenarioResults) ? bundle.scenarioResults[0] : null;
-    const text = bugReplayFirstFailureShareText(bundle, token);
-    const jsonHref = token ? `./${encodeURIComponent(String(token))}.json` : '';
-    const failureHtml = failure ? `<section class="panel"><h2>🚨 บั๊กแรกที่พบ</h2><div class="failure"><div class="failure-head"><strong>${escapeDiagnosticHtml(failure.scenarioTitle || failure.scenarioId || 'Unknown')}</strong><span>${escapeDiagnosticHtml(failure.kind || 'failure')}</span></div><div class="meta">${escapeDiagnosticHtml(failure.testPath || '-')} · step ${(Number(failure.stepIndex) || 0) + 1} · ${escapeDiagnosticHtml(failure.time || '')}</div><div class="msg">${escapeDiagnosticHtml(failure.message || 'ไม่ระบุข้อความ')}</div>${failure.stack ? `<details><summary>Stack / evidence</summary><div class="audit">${escapeDiagnosticHtml(failure.stack)}</div></details>` : ''}${failure.data ? `<details><summary>Context data</summary><div class="audit">${escapeDiagnosticHtml(typeof failure.data === 'string' ? failure.data : JSON.stringify(failure.data, null, 2))}</div></details>` : ''}</div></section>` : `<section class="panel"><h2>✅ ไม่พบ failure</h2><p>โหมดตรวจบั๊กแรกทำงานครบโดยไม่พบ failure</p></section>`;
-    const steps = scenario?.steps || [];
-    const stepRows = steps.map((step) => `<tr><td>${Number(step.index) + 1}</td><td>${step.ok ? 'PASS' : (step.skipped ? 'SKIP' : 'FAIL')}</td><td>${escapeDiagnosticHtml(step.testPath || '-')}</td><td>${Number(step.durationMs) || 0}ms</td></tr>`).join('');
-    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta http-equiv="Referrer-Policy" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"><title>Werewolf Bug Replay First Failure Report</title><style>body{margin:0;background:#0a0d14;color:#e8edf8;font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}main{width:min(980px,calc(100% - 28px));margin:20px auto}header,.panel{margin-bottom:14px;padding:16px 18px;border:1px solid #222a3b;border-radius:14px;background:#101624}h1,h2{margin:0 0 6px}h1{font-size:20px}h2{font-size:15px}p{margin:0;color:#aab5ca}.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.links a{color:#aeb8ff;text-decoration:none;padding:6px 9px;border:1px solid #303a51;border-radius:8px}.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}.kpi{padding:10px;border:1px solid #2a3346;border-radius:10px;background:#0b101c}.kpi b{display:block;font-size:17px}.kpi span{color:#93a0b8;font-size:11px}.failure{padding:13px;border:1px solid #4a3038;border-radius:12px;background:#0c111c}.failure-head{display:flex;justify-content:space-between;gap:10px}.failure-head span{color:#ff9e9e;font-size:11px}.meta{color:#8d9ab0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:4px;overflow-wrap:anywhere}.msg{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere}.steps{width:100%;border-collapse:collapse;font-size:12px}.steps th,.steps td{padding:7px 8px;border-bottom:1px solid #20293b;text-align:left}.steps th{color:#8d9ab0}.audit{max-height:420px;overflow:auto;background:#070a11;border:1px solid #222a3b;border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}details summary{cursor:pointer;color:#bdc8df}@media(max-width:700px){main{width:min(100% - 18px,980px);margin:10px auto}.kpis{grid-template-columns:repeat(2,1fr)}.steps{display:block;overflow:auto}}</style></head><body><main><header><h1>🚨 Werewolf Bug Replay — บั๊กแรกที่พบ</h1><p>Run ${escapeDiagnosticHtml(replay.runId || bundle.reportId || '-')} · ระบบหยุดทันทีหลังพบ failure แรก · สร้าง ${escapeDiagnosticHtml(bundle.createdAt || '-')}</p><div class="kpis"><div class="kpi"><b>FIRST</b><span>Mode</span></div><div class="kpi"><b>${failure ? '1' : '0'}</b><span>Failure points</span></div><div class="kpi"><b>${escapeDiagnosticHtml(failure?.scenarioTitle || failure?.scenarioId || '-')}</b><span>Scenario</span></div><div class="kpi"><b>${escapeDiagnosticHtml(failure?.testPath || '-')}</b><span>Test</span></div></div><div class="links">${jsonHref ? `<a href="${jsonHref}">ดาวน์โหลด JSON</a>` : ''}</div></header>${failureHtml}<section class="panel"><h2>📋 ขั้นตอนของ Scenario ที่เกิดบั๊ก</h2><div style="overflow:auto"><table class="steps"><thead><tr><th>#</th><th>Status</th><th>Test</th><th>Duration</th></tr></thead><tbody>${stepRows || '<tr><td colspan="4">ไม่มีข้อมูล</td></tr>'}</tbody></table></div></section><section class="panel"><h2>🔬 Root Cause / Analysis</h2><p>${escapeDiagnosticHtml(bundle.analysis?.rootCause || 'ยังระบุไม่ได้')}</p><p>Cause code: ${escapeDiagnosticHtml(bundle.analysis?.causeCode || '-')} · Stage: ${escapeDiagnosticHtml(bundle.analysis?.failureStage || '-')} · Confidence: ${escapeDiagnosticHtml(bundle.analysis?.confidence || '-')}</p></section><section class="panel"><details><summary>Runtime Audit</summary><div class="audit">${escapeDiagnosticHtml(JSON.stringify(bundle.audit || {}, null, 2))}</div></details></section><section class="panel"><details><summary>Plain-text report</summary><div class="audit">${escapeDiagnosticHtml(text)}</div></details></section></main></body></html>`;
-}
-
-async function createBugReplayFirstFailureShare(job) {
-    if (!job || job.report?.status === 'ready') return job?.report || null;
-    const token = diagnosticShareToken();
-    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
-    if (!baseUrl) throw new Error('BUG_REPLAY_REPORT_BASE_URL_MISSING');
-    const createdAt = new Date().toISOString();
-    const bundle = buildBugReplayFirstFailureBundle(job, { token, includeShareUrls:true });
-    bundle.createdAt = createdAt;
-    if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES) throw new Error('BUG_REPLAY_FIRST_FAILURE_REPORT_TOO_LARGE');
-    await persistDiagnosticShare(bundle, token, false);
-    rememberDiagnosticShare(token, bundle);
-    const firstFailureEventId = String(bundle.replay?.firstFailureEventId || '');
-    const baseExportUrl = `${baseUrl}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}&reportScope=first_failure`;
-    job.report = { status:'ready', reportKind:'BUG_REPLAY_FIRST_FAILURE', token, url:bundle.shareUrls.html, jsonUrl:bundle.shareUrls.json, aiUrl:bundle.shareUrls.json, jsonDownloadUrl:`${baseExportUrl}&format=json`, textDownloadUrl:`${baseExportUrl}&format=text`, createdAt, expiresAt:bundle.expiresAt, firstFailureEventId, error:'' };
-    return job.report;
-}
-
-async function createBugReplayRunShare(job) {
-    if (!job || job.report?.status === 'ready') return job?.report || null;
-    const token = diagnosticShareToken();
-    const baseUrl = String(job.publicBaseUrl || '').replace(/\/+$/, '');
-    if (!baseUrl) throw new Error('BUG_REPLAY_REPORT_BASE_URL_MISSING');
-    const createdAt = new Date().toISOString();
-    const bundle = buildBugReplayRunBundle(job, { token, includeShareUrls:true });
-    bundle.createdAt = createdAt;
-
-    // Keep the whole run under the existing DynamoDB-safe share size while preserving all failure summaries.
-    while (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.audit?.timeline?.length > 80) bundle.audit.timeline.splice(0, Math.max(1, bundle.audit.timeline.length - 80));
-    while (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.audit?.findings?.length > 60) bundle.audit.findings.splice(0, Math.max(1, bundle.audit.findings.length - 60));
-    if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > DIAGNOSTIC_SHARE_MAX_BYTES) {
-        // Never drop failure points from the single aggregate report. If an extreme run exceeds the persisted share size, make the error explicit for the Admin instead of silently omitting reports.
-        throw new Error('BUG_REPLAY_AGGREGATE_REPORT_TOO_LARGE');
-    }
-    await persistDiagnosticShare(bundle, token, false);
-    rememberDiagnosticShare(token, bundle);
-    const firstFailureEventId = job.mode === 'first' ? String(job.failure?.eventId || '') : '';
-    const baseExportUrl = `${baseUrl}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}`;
-    const focusedQuery = firstFailureEventId ? `&eventId=${encodeURIComponent(firstFailureEventId)}` : '';
-    job.report = { status:'ready', reportKind:'BUG_REPLAY_RUN', token, url:bundle.shareUrls.html, jsonUrl:bundle.shareUrls.json, aiUrl:bundle.shareUrls.ai, jsonDownloadUrl:`${baseExportUrl}&format=json${focusedQuery}`, textDownloadUrl:`${baseExportUrl}&format=text${focusedQuery}`, createdAt, expiresAt:bundle.expiresAt, firstFailureEventId, error:'' };
-    return job.report;
-}
-
-async function finalizeBugReplayRunReport(job) {
-    if (!job || job.status === 'running') return job?.report || null;
-    if (job.report?.status === 'ready' && job.report.url) return job.report;
-    if (job.report?.status === 'generating') return job.report;
-    try {
-        const baseExportUrl = `${String(job.publicBaseUrl || '').replace(/\/+$/, '')}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}`;
-        const firstMode = job.mode === 'first';
-        job.report = { status:'generating', reportKind:firstMode ? 'BUG_REPLAY_FIRST_FAILURE' : 'BUG_REPLAY_RUN', url:'', jsonUrl:'', aiUrl:'', jsonDownloadUrl:firstMode ? `${baseExportUrl}&reportScope=first_failure&format=json` : `${baseExportUrl}&format=json`, textDownloadUrl:firstMode ? `${baseExportUrl}&reportScope=first_failure&format=text` : `${baseExportUrl}&format=text`, createdAt:'', error:'' };
-        if(firstMode) await createBugReplayFirstFailureShare(job);
-        else await createBugReplayRunShare(job);
-    } catch (err) {
-        const baseExportUrl = `${String(job.publicBaseUrl || '').replace(/\/+$/, '')}/api/admin/bug-replay/export?runId=${encodeURIComponent(job.runId)}`;
-        job.report = { status:'error', reportKind:job.mode === 'first' ? 'BUG_REPLAY_FIRST_FAILURE' : 'BUG_REPLAY_RUN', url:'', jsonUrl:'', aiUrl:'', jsonDownloadUrl:job.mode === 'first' ? `${baseExportUrl}&reportScope=first_failure&format=json` : `${baseExportUrl}&format=json`, textDownloadUrl:job.mode === 'first' ? `${baseExportUrl}&reportScope=first_failure&format=text` : `${baseExportUrl}&format=text`, createdAt:'', error:publicDiagnosticText(err?.message || String(err)) };
-        job.audit?.addFinding('runner', 'BUG_REPLAY_REPORT_CREATE_FAILED', job.report.error, {}, 'error', 'bug-replay');
-    }
-    return job.report;
-}
-
-async function startBugReplayJob(mode = "all", { publicBaseUrl = "" } = {}) {
-    cleanupBugReplayJobs();
-    if (bugReplayActiveRunId) {
-        const active = bugReplayJobs.get(bugReplayActiveRunId);
-        if (active && active.status === "running") return { ok:false, code:"BUG_REPLAY_ALREADY_RUNNING", job:publicBugReplayJob(active) };
-        bugReplayActiveRunId = "";
-    }
-    const safeMode = mode === "first" ? "first" : (mode === "phase2" ? "phase2" : "all");
-    const scenarios = listBugReplayScenarios(safeMode);
-    const runId = makeDiagnosticId("replay");
-    const job = {
-        runId,
-        createdAtEpoch: Date.now(),
-        startedAt: new Date().toISOString(),
-        status: "running",
-        mode: safeMode,
-        continueOnFailure: safeMode !== "first",
-        totalScenarios: scenarios.length,
-        currentScenarioIndex: -1,
-        currentScenarioId: "",
-        currentScenarioTitle: "",
-        currentAction: "",
-        currentStepIndex: -1,
-        currentTestPath: "",
-        completedScenarios: 0,
-        completedSteps: 0,
-        passedSteps: 0,
-        failedSteps: 0,
-        totalFailureCount: 0,
-        slowSteps: 0,
-        totalSteps: scenarios.reduce((n, s) => n + Number(s.testCount || 0), 0),
-        remainingSteps: scenarios.reduce((n, s) => n + Number(s.testCount || 0), 0),
-        stoppedByAdmin: false,
-        stopReason: "",
-        failure: null,
-        failures: [],
-        failedScenario: null,
-        lastOutput: "",
-        cancelRequested: false,
-        activeChild: null,
-        phase2Reports: [],
-        failureEventIds: [],
-        failureRefs: [],
-        scenarioResults: [],
-        publicBaseUrl: String(publicBaseUrl || "").replace(/\/+$/, ""),
-        report: { status:"pending", url:"", jsonUrl:"", aiUrl:"", jsonDownloadUrl:"", textDownloadUrl:"", createdAt:"", error:"" },
-        gameProfileSnapshot: diagnosticGameProfileSnapshot(getCurrentGameDiagnosticProfile({ force:true })),
-        audit: createRuntimeAudit({ source:"bug-replay", runId, mode:safeMode, page:"admin" }),
-    };
-    bugReplayJobs.set(runId, job);
-    bugReplayActiveRunId = runId;
-    job.audit.record('runner', 'run.start', { runId, mode:safeMode, totalScenarios:job.totalScenarios, totalSteps:job.totalSteps });
-
-    (async () => {
-        try {
-            for (let i = 0; i < scenarios.length; i += 1) {
-                if (job.cancelRequested) {
-                    job.status = "stopped";
-                    job.stoppedByAdmin = true;
-                    break;
-                }
-                const summary = scenarios[i];
-                const scenario = getBugReplayScenario(summary.id);
-                if (!scenario) throw new Error(`BUG_REPLAY_SCENARIO_NOT_FOUND:${summary.id}`);
-                job.currentScenarioIndex = i;
-                job.currentScenarioId = summary.id;
-                job.currentScenarioTitle = summary.title;
-                job.currentAction = summary.action;
-                job.currentScenarioFeatureKeys = Array.isArray(summary.featureKeys) ? summary.featureKeys.slice(0, 40) : [];
-                job.currentScenarioFeatureLabels = Array.isArray(summary.featureLabels) ? summary.featureLabels.slice(0, 40) : [];
-                job.currentStepIndex = -1;
-                job.audit.record('scenario', 'scenario.start', { index:i, id:summary.id, title:summary.title, action:summary.action, testCount:summary.testCount });
-                job.currentTestPath = "";
-                job.remainingSteps = scenarios.slice(i).reduce((n, s) => n + Number(s.testCount || 0), 0);
-
-                const result = await runBugReplayScenario(scenario, {
-                    timeoutMs: safeMode === "phase2" ? 60_000 : 25_000,
-                    continueOnFailure: job.continueOnFailure,
-                    shouldStop: () => !!job.cancelRequested,
-                    audit: job.audit,
-                    onTestStart: ({ child, testPath, stepIndex, totalSteps }) => {
-                        job.activeChild = child;
-                        job.audit.record('runner', 'child.spawn', { scenarioId:summary.id, testPath, stepIndex, totalSteps });
-                        job.currentStepIndex = stepIndex;
-                        job.currentTestPath = testPath;
-                        job.lastOutput = `กำลังจำลอง: ${summary.title} → ${testPath} (${stepIndex + 1}/${totalSteps})`;
-                    },
-                    onOutput: ({ text, stream, testPath }) => {
-                        const outputText = String(text || '');
-                        if (safeMode === "phase2") {
-                            const matches = outputText.match(/^PHASE2_RESULT:(\{.*\})$/gm) || [];
-                            for (const line of matches.slice(-4)) {
-                                try {
-                                    const parsed = JSON.parse(line.slice('PHASE2_RESULT:'.length));
-                                    job.phase2Reports.push({ testPath, result: parsed });
-                                    if (job.phase2Reports.length > 12) job.phase2Reports.splice(0, job.phase2Reports.length - 12);
-                                } catch (_) {}
-                            }
-                        }
-                        job.lastOutput = `[${stream}] ${testPath}\n${sanitizeBugReplayText(outputText, 2500)}`;
-                    },
-                    onStep: (step) => {
-                        job.completedSteps += 1;
-                        if (step.ok) job.passedSteps += 1;
-                        else job.failedSteps += 1;
-                        if (Number(step.durationMs) >= 20_000) job.slowSteps += 1;
-                        job.currentStepIndex = step.index;
-                        job.currentTestPath = step.testPath;
-                        job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
-                        if (step.skipped) job.lastOutput = `⏭️ ข้ามตามข้อกำหนด: ${step.testPath}`;
-                        else if (step.ok) job.lastOutput = `✅ ${step.testPath}`;
-                    },
-                });
-                job.activeChild = null;
-                job.audit.record('scenario', 'scenario.complete', { index:i, id:summary.id, ok:!!result.ok, stopped:!!result.stopped, stepCount:Array.isArray(result.steps) ? result.steps.length : 0, failures:Array.isArray(result.failures) ? result.failures.length : (result.failure ? 1 : 0) });
-
-                let failures = Array.isArray(result.failures) ? result.failures : (result.failure ? [result.failure] : []);
-                let reportSteps = Array.isArray(result.steps) ? result.steps : [];
-                // First-failure mode is a hard boundary. Even if a future runner regression
-                // accidentally returns more than one failure/step, the public first-failure
-                // state must contain only the first failing step and nothing after it.
-                if (!job.continueOnFailure && failures.length) {
-                    failures = [failures[0]];
-                    const firstFailureStepIndex = Number(failures[0]?.stepIndex);
-                    if (Number.isFinite(firstFailureStepIndex)) {
-                        reportSteps = reportSteps.filter((step) => Number(step?.index) <= firstFailureStepIndex);
-                    }
-                }
-                job.scenarioResults.push({
-                    index:i, id:summary.id, title:summary.title, action:summary.action, ok:!!result.ok, stopped:!!result.stopped,
-                    stepCount:reportSteps.length,
-                    passedSteps:reportSteps.filter((x) => x.ok && !x.skipped).length,
-                    failedSteps:reportSteps.filter((x) => !x.ok && !x.skipped).length || failures.length,
-                    skippedSteps:reportSteps.filter((x) => x.skipped).length,
-                    steps:reportSteps.map((step) => ({ index:step.index, testPath:step.testPath, ok:!!step.ok, skipped:!!step.skipped, timedOut:!!step.timedOut, exitCode:step.exitCode ?? null, signal:step.signal || null, durationMs:Number(step.durationMs)||0 })),
-                });
-                if (failures.length) {
-                    for (const failure of failures) {
-                        job.totalFailureCount += 1;
-                        const failureWithDiagnostic = recordBugReplayFailure({ runId, scenarioIndex:i, summary, failure, job });
-                        job.failureEventIds.push(String(failureWithDiagnostic.eventId || ''));
-                        job.failureRefs.push({
-                            eventId:String(failureWithDiagnostic.eventId || ''), scenarioIndex:i, scenarioId:summary.id, scenarioTitle:summary.title,
-                            action:summary.action, testPath:failure.testPath || '', stepIndex:failure.stepIndex, exitCode:failure.exitCode, signal:failure.signal,
-                            timedOut:!!failure.timedOut, durationMs:Number(failure.durationMs)||0, stdout:sanitizeBugReplayText(failure.stdout, 1800), stderr:sanitizeBugReplayText(failure.stderr, 2600),
-                        });
-                        job.audit.addFinding('test', 'BUG_REPLAY_FAILURE', `Bug Replay failure: ${summary.id} / ${failure.testPath || 'unknown'}`, { scenarioId:summary.id, scenarioIndex:i, testPath:failure.testPath || '', stepIndex:failure.stepIndex, exitCode:failure.exitCode, signal:failure.signal, timedOut:!!failure.timedOut, eventId:failureWithDiagnostic.eventId }, 'error', 'bug-replay');
-                        if (job.failures.length < BUG_REPLAY_MAX_FAILURES) job.failures.push(failureWithDiagnostic);
-                        if (!job.failure) job.failure = failureWithDiagnostic;
-                    }
-                    job.failedScenario = summary;
-                    job.lastOutput = `❌ พบ ${failures.length} ปัญหาใน scenario: ${summary.title}`;
-                    if (!job.continueOnFailure) {
-                        job.status = "failed";
-                        job.stopReason = "first_failure";
-                        job.currentScenarioIndex = i;
-                        job.currentStepIndex = Number(failure.stepIndex);
-                        job.currentTestPath = String(failure.testPath || "");
-                        job.lastOutput = `🛑 หยุดทันทีที่พบบั๊กแรก: ${summary.title}`;
-                        job.completedScenarios += 1;
-                        job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
-                        break;
-                    }
-                }
-
-                if (!result.ok && result.stopped) {
-                    job.status = "stopped";
-                    job.stoppedByAdmin = true;
-                    break;
-                }
-                job.completedScenarios += 1;
-                job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
-                if (failures.length && job.continueOnFailure) {
-                    job.lastOutput = `⚠️ ผ่านไปต่อหลังพบ ${failures.length} ปัญหาใน ${summary.title}`;
-                } else if (!failures.length) {
-                    job.lastOutput = `✅ ผ่าน scenario: ${summary.title}`;
-                }
-            }
-            if (job.status === "running") {
-                job.status = job.cancelRequested ? "stopped" : (job.failedSteps > 0 ? "failed" : "passed");
-                if (job.cancelRequested) job.stoppedByAdmin = true;
-            }
-            job.remainingSteps = Math.max(0, job.totalSteps - job.completedSteps);
-            job.finishedAt = new Date().toISOString();
-            job.audit.record('runner', 'run.complete', { status:job.status, completedScenarios:job.completedScenarios, completedSteps:job.completedSteps, passedSteps:job.passedSteps, failedSteps:job.failedSteps, slowSteps:job.slowSteps });
-            await finalizeBugReplayRunReport(job);
-        } catch (err) {
-            job.audit.addFinding('runner', 'BUG_REPLAY_RUNNER_ERROR', err?.message || String(err), { scenarioId:job.currentScenarioId, stepIndex:job.currentStepIndex }, 'critical', 'bug-replay');
-            const diagnostic = recordDiagnostic({
-                source:"server", kind:"bug_replay_runner_error", page:"admin",
-                action:"bug-replay:runner", operation:`bug_replay:${runId}`, operationId:runId,
-                message: err?.message || String(err), stack:err?.stack || "",
-                context:{ code:"BUG_REPLAY_RUNNER_ERROR", failureStage:"bug_replay.runner", runId, mode:job.mode },
-            });
-            job.failure = { eventId:diagnostic.id, scenarioIndex:job.currentScenarioIndex, scenarioId:job.currentScenarioId, scenarioTitle:job.currentScenarioTitle, action:job.currentAction, testPath:job.currentTestPath, stepIndex:job.currentStepIndex, exitCode:null, signal:null, timedOut:false, durationMs:0, stdout:"", stderr:err?.stack || err?.message || String(err) };
-            job.failedSteps += 1;
-            job.status = "failed";
-            job.finishedAt = new Date().toISOString();
-            await finalizeBugReplayRunReport(job);
-        } finally {
-            job.activeChild = null;
-            if (bugReplayActiveRunId === runId) bugReplayActiveRunId = "";
-            cleanupBugReplayJobs();
-        }
-    })();
-
-    return { ok:true, job:publicBugReplayJob(job), scenarios };
-}
-
-function stopBugReplayJob(runId = "") {
-    const id = String(runId || bugReplayActiveRunId || "");
-    const job = bugReplayJobs.get(id);
-    if (!job || job.status !== "running") return { ok:false, code:"BUG_REPLAY_NOT_RUNNING", job:publicBugReplayJob(job) };
-    job.cancelRequested = true;
-    if (job.activeChild) {
-        try { job.activeChild.kill("SIGTERM"); } catch (_) {}
-    }
-    return { ok:true, job:publicBugReplayJob(job) };
-}
-
-function diagnosticRequestAllowed(req) {
-    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-    const ip = forwarded || req.ip || req.socket?.remoteAddress || "unknown";
-    const now = Date.now();
-    const old = diagnosticClientRate.get(ip);
-    if (!old || now - old.at >= 60_000) {
-        diagnosticClientRate.set(ip, { at: now, count: 1 });
-        return true;
-    }
-    if (old.count >= 20) return false;
-    old.count += 1;
-    return true;
-}
-
-function permissionChecklist() {
-    const missing = Array.from(diagnosticPermissionCounts.values()).sort((a, b) => String(b.lastSeen).localeCompare(String(a.lastSeen)));
-    return { expected: DIAGNOSTIC_EXPECTED_PERMISSIONS, observedFailures: missing };
-}
-
-// Existing server.js already logs most caught exceptions with console.error(). Mirror those
-// messages into Diagnostics too, so individual handlers do not all need manual instrumentation.
-const __wwOriginalConsoleError = console.error.bind(console);
-let __wwReportingConsoleError = false;
-console.error = (...args) => {
-    __wwOriginalConsoleError(...args);
-    if (__wwReportingConsoleError) return;
-    const joined = args.map((x) => x instanceof Error ? (x.stack || x.message) : String(x ?? "")).join(" ");
-    if (!/(AccessDenied|Unauthorized|Exception|\berror\b|failed|ล้มเหลว|ไม่สำเร็จ|ขาดสิทธิ์)/i.test(joined)) return;
-    try {
-        __wwReportingConsoleError = true;
-        recordDiagnostic({ source:"server", kind:"server_log_error", page:"server", message:joined });
-    } finally {
-        __wwReportingConsoleError = false;
-    }
-};
-
-// เฟส 0 (bot-autonomous-ai-phases.md): เอนจินให้บอทเล่นเองอัตโนมัติ — ตอนนี้ยังเป็น no-op
-// (ดูรายละเอียดใน botEngine.js) เตรียม require ไว้ก่อนให้เฟสถัดไปเรียก runBotsFor(...) ได้เลย
-const { runBotsFor } = require("./botEngine");
+function currentDiagnosticContext() { return {}; }
+function addDiagnosticBreadcrumb() {}
+let bugReportSink = null;
+function recordDiagnostic(event = {}) {
+    if (!bugReportSink || !(event.level === "error" || /(?:failed|failure|exception|unhandled|error)/i.test(event.kind || ""))) return null;
+    return bugReportSink({ source:"server", page:event.page || "server", roomId:event.roomId || event.context?.roomId || "",
+        message:`${event.kind || "server_error"}: ${event.message || "Runtime failure"}`, stack:event.stack || "" });
+}
+function linkDiagnosticEvents() {}
+function publicDiagnosticText(value, max = 12000) { return String(value ?? "").slice(0, max); }
+function sanitizeDiagnosticPath(value) {
+    const raw = String(value || "");
+    try { if (/^https?:\/\//i.test(raw)) { const u = new URL(raw); return `${u.origin}${u.pathname}`.slice(0, 600); } } catch (_) {}
+    return raw.split(/[?#]/, 1)[0].slice(0, 600);
+}
+const diagnosticAsyncContext = { run(_ctx, fn) { return fn(); }, getStore() { return {}; } };
 
 // Process-level exceptions are fatal startup/runtime faults. Log them, then terminate so
 // Elastic Beanstalk can replace the broken instance instead of leaving nginx with a dead
@@ -2275,8 +164,8 @@ const io = new Server(server, {
     pingInterval: 25_000,
     pingTimeout: 90_000, // เดิม 20s → 60s → 90s
     // ช่วยกู้ connection state ของ Socket.IO เองในกรณีเน็ตสะดุด/แท็บถูกพักชั่วคราว
-    // ภายใน instance เดิม; การสลับ instance ระหว่าง Immutable deployment ยังใช้ Account Session +
-    // membershipId + durable room snapshot เป็น source of truth และจะ auto-rejoin ต่อให้ state recovery นี้ใช้ไม่ได้
+    // ภายใน instance เดิม; การสลับ instance ระหว่าง Immutable deployment ยังใช้ membershipId +
+    // durable room snapshot เป็น source of truth และจะ auto-rejoin ต่อให้ Socket.IO state recovery นี้ใช้ไม่ได้
     connectionStateRecovery: {
         maxDisconnectionDuration: 120_000,
         skipMiddlewares: false,
@@ -2344,13 +233,10 @@ function getMaintenanceHtml() {
             maintenanceHtmlCache = MAINTENANCE_FALLBACK_HTML;
         }
         // maintenance.html is served directly by the closed-server gate, not through getStampedHtml().
-        // Rewrite only the dedicated server icon marker so the actual image always comes from S3/CDN.
-        if (typeof IMAGE_BASE_URL === "string" && IMAGE_BASE_URL) {
-            const version = typeof currentImageVersion === "function" ? currentImageVersion() : "";
-            const src = imgUrl(SERVER_CLOSED_ICON_PATH);
-            maintenanceHtmlCache = maintenanceHtmlCache.replace(/src=""([^>]*id="serverIcon"[^>]*)>/i, `src="${src}"$1>`);
-            maintenanceHtmlCache = maintenanceHtmlCache.replace(/src=""([^>]*id='serverIcon'[^>]*)>/i, `src="${src}"$1>`);
-        }
+        // Rewrite only the dedicated server icon marker to the bundled local asset.
+        const src = imgUrl(SERVER_CLOSED_ICON_PATH);
+        maintenanceHtmlCache = maintenanceHtmlCache.replace(/src=""([^>]*id="serverIcon"[^>]*)>/i, `src="${src}"$1>`);
+        maintenanceHtmlCache = maintenanceHtmlCache.replace(/src=""([^>]*id='serverIcon'[^>]*)>/i, `src="${src}"$1>`);
     }
     return maintenanceHtmlCache;
 }
@@ -2431,6 +317,11 @@ function readCookie(header, name) {
     }
     return "";
 }
+function normalizeRoomToken(value) {
+    const token = String(value || "").trim();
+    return token.slice(0, 256);
+}
+
 function escapeHtml(value) {
     return String(value ?? "")
         .replace(/&/g, "&amp;")
@@ -2443,6 +334,18 @@ function escapeHtml(value) {
 function testerTokenFromCookie(headers) {
     return readCookie(headers && headers.cookie, TESTER_PASS_COOKIE);
 }
+
+// ============================================================
+// ADMIN AUTHENTICATION CONFIG
+// ============================================================
+const ADMIN_PANEL_PASSWORD = String(process.env.ADMIN_PANEL_PASSWORD || process.env.ADMIN_RESET_PASSWORD || "").trim();
+const ADMIN_AUTH_CONFIGURED = !!ADMIN_PANEL_PASSWORD;
+const ADMIN_SESSION_SECRET = String(process.env.ADMIN_SESSION_SECRET || "").trim()
+    || (ADMIN_AUTH_CONFIGURED ? crypto.createHash("sha256").update(`werewolf-admin-session:${ADMIN_PANEL_PASSWORD}`).digest("hex") : "");
+const ADMIN_SESSION_COOKIE = "ww_admin";
+const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const ADMIN_TAB_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const adminTabSessionRevoked = new Map();
 
 // ============================================================
 // ADMIN AUTHENTICATION
@@ -2459,9 +362,7 @@ function createAdminSessionToken(meta = {}) {
         admin: true,
         sessionType: tabId ? "tab" : "cookie",
         tabId,
-        provider: String(meta.provider || "password"),
-        googleSub: String(meta.googleSub || "").slice(0, 256),
-        email: String(meta.email || "").trim().toLowerCase().slice(0, 320),
+        provider: "password",
         exp: Date.now() + (tabId ? ADMIN_TAB_SESSION_TTL_MS : ADMIN_SESSION_TTL_MS),
         n: crypto.randomBytes(18).toString("hex"),
     }, ADMIN_SESSION_SECRET);
@@ -2496,7 +397,6 @@ function getAdminPrincipal(reqOrHeaders) {
         return { ...payload, tabScoped: true };
     }
     if (bearer) return null;
-    if (ADMIN_TAB_AUTH_ENFORCED) return null;
     return { ...payload, tabScoped: false };
 }
 function isAdminSessionValid(reqOrHeaders) {
@@ -2510,39 +410,9 @@ function adminAuthReadyForDeployment() {
     return !!ADMIN_AUTH_CONFIGURED || !EB_ENVIRONMENT_NAME;
 }
 function adminSessionCookieSecure(req) { return authCookieSecure(req); }
-function normalizeAdminEmail(value) { return String(value || "").trim().toLowerCase(); }
-function isAllowedAdminGoogleClaims(claims) {
-    const email = normalizeAdminEmail(claims?.email);
-    const verified = claims?.email_verified === true || String(claims?.email_verified || "").toLowerCase() === "true";
-    return !!email && verified && ADMIN_GOOGLE_EMAILS.includes(email);
-}
-
-// Generic request tracing: correlate browser -> HTTP -> server -> database without changing game payloads.
-app.use((req, res, next) => {
-    const traceId = String(req.headers["x-ww-diagnostic-trace-id"] || makeDiagnosticId("tr")).slice(0, 120);
-    const sessionId = String(req.headers["x-ww-client-session-id"] || "").slice(0, 120);
-    const clientRequestId = String(req.headers["x-ww-client-request-id"] || "").slice(0, 120);
-    const action = String(req.headers["x-ww-diagnostic-action"] || "").slice(0, 120);
-    const requestId = makeDiagnosticId("srvreq");
-    const startedAt = Date.now();
-    req.__wwDiagnostic = { traceId, sessionId, clientRequestId, action, requestId, startedAt };
-    if (req.path.startsWith("/api/") || req.path.startsWith("/socket.io/")) {
-        res.setHeader("X-WW-Diagnostic-Trace-Id", traceId);
-        res.setHeader("X-WW-Server-Request-Id", requestId);
-        res.setHeader("X-WW-Server-Instance", `${os.hostname()}:${process.pid}`);
-        if (clientRequestId) res.setHeader("X-WW-Client-Request-Id", clientRequestId);
-        addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.start ${req.method} ${sanitizeDiagnosticPath(req.path)}`, traceId, sessionId, page: "server", detail: { method: req.method, endpoint: sanitizeDiagnosticPath(req.path), requestId, clientRequestId } });
-        res.once("finish", () => addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.end ${req.method} ${sanitizeDiagnosticPath(req.path)} ${res.statusCode}`, traceId, sessionId, page: "server", detail: { status: res.statusCode, durationMs: Date.now() - startedAt, requestId, clientRequestId } }));
-        res.once("close", () => {
-            if (res.writableFinished) return;
-            addDiagnosticBreadcrumb({ source: "server", type: "http", label: `request.close ${req.method} ${sanitizeDiagnosticPath(req.path)}`, traceId, sessionId, page: "server", detail: { durationMs: Date.now() - startedAt, requestId, clientRequestId } });
-        });
-    }
-    diagnosticAsyncContext.run({ traceId, sessionId, clientRequestId, action, requestId, roomId: inferDiagnosticRoomId(req.path) }, next);
-});
 
 app.use("/api/admin", (req, res, next) => {
-    if (req.path === "/login" || req.path === "/session" || req.path === "/logout" || req.path === "/session/exchange") return next();
+    if (req.path === "/login" || req.path === "/session" || req.path === "/logout") return next();
     if (!adminAuthRequired()) return res.status(503).json({ error: "admin_auth_not_configured", code: "ADMIN_AUTH_NOT_CONFIGURED" });
     if (isAdminSessionValid(req)) return next();
     return res.status(401).json({ error: "admin_auth_required", code: "ADMIN_AUTH_REQUIRED" });
@@ -2648,7 +518,7 @@ app.use(async (req, res, next) => {
 
     if (!serverClosed) return next();
 
-    if (p === "/api/config" || p === "/api/server-state" || p.startsWith("/api/admin/") || p.startsWith("/api/diagnostics/") || p.startsWith("/socket.io/") || p.startsWith("/diagnostics/share/") || CLOSED_ALLOWED_PATHS.has(p)) {
+    if (p === "/api/config" || p === "/api/server-state" || p.startsWith("/api/admin/") || p === "/api/bug-reports" || p.startsWith("/socket.io/") || CLOSED_ALLOWED_PATHS.has(p)) {
         return next();
     }
     // หน้า "เซิร์ฟเวอร์กำลังปิด" ต้องโหลดข้อมูลอาชีพ + รูปอาชีพเองได้แม้เพิ่งเปิดหน้าเว็บ/ไม่เคยเข้าเกมมาก่อน (iPad/iPhone/Android)
@@ -2697,7 +567,7 @@ io.use(async (socket, next) => {
     // ห้ามอ่าน ww_tp จาก cookie มาเลื่อนสิทธิ์ให้ socket ปกติ เพราะ HttpOnly cookie
     // เป็น cookie ระดับ origin เดียวกันทั้งเบราว์เซอร์: ถ้าแอดมินเปิดแท็บ Tester แล้ว
     // แท็บ index ปกติใน iPad/Chrome ใช้ origin เดียวกัน มันจะส่ง cookie ใบเดียวกันมาด้วย
-    // และ socket ปกติจะถูกตีความเป็น tester → account_bootstrap/presence_hello ได้ IGNORED
+    // และ socket ปกติจะถูกตีความเป็น tester ได้เฉพาะจาก server-side tester pass
     // ทั้งที่ฝั่ง client ไม่มี tester=true เลย (ตรงกับ Diagnostic v16 วันที่ 24/09/69 13:20)
     //
     // ใช้ launch credential ที่ส่งใน Socket.IO handshake แทน ซึ่งหน้า tester/player/host
@@ -2710,7 +580,7 @@ io.use(async (socket, next) => {
     if (testerPassPresented) {
         // อย่าตรวจบัตรก่อน shared secret พร้อม: ระหว่าง deploy/instance ใหม่ อาจเห็น Socket
         // ก่อน initServerState โหลด/สร้าง secret เสร็จ และทำให้บัตรที่ถูกต้องกลายเป็น invalid
-        // แบบสุ่ม → join_room ไหลไป account auth เป็น ACCOUNT_TOKEN_REQUIRED
+        // แบบสุ่ม → join_room ต้องใช้ room token / tester pass ตามประเภทห้อง
         try {
             await ensureTesterPassSecretPersistent();
             testerPassValid = isTesterPassValid(authTpToken);
@@ -2730,6 +600,7 @@ io.use(async (socket, next) => {
     const adminAuthToken = String(socket.handshake?.auth?.adminToken || "").trim();
     const adminPresentedTabId = sanitizeAdminTabId(socket.handshake?.auth?.adminTabId || "");
     const adminSessionValid = isAdminSocket(socket);
+    socket.data.isAdmin = adminSessionValid;
     addDiagnosticBreadcrumb({ source:"server", type:"socket", label:"auth.handshake", traceId:String(socket.data.diagnosticTraceId || ""), sessionId:String(socket.data.diagnosticSessionId || ""), page:"server", detail:{
         authObservation:{
             testerPassPresented,
@@ -2751,7 +622,7 @@ io.use(async (socket, next) => {
     // missing/expired/mismatched. Previously an { auth: { admin:true } } socket
     // could connect while not actually authenticated; the later admin_* event
     // guard then returned ADMIN_AUTH_REQUIRED. That left the Admin UI connected
-    // at the transport layer but unable to load rooms/accounts, and because the
+    // at the transport layer but unable to load rooms, and because the
     // handshake itself succeeded it did not reliably enter the client's
     // connect_error → ensureAdminLogin recovery path.
     if (socket.handshake?.auth?.admin === true && !isAdminSocket(socket)) {
@@ -2794,15 +665,15 @@ io.use(async (socket, next) => {
 // version ประกอบด้วย 4 ส่วน (แยกเก็บไว้ ใช้ต่างกัน):
 //   clientHash : public/**/*.{html,js,css,json,svg,...} (ไม่รวม admin.html/maintenance.html) — ใช้ต่อท้าย URL js/css ของหน้าเกมด้วย (?v=)
 //   assetsHash : public/**/*.{png,jpg,webp,ico,ฟอนต์,เสียง,...} รวม public/images/** (รูปอาชีพ/ไอคอน)
-//   serverHash : server.js + botEngine.js + llmBotEngine.js (โค้ดบอท/กติกาเกมที่ผู้เล่นรู้สึกได้)
-//   imageEpoch : เลขรุ่นรูปที่แอดมินกด (รูปที่อยู่บน S3/CDN อ่านเนื้อหาจาก server ไม่ได้ ต้องพึ่งเลขนี้)
+//   serverHash : server.js (โค้ดกติกาเกมและ backend ที่ผู้เล่นใช้งาน)
+//   imageEpoch : เลขรุ่น asset รูปที่แอดมินกด เพื่อบังคับ client ที่ออนไลน์ให้เริ่ม session/asset ใหม่
 // หน้าที่ของ version มีอย่างเดียว: "บอกว่ามีรุ่นใหม่" ให้หน้า index เอาไปเทียบ — ไม่ได้สั่ง reload อะไรทั้งสิ้น
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CLIENT_CODE_EXTS = new Set([".html", ".htm", ".js", ".mjs", ".css", ".json", ".svg", ".webmanifest", ".txt", ".xml"]);
 const CLIENT_ASSET_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".mp3", ".ogg", ".wav", ".m4a"]);
 const CLIENT_IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"]);
 const VERSION_SKIP_FILES = new Set([path.join(PUBLIC_DIR, "admin.html"), path.join(PUBLIC_DIR, "maintenance.html")]);
-const SERVER_CODE_FILES = ["server.js", "botEngine.js", "llmBotEngine.js"].map((f) => path.join(__dirname, f));
+const SERVER_CODE_FILES = ["server.js"].map((f) => path.join(__dirname, f));
 const ASSET_CONTENT_HASH_MAX_BYTES = 4 * 1024 * 1024; // รูปที่ใหญ่กว่านี้ใช้ path+ขนาดแทนเนื้อหา (กันอ่านไฟล์ใหญ่ซ้ำบน event loop)
 const VERSION_SCAN_TTL_MS = 3000; // /api/config ถูกโพลถี่ — สแกน stat ของไฟล์ทั้งโฟลเดอร์ไม่เกินทุก 3 วิ
 let _versionCache = { scannedAt: 0, sigs: { client: "", assets: "", server: "" }, hashes: { client: "", assets: "", server: "" } };
@@ -2906,7 +777,7 @@ function computeServerVersion() {
 }
 
 // เลขรุ่นรูปที่ต่อท้าย URL รูปทุกใบ (?v=) = เลขที่แอดมินกด + hash ของรูปใน public/ (ถ้ามี) → เปลี่ยนรูปแล้ว URL เปลี่ยนเอง ไม่ต้องรอแอดมินกด
-// (รูปบน S3/CDN ที่ server อ่านไม่ได้ ยังพึ่งเลขที่แอดมินกดเหมือนเดิม)
+// imageEpoch ยังเก็บเป็น server-side version signal; ตัวไฟล์จริงอยู่ใน public/images/ และถูก hash ตรวจจับได้
 function currentImageVersion() {
     let assetsHash = "";
     try { assetsHash = refreshVersionParts().assets; } catch (e) { /* ไม่เป็นไร */ }
@@ -2916,57 +787,32 @@ function currentImageVersion() {
     return parts.join("-");
 }
 
-// IMAGE_BASE_URL: ต้นทางรูปภาพภายนอกของเกม (S3 หรือ CloudFront หน้า S3)
-// โปรเจคนี้ตั้งใจให้รูปภาพทั้งหมดอยู่นอก deploy zip; เมื่อ IMAGE_BASE_URL ถูกตั้งแล้ว
-// imgUrl()/wwImg() จะสร้าง URL แบบเต็มไปยัง S3/CDN และจะไม่มีการ fallback กลับไปหาไฟล์รูปใน public/
-const IMAGE_BASE_URL = (process.env.IMAGE_BASE_URL || "").replace(/\/+$/, "");
-// Closed-server icon is stored at the same image-origin root level as cover-1200x630.png.
-const SERVER_CLOSED_ICON_PATH = "/icons-server.png";
-if (!IMAGE_BASE_URL) {
-    console.warn("IMAGE_BASE_URL is not configured; external S3/CDN images will not resolve until the Elastic Beanstalk environment variable is set.");
-}
+// รูปภาพของเกมเป็น asset ที่ deploy ไปพร้อมกับแอปโดยตรง
+// แหล่งเดียวคือ public/images/ และ client จะเรียกผ่าน same-origin /images/...
+// รูปเกมไม่มี external image origin; ใช้ LOCAL_IMAGE_BASE เดียวกับ public/images/ เท่านั้น
+const LOCAL_IMAGE_BASE = "/images";
+// ใช้ไฟล์ที่มีอยู่จริงในโปรเจกต์สำหรับจอเซิร์ฟเวอร์ปิด
+const SERVER_CLOSED_ICON_PATH = "/images/favicon-32x32.jpg";
 
-// imgUrl: ประกอบ URL รูปภาพจาก S3/CDN เท่านั้น = IMAGE_BASE_URL + path + (?v=<imageEpoch>)
-// ถ้ายังไม่ได้ตั้ง IMAGE_BASE_URL จะคืนค่าว่างแทนการสร้าง local /images/... เพื่อกัน client ไปดึงรูปจาก origin
+// imgUrl: สร้าง same-origin URL ของ asset ใน public/images เท่านั้น
+// imageEpoch ยังใช้เป็น version signal สำหรับระบบ force-reload ของ Admin แต่ไม่ถูกเก็บใน browser storage
 function imgUrl(imgPath) {
-    if (!IMAGE_BASE_URL) return "";
+    const raw = String(imgPath || "").trim();
+    if (!raw) return "";
+    const pathName = raw.startsWith("/images/") ? raw : `/images/${raw.replace(/^\/+/, "")}`;
     const v = currentImageVersion();
-    return `${IMAGE_BASE_URL}${imgPath}${v ? `?v=${encodeURIComponent(v)}` : ""}`;
+    return `${pathName}${v ? `?v=${encodeURIComponent(v)}` : ""}`;
 }
 
 // ============================================================
-// PLAYER STATS (อัตราชนะต่อผู้เล่น — เก็บบน DynamoDB)
+// DYNAMODB + DURABLE ROOM STATE
 // ============================================================
-// ทำไมใช้ DynamoDB แทนไฟล์ในเครื่อง/S3:
-//   - เกมนี้มีหลายห้องเล่นพร้อมกันได้ ถ้าเกมจบพร้อมกันหลายห้อง (หรือขยายไปหลาย EC2 instance ใน
-//     อนาคต) การ "อ่านไฟล์/S3 object ทั้งก้อน -> แก้ -> เขียนทับ" มีโอกาส race กันได้ (อัปเดตของ
-//     อีกฝั่งหายเพราะเขียนทับกัน) DynamoDB UpdateItem รองรับ "บวกเพิ่มทีละ 1" แบบ atomic ในตัว
-//     (SET games = if_not_exists(games,:zero) + :one) ไม่มีทางชนกันได้เลยไม่ว่าจะยิงพร้อมกันกี่ครั้ง
-//   - serverless/pay-per-request ไม่ต้องดูแลเซิร์ฟเวอร์ฐานข้อมูลเอง เหมาะกับ workload แบบนี้
-//     (เขียนแค่ตอนจบเกม อ่านแค่ตอนเปิดป็อปอัป — ความถี่ต่ำมาก)
-//
-// เก็บด้วยคีย์ = "ชื่อที่แสดง" ของผู้เล่น (ชื่อเดียวกับที่ตั้งครั้งแรกในหน้า index.html/แก้ได้ทีหลัง
-// ผ่าน admin.html เท่านั้น) โดยสิทธิ์ admin แยกจาก Game Account และต้องผ่าน HttpOnly admin session — ข้อจำกัดที่รู้อยู่แล้ว: เปลี่ยน
-// ชื่อ = เริ่มสถิติใหม่ภายใต้ชื่อนั้น (ไม่ merge ของเก่าให้อัตโนมัติ), ชื่อซ้ำกันระหว่างคนละคนจะ
-// "ใช้สถิติร่วมกัน" — ยอมรับ trade-off นี้เพราะไม่ใช้ระบบ account
-//
-// ต้องสร้างตารางเองครั้งเดียวบน AWS ก่อนใช้งาน (ดูขั้นตอนละเอียดใน README หัวข้อ "สถิติผู้เล่น"):
-//   ชื่อตาราง: ตั้งเองได้ ใส่ไว้ที่ env var DYNAMODB_STATS_TABLE (ค่าเริ่มต้น "WerewolfPlayerStats")
-//   Partition key: "playerName" (String)
-//   Sort key:      "statKey"    (String) — เก็บ 2 แบบต่อผู้เล่นในตารางเดียวกัน:
-//                    - "TOTAL"        แถวสรุปรวมทุกเกม (games/wins รวม)
-//                    - "ROLE#<role>"  แถวแยกต่ออาชีพ 1 แถว (games/wins เฉพาะตอนเล่นอาชีพนั้น)
-//                  แยกเป็นคนละแถวแบน ๆ แทนซ้อน map เดียวกัน เพราะ atomic increment ทำกับแถวแบน ๆ
-//                  ตรงไปตรงมาที่สุด ไม่ต้องกังวลว่า map ยังไม่ถูกสร้างตอน increment ครั้งแรก แล้วดึง
-//                  สถิติผู้เล่น 1 คนกลับมาทีเดียวด้วย Query ตาม playerName (partition key) ได้เลย
-//   Billing mode: On-demand (pay-per-request) พอสำหรับ workload นี้ ไม่ต้องตั้ง provisioned capacity
-//   IAM: instance role ของ Elastic Beanstalk environment ต้องมีสิทธิ์ dynamodb:UpdateItem,
-//        dynamodb:Query บน ARN ของตารางนี้ (แบบเดียวกับที่ต้องเพิ่ม elasticbeanstalk:DescribeEnvironments
-//        ให้ตอนตั้งค่า EB_ENVIRONMENT_NAME ด้านล่าง)
+// Guest-first production model: DynamoDB is used only for room/server persistence and deployment recovery.
+// Player identity is local to the browser; room data contains only gameplay state.
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, UpdateCommand, QueryCommand, PutCommand, ScanCommand, GetCommand, BatchWriteCommand, DeleteCommand, TransactWriteCommand } = require("@aws-sdk/lib-dynamodb");
+let dynamoDocClientPromise = null;
 
-const STATS_TABLE_NAME = process.env.DYNAMODB_STATS_TABLE || "WerewolfPlayerStats";
 const EB_ENVIRONMENT_NAME = String(process.env.EB_ENVIRONMENT_NAME || "").trim();
 
 const rooms = {};
@@ -2980,12 +826,11 @@ globalThis.__WEREWOLF_ROOMS__ = rooms;
 // เป็นระยะ และถูกโหลดกลับก่อนรับ socket หลัง Node restart/deploy โดยใช้ token ของผู้เล่น/โฮสต์
 // เป็นตัวตนถาวรแทน socket.id ซึ่งเปลี่ยนทุกครั้งที่ reconnect
 //
-// ใช้ตารางเดิมเป็นค่าเริ่มต้นเพื่อไม่ต้องเพิ่ม IAM/table ใหม่ทันที:
-//   DYNAMODB_ROOMS_TABLE -> ตารางสำหรับห้องโดยเฉพาะ (แนะนำเมื่อระบบโต)
-//   ถ้าไม่ตั้ง -> ใช้ DYNAMODB_STATS_TABLE เดิมที่โปรเจกต์มีอยู่แล้ว
+// แนะนำให้ตั้ง DYNAMODB_ROOMS_TABLE เป็นชื่อตารางห้องโดยเฉพาะ.
+// WEREWOLF_ROOMS_TABLE รองรับชื่อ env เดิมของ room persistence เท่านั้น.
 // ปิดชั่วคราวได้ด้วย ROOM_PERSISTENCE_ENABLED=false (เหมาะเฉพาะ local dev)
 const ROOM_PERSISTENCE_ENABLED = process.env.ROOM_PERSISTENCE_ENABLED !== "false";
-const ROOM_PERSISTENCE_TABLE = process.env.DYNAMODB_ROOMS_TABLE || STATS_TABLE_NAME;
+const ROOM_PERSISTENCE_TABLE = process.env.DYNAMODB_ROOMS_TABLE || process.env.WEREWOLF_ROOMS_TABLE || "WerewolfRooms";
 const ROOM_SNAPSHOT_STAT_KEY = "ROOM_SNAPSHOT";
 const ROOM_INDEX_STAT_KEY = "ROOM_INDEX";
 const ROOM_KEY_PREFIX = "__ROOM__:";
@@ -2993,7 +838,6 @@ const ROOM_SNAPSHOT_SCHEMA = 2;
 const ROOM_PERSISTENCE_DEBOUNCE_MS = Math.max(250, Number(process.env.ROOM_PERSISTENCE_DEBOUNCE_MS) || 750);
 const ROOM_PERSISTENCE_SCAN_MS = Math.max(750, Number(process.env.ROOM_PERSISTENCE_SCAN_MS) || 1500);
 const ROOM_RECOVERY_TIMEOUT_MS = Math.max(2000, Number(process.env.ROOM_RECOVERY_TIMEOUT_MS) || 8000);
-const ROOM_RECOVERY_TTL_MS = Math.max(60 * 60_000, Number(process.env.ROOM_RECOVERY_TTL_MS) || 7 * 24 * 60 * 60_000);
 const ROOM_SNAPSHOT_MAX_BYTES = Math.min(380 * 1024, Math.max(100 * 1024, Number(process.env.ROOM_SNAPSHOT_MAX_BYTES) || 350 * 1024));
 
 // Deployment handoff / fencing. A room is never treated as "missing" merely because the
@@ -3029,198 +873,8 @@ Promise.all([serverStateReady, roomRecoveryReady]).then(() => {
 
 
 // ============================================================
-// REAL ACCOUNT IDENTITY — PHASE 1/2
+// SHARED ROOM / ADMIN CRYPTO HELPERS
 // ============================================================
-// Game Account แยกออกจาก room token อย่างชัดเจน:
-//   - accountId    = ตัวตนถาวรของ Game Account
-//   - accountToken = credential ของ Login Identity ฝั่ง client
-//   - room token   = credential สำหรับ reconnect ผู้เล่น/โฮสต์ในห้องนั้น (แยกจากบัญชี)
-//
-// Temporary Account:
-//   - accountType = temporary
-//   - activity ต้องผ่าน server ก่อนจึงจะต่ออายุได้
-//   - temporaryExpiresAt = last server-confirmed activity + 15 วัน
-//   - หมดอายุแล้วลบข้อมูล account/stat/event ทั้งหมด; การกลับมาใหม่ได้ accountId ใหม่
-//
-// Phase 1/2 รองรับ Temporary Account + Google identity; Game Account ยังยึด accountId เป็นหลัก.
-const ACCOUNTS_PARTITION_KEY = "__ACCOUNTS__";
-const ACCOUNT_PROFILE_PREFIX = "ACCOUNT#";
-const ACCOUNT_TOTAL_SUFFIX = "#TOTAL";
-const ACCOUNT_ROLE_PREFIX = "#ROLE#";
-const ACCOUNT_EVENT_PREFIX = "#EVENT#";
-const ACCOUNT_IDENTITY_PREFIX = "IDENTITY#";
-const ACCOUNT_IDENTITY_HASH_FIELD = "loginTokenHash";
-const ACCOUNT_TYPE_TEMPORARY = "temporary";
-const ACCOUNT_TEMPORARY_TTL_MS = 15 * 24 * 60 * 60 * 1000;
-const ACCOUNT_ACTIVITY_PERSIST_MIN_MS = 5 * 60 * 1000;
-const ACCOUNT_NAME_CHANGE_COOLDOWN_MS = 60 * 1000;
-const ACCOUNT_GOOGLE_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const ACCOUNT_GOOGLE_STATE_TTL_MS = 10 * 60 * 1000;
-const ACCOUNT_GOOGLE_HANDOFF_TTL_MS = 90 * 1000;
-const ACCOUNT_GOOGLE_IDENTITY_PREFIX = "IDENTITY#GOOGLE#";
-const ACCOUNT_SESSION_PREFIX = "SESSION#";
-const ACCOUNT_SESSION_BY_ACCOUNT_PREFIX = "ACCOUNT_SESSION#";
-const ACCOUNT_ACTIVE_SESSION_HASH_FIELD = "activeSessionHash";
-const ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD = "activeSessionUpdatedAt";
-const ACCOUNT_ACTIVE_DEVICE_ID_FIELD = "activeDeviceId";
-const ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD = "activeActivityType";
-const ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD = "activeRoomId";
-const ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD = "activeMembershipId";
-const ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD = "activeActivityUpdatedAt";
-const ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD = "activeActivitySessionHash";
-const ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD = "activeActivityDeviceId";
-const ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD = "activeActivityTabId";
-const ACCOUNT_MIGRATION_PREFIX = "MIGRATION#LEGACY#";
-const GOOGLE_STATE_COOKIE = "ww_google_state";
-const GOOGLE_HANDOFF_COOKIE = "ww_google_handoff";
-
-const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || "").trim();
-const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || "").trim();
-const GOOGLE_CALLBACK_URL = String(process.env.GOOGLE_CALLBACK_URL || "").trim();
-const GOOGLE_SCOPES = String(process.env.GOOGLE_SCOPES || "openid profile email").trim() || "openid profile email";
-const AUTH_STATE_SECRET_ENV = process.env.AUTH_STATE_SECRET || "";
-const AUTH_STATE_SECRET = AUTH_STATE_SECRET_ENV || crypto.createHash("sha256").update(`werewolf-auth-state:${process.env.AWS_REGION || "local"}:${process.pid}`).digest("hex");
-
-const ADMIN_PANEL_PASSWORD = String(process.env.ADMIN_PANEL_PASSWORD || process.env.ADMIN_RESET_PASSWORD || "").trim();
-const ADMIN_GOOGLE_EMAILS = String(process.env.ADMIN_GOOGLE_EMAILS || process.env.ADMIN_GOOGLE_EMAIL || "")
-    .split(/[\s,;]+/)
-    .map((v) => v.trim().toLowerCase())
-    .filter(Boolean);
-const ADMIN_AUTH_CONFIGURED = !!ADMIN_PANEL_PASSWORD || ADMIN_GOOGLE_EMAILS.length > 0;
-const ADMIN_TAB_AUTH_ENFORCED = ADMIN_GOOGLE_EMAILS.length > 0;
-const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.createHash("sha256")
-    .update(`werewolf-admin-session:${ADMIN_PANEL_PASSWORD}:${ADMIN_GOOGLE_EMAILS.join(",")}:${AUTH_STATE_SECRET}`)
-    .digest("hex");
-const ADMIN_SESSION_COOKIE = "ww_admin";
-const ADMIN_GOOGLE_STATE_COOKIE = "ww_admin_google_state";
-const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const ADMIN_TAB_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const ADMIN_TAB_HANDOFF_TTL_MS = 5 * 60 * 1000;
-const ADMIN_TAB_HANDOFF_PARTITION_KEY = "__ADMIN_TAB_HANDOFF__";
-const adminTabHandoffMemory = new Map();
-const adminTabSessionRevoked = new Map();
-function adminGoogleStateCookieName(tabId) {
-    const safe = sanitizeAdminTabId(tabId);
-    if (!safe) return ADMIN_GOOGLE_STATE_COOKIE;
-    const suffix = crypto.createHash("sha256").update(safe).digest("hex").slice(0, 24);
-    return `${ADMIN_GOOGLE_STATE_COOKIE}_${suffix}`;
-}
-const accountProfileCache = new Map();
-const accountActivityDbAt = new Map();
-const accountRenameAt = new Map();
-let accountDbWarnedAt = 0;
-
-// GLOBAL PAGE PRESENCE — ผู้เล่นถือว่าออนไลน์ถ้ายังเปิดหน้าเกมไว้และหน้าอยู่เบื้องหน้า
-const accountPresence = new Map(); // accountId -> Map(socketId, { page, visible, lastPing, roomId, isHost })
-const PRESENCE_STALE_MS = 70_000;
-const ACCOUNT_SESSION_WATCH_INTERVAL_MS = Math.max(2500, Math.min(15000, Number(process.env.ACCOUNT_SESSION_WATCH_INTERVAL_MS) || 4000));
-const accountSessionWatchAt = new Map();
-let accountSessionWatchTimer = null;
-
-async function validateConnectedAccountSessionsCrossInstance() {
-    const now = Date.now();
-    const accountIds = new Set();
-    for (const sock of io?.sockets?.sockets?.values?.() || []) {
-        if (!sock?.connected) continue;
-        const id = normalizeAccountId(sock.data?.accountId || "");
-        if (id) accountIds.add(id);
-    }
-    for (const id of accountIds) {
-        const last = Number(accountSessionWatchAt.get(id) || 0);
-        if (now - last < ACCOUNT_SESSION_WATCH_INTERVAL_MS) continue;
-        accountSessionWatchAt.set(id, now);
-        try {
-            const profile = await getAccountProfile(id, { forceFresh: true });
-            if (!profile) continue;
-            if (profile.status === "deleted" || profile.status === "suspended") {
-                const reason = profile.status === "deleted" ? "account_deleted" : "account_suspended";
-                disconnectAccountSockets(id, "__NO_ACTIVE_SESSION__", reason, "");
-                continue;
-            }
-            const activeHash = String(profile[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || "");
-            if (!activeHash) continue;
-            const activeDevice = normalizeDeviceId(profile[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "");
-            for (const sock of getConnectedSocketsForAccount(id)) {
-                if (String(sock.data?.accountSessionHash || "") !== activeHash || (activeDevice && normalizeDeviceId(sock.data?.deviceId || "") && activeDevice !== normalizeDeviceId(sock.data?.deviceId || ""))) {
-                    sock.data.accountSessionRevoked = true;
-                    try { sock.emit("account_session_revoked", { reason: "new_login", deviceId: activeDevice }); } catch (_) {}
-                    setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 20);
-                }
-            }
-        } catch (_) {
-            // Do not disconnect on a transient DynamoDB read error; the next cycle is authoritative.
-        }
-    }
-}
-
-function ensureAccountSessionWatchdog() {
-    if (accountSessionWatchTimer) return;
-    accountSessionWatchTimer = setInterval(() => {
-        validateConnectedAccountSessionsCrossInstance().catch(() => {});
-    }, ACCOUNT_SESSION_WATCH_INTERVAL_MS);
-    if (typeof accountSessionWatchTimer.unref === "function") accountSessionWatchTimer.unref();
-}
-
-
-function setAccountPresenceSocket(accountId, socketId, data = {}) {
-    const id = normalizeAccountId(accountId);
-    if (!id || !socketId) return;
-    let set = accountPresence.get(id);
-    if (!set) { set = new Map(); accountPresence.set(id, set); }
-    set.set(socketId, {
-        page: String(data.page || "unknown").slice(0, 24),
-        name: sanitizeName(data.name, ""),
-        visible: data.visible !== false,
-        lastPing: Date.now(),
-        roomId: String(data.roomId || "").toUpperCase(),
-        isHost: !!data.isHost,
-    });
-}
-function updateAccountPresenceSocket(socketId, data = {}) {
-    for (const [accountId, set] of accountPresence) {
-        if (!set.has(socketId)) continue;
-        const old = set.get(socketId) || {};
-        set.set(socketId, { ...old, ...data, name: data.name !== undefined ? sanitizeName(data.name, old.name || "") : (old.name || ""), lastPing: Date.now() });
-        return accountId;
-    }
-    return "";
-}
-function removeAccountPresenceSocket(socketId) {
-    for (const [accountId, set] of accountPresence) {
-        if (!set.delete(socketId)) continue;
-        if (!set.size) accountPresence.delete(accountId);
-        return accountId;
-    }
-    return "";
-}
-function getVisibleAccountPresence(accountId) {
-    const id = normalizeAccountId(accountId);
-    const set = accountPresence.get(id);
-    if (!set) return [];
-    const now = Date.now();
-    const out = [];
-    for (const [socketId, entry] of set) {
-        if (now - Number(entry.lastPing || 0) > PRESENCE_STALE_MS) {
-            set.delete(socketId);
-            continue;
-        }
-        if (!entry.visible) continue;
-        out.push({ socketId, page: entry.page || "unknown", name: entry.name || "", roomId: entry.roomId || "", isHost: !!entry.isHost, connected: true });
-    }
-    if (!set.size) accountPresence.delete(id);
-    return out;
-}
-
-function normalizeAccountId(accountId) {
-    const value = String(accountId || "").trim();
-    if (!value || value.length > 128) return "";
-    return value.replace(/[^A-Za-z0-9._:-]/g, "_");
-}
-function normalizeAccountToken(accountToken) {
-    const value = String(accountToken || "").trim();
-    if (!value || value.length > 256) return "";
-    return value;
-}
 function normalizeDeviceId(deviceId) {
     const value = String(deviceId || "").trim();
     if (!value || value.length > 160) return "";
@@ -3234,89 +888,15 @@ function normalizeTabId(tabId) {
 function generateMembershipId() {
     return crypto.randomUUID ? crypto.randomUUID() : `mem-${genId()}-${genId()}-${genId()}`;
 }
-
-// OAuth return target must remain a local path. Never accept an absolute URL or protocol-relative
-// target here, otherwise a signed OAuth state could be turned into an open redirect.
-function normalizeReturnTo(value = "/") {
-    const raw = String(value || "/").trim();
-    if (!raw || raw.length > 1024 || raw[0] !== "/" || raw.startsWith("//") || raw.includes("\\")) return "/";
-    try {
-        const u = new URL(raw, "https://werewolf.local");
-        if (u.origin !== "https://werewolf.local" || u.username || u.password) return "/";
-        return `${u.pathname || "/"}${u.search || ""}`;
-    } catch (_) {
-        return "/";
-    }
+function hmacState(payloadPart, secret) {
+    return b64urlEncode(crypto.createHmac("sha256", String(secret || "")).update(payloadPart).digest());
 }
-function hashAccountToken(accountToken) {
-    const token = normalizeAccountToken(accountToken);
-    return token ? crypto.createHash("sha256").update(token).digest("hex") : "";
-}
-function generateAccountId() {
-    return crypto.randomUUID ? crypto.randomUUID() : `${genId()}-${genId()}-${genId()}`;
-}
-
-const TEMPORARY_NAME_LEFT = [
-    "หมาป่าจันทรา", "หมาป่าดาวตก", "หมาป่าเมฆา", "หมาป่าพราย", "หมาป่าคราม",
-    "นักล่าเงา", "ผู้เฝ้าราตรี", "ผู้เดินทาง", "ผู้พิทักษ์ป่า", "นักพเนจร",
-    "จิ้งจอกเงิน", "อีกาดำ", "กวางดาว", "แมวดาว", "เหยี่ยวราตรี",
-];
-const TEMPORARY_NAME_RIGHT = ["อรุณ", "จันทรา", "สายหมอก", "เงา", "ประกาย", "สายลม", "พายุ", "ดาวเหนือ", "คืนวัน", "แสงดาว"];
-function randomTemporaryDisplayName() {
-    const left = TEMPORARY_NAME_LEFT[Math.floor(Math.random() * TEMPORARY_NAME_LEFT.length)];
-    const right = TEMPORARY_NAME_RIGHT[Math.floor(Math.random() * TEMPORARY_NAME_RIGHT.length)];
-    const suffix = Math.floor(1000 + Math.random() * 9000);
-    return sanitizeName(`${left}${right}#${suffix}`, "ผู้เล่น");
-}
-function accountProfileKey(accountId) {
-    const id = normalizeAccountId(accountId);
-    return id ? `${ACCOUNT_PROFILE_PREFIX}${id}` : "";
-}
-function accountIdentityKey(tokenHash) {
-    const hash = String(tokenHash || "").trim();
-    return hash ? `${ACCOUNT_IDENTITY_PREFIX}${hash}` : "";
-}
-function logAccountDbWarning(e) {
-    const now = Date.now();
-    if (now - accountDbWarnedAt < 30_000) return;
-    accountDbWarnedAt = now;
-    console.error("[accounts] บัญชีใช้ DynamoDB ไม่ได้:", e?.name, e?.message);
-}
-function buildTemporaryExpiry(nowMs = Date.now()) {
-    return new Date(nowMs + ACCOUNT_TEMPORARY_TTL_MS).toISOString();
-}
-function isTemporaryExpired(profile, nowMs = Date.now()) {
-    if (!profile || profile.accountType !== ACCOUNT_TYPE_TEMPORARY) return false;
-    const expires = Date.parse(profile.temporaryExpiresAt || "");
-    return Number.isFinite(expires) && expires <= nowMs;
-}
-function accountPublicProfile(profile) {
-    if (!profile) return null;
-    const type = profile.accountType || ACCOUNT_TYPE_TEMPORARY;
-    return {
-        accountId: normalizeAccountId(profile.accountId || String(profile.statKey || "").replace(/^ACCOUNT#/, "")),
-        displayName: sanitizeName(profile.currentName || "ผู้เล่น", "ผู้เล่น"),
-        accountType: type,
-        provider: profile.provider || (type === "google" ? "google" : "temporary"),
-        googleLinked: type === "google" || profile.provider === "google",
-        status: profile.status || "active",
-        createdAt: profile.createdAt || profile.firstSeen || null,
-        lastSeenAt: profile.lastSeen || null,
-        temporaryExpiresAt: type === ACCOUNT_TYPE_TEMPORARY ? (profile.temporaryExpiresAt || null) : null,
-    };
-}
-
-function hmacState(payloadPart, secret = AUTH_STATE_SECRET) {
-    return b64urlEncode(crypto.createHmac("sha256", secret).update(payloadPart).digest());
-}
-
-function createSignedState(payload, secret = AUTH_STATE_SECRET) {
+function createSignedState(payload, secret) {
     const body = b64urlEncode(JSON.stringify(payload));
     return `v1.${body}.${hmacState(body, secret)}`;
 }
-
-function verifySignedState(token, secret = AUTH_STATE_SECRET) {
-    if (typeof token !== "string" || !token) return null;
+function verifySignedState(token, secret) {
+    if (typeof token !== "string" || !token || !secret) return null;
     const parts = token.split(".");
     if (parts.length !== 3 || parts[0] !== "v1") return null;
     const [_, body, sig] = parts;
@@ -3331,12 +911,10 @@ function verifySignedState(token, secret = AUTH_STATE_SECRET) {
         return payload;
     } catch (_) { return null; }
 }
-
 function authCookieSecure(req) {
     const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "").split(",")[0].trim().toLowerCase();
     return proto === "https";
 }
-
 function appendSetCookie(res, cookie) {
     const existing = res.getHeader("Set-Cookie");
     if (!existing) return res.setHeader("Set-Cookie", [cookie]);
@@ -3344,1560 +922,12 @@ function appendSetCookie(res, cookie) {
     list.push(cookie);
     res.setHeader("Set-Cookie", list);
 }
-
-function setHttpOnlyCookie(res, name, value, maxAgeMs, secure, pathValue = "/") {
-    const parts = [
-        `${name}=${encodeURIComponent(String(value || ""))}`,
-        `Path=${pathValue}`,
-        `Max-Age=${Math.max(0, Math.floor(maxAgeMs / 1000))}`,
-        "HttpOnly",
-        "SameSite=Lax",
-    ];
-    if (secure) parts.push("Secure");
-    appendSetCookie(res, parts.join("; "));
-}
-
 function clearHttpOnlyCookie(res, name, secure, pathValue = "/") {
     const parts = [`${name}=`, `Path=${pathValue}`, "Max-Age=0", "HttpOnly", "SameSite=Lax"];
     if (secure) parts.push("Secure");
     appendSetCookie(res, parts.join("; "));
 }
 
-function googleCallbackUrlIsAllowed() {
-    if (!GOOGLE_CALLBACK_URL) return false;
-    try {
-        const u = new URL(GOOGLE_CALLBACK_URL);
-        if (u.protocol === "https:") return true;
-        return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]");
-    } catch (_) {
-        return false;
-    }
-}
-
-function googleIsConfigured() {
-    return !!(GOOGLE_CLIENT_ID && GOOGLE_CALLBACK_URL && AUTH_STATE_SECRET_ENV && googleCallbackUrlIsAllowed());
-}
-
-function googleJwksUrl() {
-    return "https://www.googleapis.com/oauth2/v3/certs";
-}
-
-// Small, bounded HTTPS JSON/form client used only for direct Google OAuth/OIDC calls.
-// Do not use a third-party auth proxy/intermediary here. A finite timeout is important on
-// Elastic Beanstalk/CloudFront so an upstream Google/network stall cannot leave the callback
-// hanging until the CDN returns a generic 504.
-function requestJsonHttps(targetUrl, { method = "GET", headers = {}, form = null, body = null, timeoutMs = 15000, maxBytes = 2 * 1024 * 1024 } = {}) {
-    return new Promise((resolve, reject) => {
-        let u;
-        try { u = new URL(String(targetUrl)); }
-        catch (_) { reject(Object.assign(new Error("invalid upstream URL"), { code: "GOOGLE_UPSTREAM_INVALID_URL" })); return; }
-        if (u.protocol !== "https:") {
-            reject(Object.assign(new Error("upstream must use HTTPS"), { code: "GOOGLE_UPSTREAM_HTTPS_REQUIRED" }));
-            return;
-        }
-
-        let payload = body == null ? null : (Buffer.isBuffer(body) ? body : Buffer.from(String(body)));
-        if (form && typeof form === "object") {
-            payload = Buffer.from(new URLSearchParams(Object.entries(form).map(([k, v]) => [String(k), String(v ?? "")])).toString(), "utf8");
-        }
-
-        const requestHeaders = {
-            Accept: "application/json",
-            "User-Agent": "Werewolf-Online-TH/GoogleOAuth",
-            ...headers,
-        };
-        if (payload) {
-            if (!requestHeaders["Content-Type"] && !requestHeaders["content-type"]) {
-                requestHeaders["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
-            }
-            requestHeaders["Content-Length"] = payload.length;
-        }
-
-        let settled = false;
-        let overallTimer = null;
-        const finishResolve = (value) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(overallTimer);
-            resolve(value);
-        };
-        const finishReject = (err) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(overallTimer);
-            reject(err);
-        };
-
-        const req = https.request({
-            protocol: u.protocol, hostname: u.hostname, port: u.port || 443, path: `${u.pathname}${u.search}`,
-            method: String(method || "GET").toUpperCase(), headers: requestHeaders,
-        }, (res) => {
-            const chunks = [];
-            let total = 0;
-            res.setEncoding("utf8");
-            res.on("data", (chunk) => {
-                total += Buffer.byteLength(chunk, "utf8");
-                if (total <= maxBytes) chunks.push(chunk);
-                else {
-                    const err = Object.assign(new Error("upstream response too large"), { code: "GOOGLE_UPSTREAM_RESPONSE_TOO_LARGE" });
-                    finishReject(err);
-                    try { req.destroy(err); } catch (_) {}
-                }
-            });
-            res.on("end", () => {
-                if (settled) return;
-                const raw = chunks.join("");
-                let data = null;
-                try { data = raw ? JSON.parse(raw) : {}; }
-                catch (_) {
-                    finishReject(Object.assign(new Error("upstream returned invalid JSON"), { code: "GOOGLE_UPSTREAM_INVALID_JSON", status: res.statusCode || 0 }));
-                    return;
-                }
-                if ((res.statusCode || 0) < 200 || (res.statusCode || 0) >= 300) {
-                    const upstreamCode = String(data?.error || data?.error_description || "").slice(0, 120);
-                    finishReject(Object.assign(new Error(`Google upstream HTTP ${res.statusCode}`), {
-                        code: "GOOGLE_UPSTREAM_HTTP_ERROR", status: res.statusCode || 0, upstreamCode,
-                    }));
-                    return;
-                }
-                finishResolve(data);
-            });
-        });
-
-        overallTimer = setTimeout(() => {
-            const err = Object.assign(new Error("Google upstream request timed out"), { code: "GOOGLE_UPSTREAM_TIMEOUT" });
-            try { req.destroy(err); } catch (_) {}
-            finishReject(err);
-        }, Math.max(1000, Number(timeoutMs) || 15000));
-
-        req.setTimeout(Math.max(1000, Number(timeoutMs) || 15000), () => {
-            const err = Object.assign(new Error("Google upstream socket timed out"), { code: "GOOGLE_UPSTREAM_TIMEOUT" });
-            try { req.destroy(err); } catch (_) {}
-            finishReject(err);
-        });
-        req.on("error", (err) => {
-            finishReject(Object.assign(new Error("Google upstream request failed"), { code: err?.code === "GOOGLE_UPSTREAM_TIMEOUT" ? "GOOGLE_UPSTREAM_TIMEOUT" : "GOOGLE_UPSTREAM_NETWORK_ERROR" }));
-        });
-        if (payload) req.write(payload);
-        req.end();
-    });
-}
-
-function normalizeGoogleIssuer(value) {
-    const issuer = String(value || "").replace(/\/$/, "");
-    return issuer === "https://accounts.google.com" || issuer === "accounts.google.com" ? issuer : "";
-}
-
-function normalizeGoogleAudience(value) {
-    if (Array.isArray(value)) return value.map((v) => String(v || "").trim()).filter(Boolean);
-    return [String(value || "").trim()].filter(Boolean);
-}
-
-const googleJwksCache = new Map();
-async function fetchGoogleJwk(kid, { forceRefresh = false } = {}) {
-    const cached = !forceRefresh ? googleJwksCache.get(kid) : null;
-    if (cached && cached.expiresAt > Date.now()) return cached.jwk;
-    const data = await requestJsonHttps(googleJwksUrl());
-    const keys = Array.isArray(data?.keys) ? data.keys : [];
-    // Google rotates signing keys. Cache for a bounded period and refresh on a kid miss.
-    const expiresAt = Date.now() + 6 * 60 * 60 * 1000;
-    keys.forEach((jwk) => { if (jwk?.kid) googleJwksCache.set(jwk.kid, { jwk, expiresAt }); });
-    return keys.find((jwk) => jwk?.kid === kid) || null;
-}
-
-async function verifyGoogleIdToken(idToken, expectedNonce = "") {
-    if (!googleIsConfigured()) throw Object.assign(new Error("Google is not configured"), { code: "GOOGLE_NOT_CONFIGURED" });
-    const parts = String(idToken || "").split(".");
-    if (parts.length !== 3) throw Object.assign(new Error("invalid Google token"), { code: "GOOGLE_TOKEN_INVALID" });
-    let header, claims;
-    try {
-        header = JSON.parse(b64urlDecode(parts[0]));
-        claims = JSON.parse(b64urlDecode(parts[1]));
-    } catch (_) {
-        throw Object.assign(new Error("invalid Google token"), { code: "GOOGLE_TOKEN_INVALID" });
-    }
-    if (header?.alg !== "RS256" || !header?.kid) throw Object.assign(new Error("unsupported Google token"), { code: "GOOGLE_TOKEN_INVALID" });
-    let jwk = await fetchGoogleJwk(header.kid);
-    if (!jwk) jwk = await fetchGoogleJwk(header.kid, { forceRefresh: true });
-    if (!jwk) throw Object.assign(new Error("Google signing key not found"), { code: "GOOGLE_KEY_NOT_FOUND" });
-    let publicKey;
-    try {
-        publicKey = crypto.createPublicKey({ key: jwk, format: "jwk" });
-        const verifier = crypto.createVerify("RSA-SHA256");
-        verifier.update(`${parts[0]}.${parts[1]}`);
-        verifier.end();
-        const signature = Buffer.from(parts[2].replace(/-/g, "+").replace(/_/g, "/"), "base64");
-        if (!verifier.verify(publicKey, signature)) throw new Error("signature invalid");
-    } catch (_) {
-        throw Object.assign(new Error("Google token signature invalid"), { code: "GOOGLE_TOKEN_INVALID" });
-    }
-    const nowSec = Math.floor(Date.now() / 1000);
-    const exp = Number(claims.exp);
-    const iat = Number(claims.iat);
-    const audiences = normalizeGoogleAudience(claims.aud);
-    const issuer = normalizeGoogleIssuer(claims.iss);
-    const clientId = String(GOOGLE_CLIENT_ID);
-    const sub = String(claims.sub || "").trim();
-    const azpValid = !Array.isArray(claims.aud) || String(claims.azp || "") === clientId;
-    if (!issuer || !audiences.includes(clientId) || !azpValid || !Number.isFinite(exp) || exp <= nowSec || !Number.isFinite(iat) || iat > nowSec + 60 || (expectedNonce && String(claims.nonce || "") !== String(expectedNonce))) {
-        throw Object.assign(new Error("Google token claims invalid"), { code: "GOOGLE_TOKEN_INVALID" });
-    }
-    if (!sub) throw Object.assign(new Error("Google subject missing"), { code: "GOOGLE_SUBJECT_MISSING" });
-    return { claims, providerSubject: sub };
-}
-
-function googleIdentitySubjectHash(providerSubject) {
-    return crypto.createHash("sha256").update(String(providerSubject)).digest("hex");
-}
-function googleIdentityKey(providerSubject) {
-    return `${ACCOUNT_GOOGLE_IDENTITY_PREFIX}${googleIdentitySubjectHash(providerSubject)}`;
-}
-function accountSessionKey(tokenHash) {
-    return `${ACCOUNT_SESSION_PREFIX}${String(tokenHash || "")}`;
-}
-function accountSessionByAccountKey(accountId, tokenHash) {
-    return `${ACCOUNT_SESSION_BY_ACCOUNT_PREFIX}${normalizeAccountId(accountId)}#${String(tokenHash || "")}`;
-}
-function accountLegacyMigrationKey(name) {
-    const source = sanitizeName(name, "ผู้เล่น");
-    const hash = crypto.createHash("sha256").update(source).digest("hex");
-    return `${ACCOUNT_MIGRATION_PREFIX}${hash}`;
-}
-
-function sameAccountActivity(a, type, roomId) {
-    return !!a && String(a[ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD] || "") === String(type || "") &&
-        String(a[ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD] || "").toUpperCase() === String(roomId || "").toUpperCase();
-}
-function getAccountActiveActivity(profile) {
-    if (!profile) return null;
-    const type = String(profile[ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD] || "").trim().toUpperCase();
-    const roomId = String(profile[ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD] || "").trim().toUpperCase();
-    if (!type || !roomId) return null;
-    return {
-        type,
-        roomId,
-        membershipId: String(profile[ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD] || ""),
-        sessionHash: String(profile[ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD] || ""),
-        deviceId: normalizeDeviceId(profile[ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD] || ""),
-        tabId: normalizeTabId(profile[ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD] || ""),
-        updatedAt: profile[ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD] || null,
-    };
-}
-async function acquireAccountActivity(accountId, { type, roomId, membershipId = "", sessionHash = "", deviceId = "", tabId = "", allowMultipleTabs = false } = {}) {
-    const id = normalizeAccountId(accountId);
-    const safeType = String(type || "").trim().toUpperCase();
-    const safeRoom = String(roomId || "").trim().toUpperCase();
-    const safeMembership = String(membershipId || "").trim().slice(0, 160);
-    const safeSession = String(sessionHash || "").trim().slice(0, 128);
-    const safeDevice = normalizeDeviceId(deviceId);
-    const safeTab = normalizeTabId(tabId);
-    if (!id || !safeType || !safeRoom) return { ok: false, code: "ACCOUNT_ACTIVITY_INVALID" };
-    const doc = await getDynamoDocClient();
-    const now = new Date().toISOString();
-    const setValues = { ":type": safeType, ":room": safeRoom, ":membership": safeMembership, ":updated": now, ":session": safeSession, ":device": safeDevice, ":tab": safeTab, ":empty": "" };
-    const updateExpression = "SET #type = :type, #room = :room, #membership = :membership, #updated = :updated, #session = :session, #device = :device, #tab = :tab";
-    const names = {
-        "#type": ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD, "#room": ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD,
-        "#membership": ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD, "#updated": ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD,
-        "#session": ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD, "#device": ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD,
-        "#tab": ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD,
-    };
-    try {
-        const current = await getAccountProfile(id, { forceFresh: true });
-        const active = getAccountActiveActivity(current);
-        const sameRoom = sameAccountActivity(current, safeType, safeRoom);
-        // Multiple tabs/frames on the SAME authenticated device are views of one activity,
-        // not multiple activities. The durable guard only prevents a second *different*
-        // activity (another room or host/player mode). Session/device takeover is handled
-        // separately by verifyAccountLogin + activeSessionHash.
-        let condition = "attribute_not_exists(#type) OR (#type = :type AND #room = :room)";
-        const out = await doc.send(new UpdateCommand({
-            TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-            UpdateExpression: updateExpression, ConditionExpression: condition,
-            ExpressionAttributeNames: names, ExpressionAttributeValues: setValues, ReturnValues: "ALL_NEW",
-        }));
-        accountProfileCache.set(id, out.Attributes || current || null);
-        return { ok: true, activity: getAccountActiveActivity(out.Attributes || {}) };
-    } catch (e) {
-        if (e?.name !== "ConditionalCheckFailedException" && e?.name !== "TransactionCanceledException") throw e;
-        const current = await getAccountProfile(id, { forceFresh: true });
-        const active = getAccountActiveActivity(current);
-        if (sameAccountActivity(current, safeType, safeRoom)) {
-            // Same activity is explicitly shareable across tabs of the same session/device.
-            // Another instance may have won the activity lease for the same account+room. A
-            // different session may legitimately take over after the old account session was revoked.
-            try {
-                const out = await doc.send(new UpdateCommand({
-                    TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-                    UpdateExpression: updateExpression, ConditionExpression: "#type = :type AND #room = :room",
-                    ExpressionAttributeNames: names, ExpressionAttributeValues: setValues, ReturnValues: "ALL_NEW",
-                }));
-                accountProfileCache.set(id, out.Attributes || current || null);
-                return { ok: true, activity: getAccountActiveActivity(out.Attributes || {}) };
-            } catch (_) {}
-        }
-        return { ok: false, code: "ACCOUNT_ACTIVITY_CONFLICT", activity: active };
-    }
-}
-async function clearAccountActivity(accountId, { roomId = "", membershipId = "", sessionHash = "", deviceId = "", force = false } = {}) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return false;
-    const doc = await getDynamoDocClient();
-    const safeRoom = String(roomId || "").trim().toUpperCase();
-    const conditions = [];
-    const values = {};
-    if (safeRoom) { conditions.push("#room = :room"); values[":room"] = safeRoom; }
-    else if (!force) return false;
-    const safeMembership = String(membershipId || "").trim().slice(0, 160);
-    const safeSession = String(sessionHash || "").trim().slice(0, 128);
-    const safeDevice = normalizeDeviceId(deviceId || "");
-    if (!force && safeMembership) { conditions.push("#membership = :membership"); values[":membership"] = safeMembership; }
-    if (!force && safeSession) { conditions.push("#session = :session"); values[":session"] = safeSession; }
-    if (!force && safeDevice) { conditions.push("#device = :device"); values[":device"] = safeDevice; }
-    const guardCondition = !force && conditions.length ? conditions.join(" AND ") : undefined;
-    try {
-        await doc.send(new UpdateCommand({
-            TableName: STATS_TABLE_NAME,
-            Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-            UpdateExpression: "REMOVE #type, #room, #membership, #updated, #session, #device, #tab",
-            ConditionExpression: guardCondition,
-            ExpressionAttributeNames: { "#type": ACCOUNT_ACTIVE_ACTIVITY_TYPE_FIELD, "#room": ACCOUNT_ACTIVE_ACTIVITY_ROOM_FIELD, "#membership": ACCOUNT_ACTIVE_ACTIVITY_MEMBERSHIP_FIELD, "#updated": ACCOUNT_ACTIVE_ACTIVITY_UPDATED_AT_FIELD, "#session": ACCOUNT_ACTIVE_ACTIVITY_SESSION_HASH_FIELD, "#device": ACCOUNT_ACTIVE_ACTIVITY_DEVICE_ID_FIELD, "#tab": ACCOUNT_ACTIVE_ACTIVITY_TAB_ID_FIELD },
-            ExpressionAttributeValues: Object.keys(values).length ? values : undefined,
-        }));
-        accountProfileCache.delete(id);
-        return true;
-    } catch (e) {
-        if (e?.name === "ConditionalCheckFailedException") return false;
-        throw e;
-    }
-}
-function accountSocketMatchesSession(socket, accountId, activeHash) {
-    return !!socket && normalizeAccountId(socket.data?.accountId || "") === normalizeAccountId(accountId) &&
-        String(socket.data?.accountSessionHash || "") === String(activeHash || "");
-}
-function disconnectAccountSockets(accountId, activeHash, reason = "session_replaced", activeDeviceId = "") {
-    const id = normalizeAccountId(accountId);
-    if (!id || !io?.sockets?.sockets) return 0;
-    const nextDevice = normalizeDeviceId(activeDeviceId || "");
-    let count = 0;
-    for (const socket of io.sockets.sockets.values()) {
-        if (!socket?.data || normalizeAccountId(socket.data.accountId || "") !== id) continue;
-        if (String(socket.data.accountSessionHash || "") === String(activeHash || "")) continue;
-        socket.data.accountSessionRevoked = true;
-        count++;
-        try { socket.emit("account_session_revoked", { reason, deviceId: nextDevice }); } catch (_) {}
-        setTimeout(() => { try { socket.disconnect(true); } catch (_) {} }, 20);
-    }
-    return count;
-}
-async function revokeAllOlderAccountSessions(accountId, keepHash = "") {
-    const id = normalizeAccountId(accountId);
-    if (!id) return 0;
-    const markers = await queryAccountSessionMarkers(id);
-    const old = markers.filter((it) => String(it.tokenHash || "") && String(it.tokenHash) !== String(keepHash || ""));
-    const doc = await getDynamoDocClient();
-    await Promise.all(old.flatMap((it) => [
-        doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(it.tokenHash) } })),
-        doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey } })),
-    ]));
-    return old.length;
-}
-
-async function issueGoogleAccountSession(accountId, { deviceId = "" } = {}) {
-    const id = normalizeAccountId(accountId);
-    if (!id) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    const doc = await getDynamoDocClient();
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const raw = crypto.randomBytes(48).toString("base64url");
-        const hash = hashAccountToken(raw);
-        const now = new Date();
-        const iso = now.toISOString();
-        const expires = new Date(now.getTime() + ACCOUNT_GOOGLE_SESSION_TTL_MS).toISOString();
-        const lookup = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(hash), accountId: id, tokenHash: hash, provider: "google", createdAt: iso, expiresAt: expires, updatedAt: iso, deviceId: normalizeDeviceId(deviceId) };
-        const marker = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, hash), accountId: id, tokenHash: hash, provider: "google", createdAt: iso, expiresAt: expires, deviceId: normalizeDeviceId(deviceId) };
-        try {
-            await doc.send(new TransactWriteCommand({ TransactItems: [
-                { Put: { TableName: STATS_TABLE_NAME, Item: lookup, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-                { Put: { TableName: STATS_TABLE_NAME, Item: marker, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-                { Update: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) }, UpdateExpression: "SET #active = :hash, #activeAt = :now, #device = :device", ExpressionAttributeNames: { "#active": ACCOUNT_ACTIVE_SESSION_HASH_FIELD, "#activeAt": ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD, "#device": ACCOUNT_ACTIVE_DEVICE_ID_FIELD }, ExpressionAttributeValues: { ":hash": hash, ":now": iso, ":device": normalizeDeviceId(deviceId) } } },
-            ] }));
-            await revokeAllOlderAccountSessions(id, hash).catch((e) => { console.error("[accounts] old Google sessions cleanup failed:", e?.message || e); });
-            accountProfileCache.delete(id);
-            disconnectAccountSockets(id, hash, "new_login", normalizeDeviceId(deviceId));
-            return { token: raw, tokenHash: hash, expiresAt: expires };
-        } catch (e) {
-            if (e?.name !== "TransactionCanceledException" && e?.name !== "ConditionalCheckFailedException") throw e;
-        }
-    }
-    throw Object.assign(new Error("cannot create account session"), { code: "ACCOUNT_SESSION_CREATE_FAILED" });
-}
-
-async function revokeAccountSession(accountId, accountToken) {
-    const id = normalizeAccountId(accountId);
-    const hash = hashAccountToken(accountToken);
-    if (!id || !hash) return false;
-    const doc = await getDynamoDocClient();
-    await Promise.allSettled([
-        doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(hash) } })),
-        doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, hash) } })),
-    ]);
-    return true;
-}
-
-async function getAccountSessionByHash(tokenHash) {
-    const hash = String(tokenHash || "");
-    if (!hash) return null;
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new GetCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(hash) } }));
-    return out.Item || null;
-}
-
-async function queryAccountSessionMarkers(accountId) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return [];
-    const doc = await getDynamoDocClient();
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-        const out = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-            ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": `${ACCOUNT_SESSION_BY_ACCOUNT_PREFIX}${id}#` },
-            ExclusiveStartKey,
-        }));
-        items.push(...(out.Items || []));
-        ExclusiveStartKey = out.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    return items;
-}
-
-async function queryAccountGoogleIdentityItems(accountId) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return [];
-    const doc = await getDynamoDocClient();
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-        const out = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-            FilterExpression: "accountId = :accountId",
-            ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": ACCOUNT_GOOGLE_IDENTITY_PREFIX, ":accountId": id },
-            ExclusiveStartKey,
-        }));
-        items.push(...(out.Items || []));
-        ExclusiveStartKey = out.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    return items;
-}
-
-async function getAccountLegacyMigration(accountId, legacyName) {
-    const source = sanitizeName(legacyName, "");
-    if (!source) return null;
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new GetCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountLegacyMigrationKey(source) },
-    }));
-    const item = out.Item || null;
-    if (item && normalizeAccountId(item.accountId) !== normalizeAccountId(accountId)) return { ...item, conflict: true };
-    return item;
-}
-
-async function queryAccountLegacyMigrationItems(accountId) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return [];
-    const doc = await getDynamoDocClient();
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-        const out = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-            ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": ACCOUNT_MIGRATION_PREFIX },
-            FilterExpression: "accountId = :accountId",
-            ExclusiveStartKey,
-        }));
-        items.push(...(out.Items || []));
-        ExclusiveStartKey = out.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    return items;
-}
-
-async function migrateLegacyPlayerToAccount(legacyName, accountId) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-        const sourceName = sanitizeName(legacyName, "");
-        const targetId = normalizeAccountId(accountId);
-        if (!sourceName) throw Object.assign(new Error("missing legacy name"), { code: "LEGACY_NOT_FOUND" });
-        if (!targetId) throw Object.assign(new Error("missing accountId"), { code: "ACCOUNT_NOT_FOUND" });
-
-        const [sourceItems, targetProfile, migration] = await Promise.all([
-            queryLegacyPlayerByName(sourceName),
-            getAccountProfile(targetId, { forceFresh: true }),
-            getAccountLegacyMigration(targetId, sourceName),
-        ]);
-        if (!sourceItems.length) throw Object.assign(new Error("legacy player not found"), { code: "LEGACY_NOT_FOUND" });
-        if (!targetProfile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-        if (targetProfile.status === "deleted") throw Object.assign(new Error("account deleted"), { code: "ACCOUNT_DELETED" });
-        if (migration?.conflict) throw Object.assign(new Error("legacy data already migrated to another account"), { code: "LEGACY_ALREADY_MIGRATED" });
-        if (migration?.status === "done") {
-            return { ok: true, changed: false, resumed: false, legacyName: sourceName, accountId: targetId, status: "done", events: migration.eventsCopied || 0 };
-        }
-
-        const reg = sourceItems.find((it) => String(it.statKey || "") === "REG") || {};
-        const legacyTotal = sourceItems.find((it) => String(it.statKey || "") === "TOTAL");
-        const legacyEvents = sourceItems.filter((it) => String(it.statKey || "").startsWith("EVENT#") && it.isTester !== true);
-        const totalGames = Number.isFinite(Number(legacyTotal?.games)) ? Number(legacyTotal.games) : legacyEvents.filter((it) => it.type === "game_end").length;
-        const totalWins = Number.isFinite(Number(legacyTotal?.wins)) ? Number(legacyTotal.wins) : legacyEvents.filter((it) => it.type === "game_end" && it.won === true).length;
-        const totalLeaves = Number.isFinite(Number(legacyTotal?.leaves)) ? Number(legacyTotal.leaves) : legacyEvents.filter((it) => it.type === "game_end" && it.left === true).length;
-        const roleRows = sourceItems.filter((it) => String(it.statKey || "").startsWith("ROLE#"));
-        const migrationKey = accountLegacyMigrationKey(sourceName);
-        const now = new Date().toISOString();
-
-        if (!migration) {
-            const tx = [
-                { Put: {
-                    TableName: STATS_TABLE_NAME,
-                    Item: { playerName: ACCOUNTS_PARTITION_KEY, statKey: migrationKey, accountId: targetId, legacyName: sourceName, status: "pending", createdAt: now, updatedAt: now, eventsCopied: 0 },
-                    ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)",
-                }},
-                { Update: {
-                    TableName: STATS_TABLE_NAME,
-                    Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: `${ACCOUNT_PROFILE_PREFIX}${targetId}${ACCOUNT_TOTAL_SUFFIX}` },
-                    UpdateExpression: "ADD games :games, wins :wins, leaves :leaves",
-                    ExpressionAttributeValues: { ":games": totalGames, ":wins": totalWins, ":leaves": totalLeaves },
-                }},
-                { Update: {
-                    TableName: STATS_TABLE_NAME,
-                    Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(targetId) },
-                    UpdateExpression: "SET legacyMigratedAt = :now, legacyMigratedFrom = :source, legacyFirstSeen = :firstSeen, legacyLastSeen = :lastSeen, legacyJoinCount = :joinCount",
-                    ExpressionAttributeValues: {
-                        ":now": now,
-                        ":source": sourceName,
-                        ":firstSeen": reg.firstSeen || null,
-                        ":lastSeen": reg.lastSeen || null,
-                        ":joinCount": Number(reg.joinCount || 0),
-                    },
-                }},
-            ];
-            for (const role of roleRows) {
-                const roleName = String(role.statKey || "").slice("ROLE#".length);
-                if (!roleName) continue;
-                tx.push({ Update: {
-                    TableName: STATS_TABLE_NAME,
-                    Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: `${ACCOUNT_PROFILE_PREFIX}${targetId}${ACCOUNT_ROLE_PREFIX}${roleName}` },
-                    UpdateExpression: "ADD games :games, wins :wins, leaves :leaves",
-                    ExpressionAttributeValues: { ":games": Number(role.games || 0), ":wins": Number(role.wins || 0), ":leaves": Number(role.leaves || 0) },
-                }});
-            }
-            try {
-                await getDynamoDocClient().then((doc) => doc.send(new TransactWriteCommand({ TransactItems: tx })));
-            } catch (e) {
-                if (e?.name === "TransactionCanceledException" || e?.name === "ConditionalCheckFailedException") {
-                    const winner = await getAccountLegacyMigration(targetId, sourceName).catch(() => null);
-                    if (!winner) throw e;
-                    if (winner.conflict || normalizeAccountId(winner.accountId) !== targetId) throw Object.assign(new Error("legacy data already migrated to another account"), { code: "LEGACY_ALREADY_MIGRATED" });
-                } else throw e;
-            }
-        }
-
-        const doc = await getDynamoDocClient();
-        const eventItems = legacyEvents.map((event) => {
-            const sourceKey = String(event.statKey || "");
-            const eventHash = crypto.createHash("sha256").update(`${sourceName}\n${sourceKey}`).digest("hex").slice(0, 40);
-            return {
-                playerName: ACCOUNTS_PARTITION_KEY,
-                statKey: `${ACCOUNT_PROFILE_PREFIX}${targetId}${ACCOUNT_EVENT_PREFIX}LEGACY#${eventHash}`,
-                accountId: targetId,
-                type: event.type || "legacy_event",
-                eventKind: event.eventKind || (event.left ? "game_leave" : (event.type === "game_end" ? "game_end" : "room_join")),
-                displayName: sourceName,
-                leaveReason: event.leaveReason || null,
-                roomId: event.roomId || "",
-                role: event.role || null,
-                team: event.team || null,
-                won: typeof event.won === "boolean" ? event.won : null,
-                left: !!event.left,
-                time: event.time || null,
-                migratedFrom: sourceName,
-                migratedSourceKey: sourceKey,
-            };
-        });
-        await putItemsWithFallback(doc, eventItems);
-        await doc.send(new UpdateCommand({
-            TableName: STATS_TABLE_NAME,
-            Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: migrationKey },
-            UpdateExpression: "SET #status = :done, updatedAt = :now, eventsCopied = :events",
-            ExpressionAttributeNames: { "#status": "status" },
-            ExpressionAttributeValues: { ":done": "done", ":now": new Date().toISOString(), ":events": eventItems.length },
-        }));
-        accountProfileCache.delete(targetId);
-        return { ok: true, changed: true, resumed: !!migration, legacyName: sourceName, accountId: targetId, status: "done", events: eventItems.length };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function getAccountByGoogleIdentity(providerSubject) {
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new GetCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: googleIdentityKey(providerSubject) } }));
-    return out.Item || null;
-}
-
-async function getAccountProfile(accountId, { forceFresh = false } = {}) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return null;
-    if (!forceFresh && accountProfileCache.has(id)) return accountProfileCache.get(id);
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new GetCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-    }));
-    const item = out.Item || null;
-    if (item) accountProfileCache.set(id, item);
-    else accountProfileCache.delete(id);
-    return item;
-}
-
-async function deleteAccountData(accountId, { reason = "expired", notify = true } = {}) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return { ok: false, deletedRows: 0 };
-    const doc = await getDynamoDocClient();
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-        const out = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-            ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": `${ACCOUNT_PROFILE_PREFIX}${id}` },
-            ExclusiveStartKey,
-        }));
-        items.push(...(out.Items || []));
-        ExclusiveStartKey = out.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    const profile = items.find((it) => it.statKey === accountProfileKey(id));
-    const tokenHash = String(profile?.[ACCOUNT_IDENTITY_HASH_FIELD] || "");
-    const profileKeys = items.map((it) => ({ playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey }));
-    const extraDeletes = [];
-    if (tokenHash) extraDeletes.push({ playerName: ACCOUNTS_PARTITION_KEY, statKey: accountIdentityKey(tokenHash) });
-
-    // สำรวจ identity/session/migration ให้ครบก่อนเริ่มลบจริง เพื่อถ้าการ query ส่วนใดล้มเหลว
-    // จะไม่เกิดสถานะ "ลบ profile ไปแล้ว แต่ credential/identity ยังตกค้าง" จากการ cleanup ครึ่งทาง
-    try {
-        const [sessionMarkers, googleIdentityItems, migrationItems] = await Promise.all([
-            queryAccountSessionMarkers(id),
-            queryAccountGoogleIdentityItems(id),
-            queryAccountLegacyMigrationItems(id),
-        ]);
-        sessionMarkers.forEach((it) => {
-            if (it.tokenHash) extraDeletes.push({ playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(it.tokenHash) });
-            extraDeletes.push({ playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey });
-        });
-        googleIdentityItems.forEach((it) => extraDeletes.push({ playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey }));
-        migrationItems.forEach((it) => extraDeletes.push({ playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey }));
-    } catch (e) {
-        logAccountDbWarning(e);
-        throw Object.assign(new Error("account related identity cleanup failed"), { code: "ACCOUNT_CLEANUP_FAILED" });
-    }
-
-    const allKeys = [...profileKeys, ...extraDeletes];
-    if (allKeys.length) await deleteItemsWithFallback(doc, allKeys);
-    accountProfileCache.delete(id);
-    accountActivityDbAt.delete(id);
-    accountRenameAt.delete(id);
-    if (notify) {
-        const notified = new Set();
-        for (const sock of getConnectedSocketsForAccount(id)) {
-            if (!sock?.connected || notified.has(sock.id)) continue;
-            notified.add(sock.id);
-            try { sock.emit("account_deleted", { reason, expired: reason === "expired" }); } catch (_) {}
-            setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 20);
-        }
-        accountPresence.delete(id);
-    }
-    return { ok: true, deletedRows: allKeys.length };
-}
-
-async function createTemporaryAccount(accountToken, name = "", deviceId = "") {
-    const tokenHash = hashAccountToken(accountToken);
-    if (!tokenHash) throw Object.assign(new Error("missing account token"), { code: "ACCOUNT_TOKEN_REQUIRED" });
-    const doc = await getDynamoDocClient();
-    const identityKey = accountIdentityKey(tokenHash);
-
-    const id = generateAccountId();
-    const displayName = (typeof name === "string" && name.length)
-        ? assertUserDisplayNameAllowed(name)
-        : randomTemporaryDisplayName();
-    const now = new Date();
-    const iso = now.toISOString();
-    const expiry = new Date(now.getTime() + ACCOUNT_TEMPORARY_TTL_MS).toISOString();
-    const item = {
-        playerName: ACCOUNTS_PARTITION_KEY,
-        statKey: accountProfileKey(id),
-        accountId: id,
-        accountType: ACCOUNT_TYPE_TEMPORARY,
-        provider: "temporary",
-        [ACCOUNT_IDENTITY_HASH_FIELD]: tokenHash,
-        currentName: displayName,
-        aliases: [],
-        status: "active",
-        firstSeen: iso,
-        createdAt: iso,
-        lastSeen: iso,
-        lastActivityAt: iso,
-        temporaryExpiresAt: expiry,
-        updatedAt: iso,
-        joinCount: 0,
-        games: 0,
-        wins: 0,
-        leaves: 0,
-        isTester: false,
-        loginIdentityKey: identityKey,
-        activeSessionHash: tokenHash,
-        activeSessionUpdatedAt: iso,
-        activeDeviceId: normalizeDeviceId(deviceId),
-    };
-    const identityItem = {
-        playerName: ACCOUNTS_PARTITION_KEY,
-        statKey: identityKey,
-        accountId: id,
-        provider: "temporary",
-        createdAt: iso,
-        updatedAt: iso,
-    };
-
-    try {
-        await doc.send(new TransactWriteCommand({
-            TransactItems: [
-                { Put: { TableName: STATS_TABLE_NAME, Item: identityItem, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-                { Put: { TableName: STATS_TABLE_NAME, Item: item, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-            ],
-        }));
-    } catch (e) {
-        // Concurrent first-open: another tab/instance won the same token mapping.
-        // Read the winner rather than creating a second Game Account.
-        let winnerId = "";
-        try {
-            const winner = await doc.send(new GetCommand({
-                TableName: STATS_TABLE_NAME,
-                Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: identityKey },
-            }));
-            winnerId = normalizeAccountId(winner.Item?.accountId || "");
-        } catch (_) {}
-        if (winnerId) {
-            const winnerProfile = await getAccountProfile(winnerId, { forceFresh: true });
-            if (winnerProfile) return winnerProfile;
-        }
-        throw e;
-    }
-
-    accountProfileCache.set(id, item);
-    accountActivityDbAt.set(id, now.getTime());
-    return item;
-}
-
-async function verifyAccountLogin(accountId, accountToken, { deviceId = "" } = {}) {
-    let id = normalizeAccountId(accountId);
-    const token = normalizeAccountToken(accountToken);
-    if (!token) return { ok: false, code: "ACCOUNT_TOKEN_REQUIRED", profile: null, accountId: id };
-    const tokenHash = hashAccountToken(token);
-    const doc = await getDynamoDocClient();
-    let session = null;
-
-    if (!id) {
-        const linked = await doc.send(new GetCommand({
-            TableName: STATS_TABLE_NAME,
-            Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountIdentityKey(tokenHash) },
-        }));
-        id = normalizeAccountId(linked.Item?.accountId || "");
-        if (!id) {
-            session = await getAccountSessionByHash(tokenHash);
-            id = normalizeAccountId(session?.accountId || "");
-        }
-    }
-
-    let profile = id ? await getAccountProfile(id, { forceFresh: true }) : null;
-    if (!profile) return { ok: true, code: "ACCOUNT_NOT_FOUND", profile: null, accountId: "" };
-    if (profile.status === "deleted") return { ok: false, code: "ACCOUNT_DELETED", profile, accountId: id };
-    if (isTemporaryExpired(profile)) return { ok: false, code: "ACCOUNT_EXPIRED", profile, accountId: id };
-
-    const storedHash = String(profile[ACCOUNT_IDENTITY_HASH_FIELD] || "");
-    let authenticated = false;
-    if (storedHash && storedHash.length === tokenHash.length) {
-        try { authenticated = crypto.timingSafeEqual(Buffer.from(storedHash), Buffer.from(tokenHash)); } catch (_) { authenticated = false; }
-    }
-    if (!authenticated) {
-        session = session || await getAccountSessionByHash(tokenHash);
-        if (session && normalizeAccountId(session.accountId) === id && session.provider === "google") {
-            const exp = Date.parse(session.expiresAt || "");
-            if (!Number.isFinite(exp) || exp <= Date.now()) {
-                await revokeAccountSession(id, token).catch(() => {});
-                return { ok: false, code: "ACCOUNT_SESSION_EXPIRED", profile, accountId: id };
-            }
-            authenticated = true;
-        }
-    }
-    if (authenticated) {
-        const activeHash = String(profile?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || "");
-        if (activeHash && activeHash !== tokenHash) {
-            return { ok: false, code: "ACCOUNT_SESSION_REVOKED", profile, accountId: id, session: session || null };
-        }
-        const activeDevice = normalizeDeviceId(profile?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "");
-        const currentDevice = normalizeDeviceId(deviceId || "");
-        if (activeDevice && currentDevice && activeDevice !== currentDevice) {
-            return { ok: false, code: "ACCOUNT_DEVICE_CONFLICT", profile, accountId: id, session: session || null };
-        }
-        if (!activeHash) {
-            try {
-                await doc.send(new UpdateCommand({
-                    TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-                    UpdateExpression: "SET #active = :hash, #activeAt = :now",
-                    ConditionExpression: "attribute_not_exists(#active)",
-                    ExpressionAttributeNames: { "#active": ACCOUNT_ACTIVE_SESSION_HASH_FIELD, "#activeAt": ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD },
-                    ExpressionAttributeValues: { ":hash": tokenHash, ":now": new Date().toISOString() },
-                }));
-                profile[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] = tokenHash;
-            } catch (_) {
-                const latest = await getAccountProfile(id, { forceFresh: true });
-                if (String(latest?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || "") !== tokenHash) return { ok: false, code: "ACCOUNT_SESSION_REVOKED", profile: latest || profile, accountId: id, session: session || null };
-                profile = latest || profile;
-            }
-        }
-        if ((profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY && currentDevice) {
-            const activeDeviceNow = normalizeDeviceId(profile?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "");
-            if (activeDeviceNow && activeDeviceNow !== currentDevice) return { ok: false, code: "ACCOUNT_DEVICE_CONFLICT", profile, accountId: id, session: session || null };
-            if (!activeDeviceNow) {
-                try {
-                    await doc.send(new UpdateCommand({
-                        TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-                        UpdateExpression: "SET #device = :device",
-                        ConditionExpression: "attribute_not_exists(#device) OR #device = :empty",
-                        ExpressionAttributeNames: { "#device": ACCOUNT_ACTIVE_DEVICE_ID_FIELD },
-                        ExpressionAttributeValues: { ":device": currentDevice, ":empty": "" },
-                    }));
-                    profile[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] = currentDevice;
-                } catch (_) {
-                    const latest = await getAccountProfile(id, { forceFresh: true });
-                    if (normalizeDeviceId(latest?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "") !== currentDevice) return { ok: false, code: "ACCOUNT_DEVICE_CONFLICT", profile: latest || profile, accountId: id, session: session || null };
-                    profile = latest || profile;
-                }
-            }
-        }
-    }
-    if (!authenticated) {
-        // บัญชีเก่าที่ไม่มี credential: รองรับ migration ครั้งเดียว แต่ต้องล็อก identity index ด้วยเงื่อนไข
-        if (!storedHash && (profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY) {
-            const identityKey = accountIdentityKey(tokenHash);
-            try {
-                await doc.send(new TransactWriteCommand({ TransactItems: [
-                    { Put: { TableName: STATS_TABLE_NAME, Item: { playerName: ACCOUNTS_PARTITION_KEY, statKey: identityKey, accountId: id, provider: "temporary", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-                    { Update: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) }, UpdateExpression: "SET loginTokenHash = :hash, loginIdentityKey = :identityKey, accountType = if_not_exists(accountType, :temporary), provider = if_not_exists(provider, :provider), lastActivityAt = :now, lastSeen = :now, updatedAt = :now, temporaryExpiresAt = if_not_exists(temporaryExpiresAt, :expiry)", ExpressionAttributeValues: { ":hash": tokenHash, ":identityKey": identityKey, ":temporary": ACCOUNT_TYPE_TEMPORARY, ":provider": "temporary", ":now": new Date().toISOString(), ":expiry": buildTemporaryExpiry() } } },
-                ] }));
-                authenticated = true;
-                profile = await getAccountProfile(id, { forceFresh: true });
-            } catch (e) {
-                if (e?.name !== "TransactionCanceledException" && e?.name !== "ConditionalCheckFailedException") throw e;
-            }
-        }
-    }
-    if (!authenticated) return { ok: false, code: "ACCOUNT_AUTH_FAILED", profile, accountId: id };
-    accountProfileCache.set(id, profile);
-    return { ok: true, code: "OK", profile, accountId: id, session: session || null };
-}
-
-async function docOrDynamo(existing, fn) {
-    return fn(existing || await getDynamoDocClient());
-}
-
-async function touchOrCreateAccount(accountId, name, { accountToken = "", roomId = "", isHost = false, join = false, deviceId = "", tabId = "" } = {}) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-        const requestedAccountId = normalizeAccountId(accountId || "");
-        const requestedName = sanitizeName(name, "");
-        // ตรวจชื่อก่อนแตะ/สร้างข้อมูลบัญชี เพื่อให้ผู้ใช้ที่ส่งชื่อสงวนเข้ามาโดยตรง
-        // ได้ NAME_RESERVED กลับไปอย่างชัดเจน และไม่เกิดบัญชี/row ใหม่ทิ้งไว้ก่อน reject
-        if ((!requestedAccountId || join) && requestedName && isReservedTesterName(requestedName)) {
-            return { ok: false, code: "NAME_RESERVED", accountId: requestedAccountId, currentName: requestedName, profile: null };
-        }
-        const token = normalizeAccountToken(accountToken);
-        if (!token) return { ok: false, code: "ACCOUNT_TOKEN_REQUIRED", accountId: normalizeAccountId(accountId), currentName: sanitizeName(name, ""), profile: null };
-        let identity = await verifyAccountLogin(requestedAccountId, token, { deviceId });
-        if (identity.ok === false) {
-            // Temporary Account ที่หมดอายุแล้วสามารถ cleanup แล้วออกบัญชีใหม่ได้ตามนโยบายเดิม
-            if (identity.code === "ACCOUNT_EXPIRED" && identity.profile?.accountType === ACCOUNT_TYPE_TEMPORARY) {
-                try {
-                    await deleteAccountData(identity.accountId, { reason: "expired", notify: false });
-                    identity = { ok: true, code: "ACCOUNT_EXPIRED_REPLACED", profile: null, accountId: "" };
-                } catch (e) {
-                    return { ok: false, code: "ACCOUNT_EXPIRY_CLEANUP_FAILED", accountId: identity.accountId, currentName: sanitizeName(identity.profile?.currentName || name, ""), profile: identity.profile };
-                }
-            } else {
-                return { ...identity, currentName: sanitizeName(identity.profile?.currentName || name, "") };
-            }
-        }
-        // accountId ที่ caller ส่งมาเป็นตัวตนเดิมของบัญชีแล้ว แต่ profile หายไปจากฐานข้อมูล
-        // ห้ามตีความว่าเป็น first-open แล้ว createTemporaryAccount() ซ้ำด้วย credential เดิม
-        // มิฉะนั้นการลบบัญชีจริงจะกลายเป็นการรีสร้างบัญชีเงียบ ๆ ทันทีเมื่อเปิดหน้าเกมใหม่
-        if (!identity.profile && requestedAccountId) {
-            return { ok: false, code: identity.code || "ACCOUNT_NOT_FOUND", accountId: requestedAccountId, currentName: sanitizeName(name, ""), profile: null };
-        }
-        let createdNow = false;
-        if (!identity.profile) {
-            identity.profile = await createTemporaryAccount(token, name, deviceId);
-            identity.accountId = identity.profile.accountId;
-            createdNow = true;
-        }
-        const id = identity.accountId;
-        const existing = identity.profile || {};
-        if (existing.status === "suspended") return { ok: false, code: "ACCOUNT_SUSPENDED", accountId: id, currentName: existing.currentName || "", profile: existing };
-        if (isTemporaryExpired(existing)) return { ok: false, code: "ACCOUNT_EXPIRED", accountId: id, currentName: existing.currentName || "", profile: existing };
-
-        const existingName = sanitizeName(existing.currentName || "", "");
-        const effectiveName = existingName && existingName !== "ผู้เล่น" ? existingName : (requestedName || existingName || randomTemporaryDisplayName());
-        const nowMs = Date.now();
-        // createTemporaryAccount() already wrote a complete profile + identity index atomically.
-        // On the very first bootstrap, do not immediately perform a second UpdateItem just to
-        // refresh timestamps/name. That extra write used to turn a successful account creation
-        // into ACCOUNT_PERSISTENCE_UNAVAILABLE when DynamoDB had a transient write problem,
-        // leaving the client with no Account ID even though the account record already existed.
-        const shouldPersistActivity = !createdNow && (!accountActivityDbAt.has(id) || nowMs - accountActivityDbAt.get(id) >= ACCOUNT_ACTIVITY_PERSIST_MIN_MS || join);
-        if (shouldPersistActivity) {
-            const doc = await getDynamoDocClient();
-            const now = new Date(nowMs).toISOString();
-            const accountType = existing.accountType || ACCOUNT_TYPE_TEMPORARY;
-            const provider = existing.provider || (accountType === "google" ? "google" : "temporary");
-            const values = {
-                ":now": now, ":name": effectiveName, ":active": "active", ":emptyAliases": [],
-                ":zero": 0, ":room": roomId || "", ":host": !!isHost, ":tester": false,
-                ":temporary": ACCOUNT_TYPE_TEMPORARY, ":provider": provider,
-            };
-            // บัญชีเก่าบางรายการอาจมีชื่อ fallback จากระบบเดิมเป็น "ผู้เล่น"
-            // อนุญาตให้ bootstrap ครั้งแรกแทนที่ fallback ได้ แต่ห้ามทับชื่อจริงที่ผู้เล่น/Admin ตั้งไว้แล้ว
-            const nameAssignment = (!existingName || existingName === "ผู้เล่น") && requestedName && requestedName !== "ผู้เล่น"
-                ? "currentName = :name"
-                : "currentName = if_not_exists(currentName, :name)";
-            let updateExpression =
-                "SET firstSeen = if_not_exists(firstSeen, :now), createdAt = if_not_exists(createdAt, :now), " +
-                nameAssignment + ", lastSeen = :now, lastActivityAt = :now, updatedAt = :now, " +
-                "#status = if_not_exists(#status, :active), accountType = if_not_exists(accountType, :temporary), " +
-                "provider = if_not_exists(provider, :provider), " +
-                "aliases = if_not_exists(aliases, :emptyAliases), lastRoomId = :room, lastRoleType = :host, " +
-                "isTester = if_not_exists(isTester, :tester), games = if_not_exists(games, :zero), wins = if_not_exists(wins, :zero), leaves = if_not_exists(leaves, :zero)";
-            if (accountType === ACCOUNT_TYPE_TEMPORARY) updateExpression += ", temporaryExpiresAt = :expiry";
-            if (accountType === ACCOUNT_TYPE_TEMPORARY) values[":expiry"] = buildTemporaryExpiry(nowMs);
-            // DynamoDB rejects unused ExpressionAttributeValues. On the index/background bootstrap
-            // path `join` is false, so do not send :one unless the UpdateExpression actually uses it.
-            if (join) {
-                values[":one"] = 1;
-                updateExpression += " ADD joinCount :one";
-            }
-            const out = await doc.send(new UpdateCommand({
-                TableName: STATS_TABLE_NAME,
-                Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-                UpdateExpression: updateExpression,
-                ExpressionAttributeNames: { "#status": "status" },
-                ExpressionAttributeValues: values,
-                ReturnValues: "ALL_NEW",
-            }));
-            identity.profile = out.Attributes || identity.profile;
-            accountProfileCache.set(id, identity.profile);
-            accountActivityDbAt.set(id, nowMs);
-        }
-        return { ok: true, accountId: id, currentName: sanitizeName(identity.profile?.currentName || effectiveName, effectiveName), profile: identity.profile };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function ensureNormalAccountIdentity(accountId, name, meta = {}) {
-    if (resetInProgress) return { ok: false, code: "RESET_IN_PROGRESS", accountId: normalizeAccountId(accountId), name: sanitizeName(name, "ผู้เล่น"), profile: null };
-    if (meta && meta.isTester === true) return { ok: true, accountId: "", name: sanitizeName(name, "ผู้เล่น"), profile: null, testerIgnored: true };
-    const token = normalizeAccountToken(meta.accountToken || "");
-    if (!token) return { ok: false, code: "ACCOUNT_TOKEN_REQUIRED", accountId: normalizeAccountId(accountId), name: sanitizeName(name, "ผู้เล่น"), profile: null };
-    try {
-        const result = await touchOrCreateAccount(accountId, name, { ...meta, accountToken: token });
-        if (!result.ok) return { ok: false, code: result.code, accountId: result.accountId, name: result.currentName || sanitizeName(name, "ผู้เล่น"), profile: result.profile };
-        return { ok: true, accountId: result.accountId, name: result.currentName, profile: result.profile };
-    } catch (e) {
-        logAccountDbWarning(e);
-        return { ok: false, code: "ACCOUNT_PERSISTENCE_UNAVAILABLE", accountId: normalizeAccountId(accountId), name: sanitizeName(name, "ผู้เล่น"), profile: null };
-    }
-}
-
-async function renameOwnAccount(accountId, accountToken, newName, deviceId = "") {
-    const id = normalizeAccountId(accountId);
-    const token = normalizeAccountToken(accountToken);
-    if (!id || !token) throw Object.assign(new Error("account authentication required"), { code: "ACCOUNT_AUTH_FAILED" });
-    const verification = await verifyAccountLogin(id, token, { deviceId });
-    if (!verification.profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    if (verification.ok === false) throw Object.assign(new Error("account unavailable"), { code: verification.code });
-    if (verification.profile.status !== "active") throw Object.assign(new Error("account unavailable"), { code: "ACCOUNT_SUSPENDED" });
-    const last = accountRenameAt.get(id) || 0;
-    const remain = ACCOUNT_NAME_CHANGE_COOLDOWN_MS - (Date.now() - last);
-    if (remain > 0) throw Object.assign(new Error(`กรุณารอ ${Math.ceil(remain / 1000)} วินาทีก่อนเปลี่ยนชื่ออีกครั้ง`), { code: "NAME_COOLDOWN", retryAfterMs: remain });
-    const oldName = sanitizeName(verification.profile.currentName || "ผู้เล่น", "ผู้เล่น");
-    const trimmed = assertUserDisplayNameAllowed(newName);
-    if (trimmed === oldName) return { ok: true, accountId: id, name: oldName, changed: false, profile: verification.profile };
-    await assertAccountNameAvailable(trimmed, id);
-    const aliases = Array.isArray(verification.profile.aliases) ? verification.profile.aliases.slice(-30) : [];
-    if (!aliases.includes(oldName)) aliases.push(oldName);
-    const doc = await getDynamoDocClient();
-    const now = new Date();
-    const iso = now.toISOString();
-    const isTemporary = (verification.profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY;
-    const exprValues = { ":name": trimmed, ":aliases": aliases, ":now": iso };
-    let updateExpression = "SET currentName = :name, aliases = :aliases, lastSeen = :now, lastActivityAt = :now, updatedAt = :now";
-    if (isTemporary) { updateExpression += ", temporaryExpiresAt = :expiry"; exprValues[":expiry"] = buildTemporaryExpiry(now.getTime()); }
-    const out = await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-        UpdateExpression: updateExpression,
-        ExpressionAttributeValues: exprValues,
-        ReturnValues: "ALL_NEW",
-    }));
-    const next = out.Attributes || { ...verification.profile, currentName: trimmed, aliases, lastSeen: iso, lastActivityAt: iso, ...(isTemporary ? { temporaryExpiresAt: buildTemporaryExpiry(now.getTime()) } : {}), updatedAt: iso };
-    accountProfileCache.set(id, next);
-    accountActivityDbAt.set(id, now.getTime());
-    accountRenameAt.set(id, now.getTime());
-    updateLiveAccountNames(id, trimmed);
-    emitAccountEventToSockets(id, "name_updated_by_host", { name: trimmed, accountId: id });
-    return { ok: true, accountId: id, name: trimmed, changed: true, profile: next };
-}
-
-async function getFreshAccountActivity(accountId) {
-    const profile = await getAccountProfile(accountId, { forceFresh: true });
-    return { profile, activity: getAccountActiveActivity(profile) };
-}
-
-async function touchAccountPresence(accountId, { roomId = "", name = "", isHost = false } = {}) {
-    if (!beginGameDataWrite()) return;
-    const id = normalizeAccountId(accountId);
-    if (!id) { endGameDataWrite(); return; }
-    try {
-        const cached = accountProfileCache.get(id);
-        if (cached?.status === "suspended" || cached?.status === "deleted") return;
-        const nowMs = Date.now();
-        const shouldPersist = !accountActivityDbAt.has(id) || nowMs - accountActivityDbAt.get(id) >= ACCOUNT_ACTIVITY_PERSIST_MIN_MS;
-        if (!shouldPersist) return;
-        const doc = await getDynamoDocClient();
-        const now = new Date(nowMs).toISOString();
-        const currentType = cached?.accountType || ACCOUNT_TYPE_TEMPORARY;
-        const exprValues = { ":now": now, ":room": roomId || "", ":host": !!isHost };
-        let updateExpression = "SET lastSeen = :now, lastActivityAt = :now, updatedAt = :now, lastRoomId = :room, lastRoleType = :host";
-        if (currentType === ACCOUNT_TYPE_TEMPORARY) { updateExpression += ", temporaryExpiresAt = :expiry"; exprValues[":expiry"] = buildTemporaryExpiry(nowMs); }
-        const out = await doc.send(new UpdateCommand({
-            TableName: STATS_TABLE_NAME,
-            Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-            UpdateExpression: updateExpression,
-            ExpressionAttributeValues: exprValues,
-            ReturnValues: "ALL_NEW",
-        }));
-        accountActivityDbAt.set(id, nowMs);
-        if (out.Attributes) accountProfileCache.set(id, out.Attributes);
-    } catch (e) {
-        logAccountDbWarning(e);
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function bumpAccountStatsRow(doc, accountId, suffix, { won, left } = {}) {
-    if (resetInProgress) return;
-    const id = normalizeAccountId(accountId);
-    if (!id) return;
-    let updateExpression = "SET games = if_not_exists(games, :zero) + :one";
-    if (left) updateExpression += ", leaves = if_not_exists(leaves, :zero) + :one";
-    else if (won) updateExpression += ", wins = if_not_exists(wins, :zero) + :one";
-    await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: `${ACCOUNT_PROFILE_PREFIX}${id}${suffix}` },
-        UpdateExpression: updateExpression,
-        ExpressionAttributeValues: { ":zero": 0, ":one": 1 },
-    }));
-}
-
-async function recordAccountGameStats(room, resultTeam) {
-    if (!beginGameDataWrite()) return;
-    try {
-        const players = (room?.players || []).filter((p) => p && !p.isHost && !p.isBot && !p.isTester && (p.name || "").trim() && p.role && !hasImmediateLeaveRecorded(p, room));
-        if (!players.length) return;
-        try {
-            const doc = await getDynamoDocClient();
-            const nowMs = Date.now();
-            const now = new Date(nowMs).toISOString();
-            for (const p of players) {
-                if (resetInProgress) return;
-                const accountId = normalizeAccountId(p.accountId || "");
-                if (!accountId) continue;
-                const roleSuffix = `${ACCOUNT_ROLE_PREFIX}${p.role}`;
-                const left = didLeaveGame(p, room);
-                const won = !left && isWinner(p, resultTeam, room);
-                await Promise.all([
-                    bumpAccountStatsRow(doc, accountId, ACCOUNT_TOTAL_SUFFIX, { won, left }),
-                    bumpAccountStatsRow(doc, accountId, roleSuffix, { won, left }),
-                    (() => {
-                        const profile = accountProfileCache.get(accountId);
-                        const isTemporary = (profile?.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY;
-                        const exprValues = { ":zero": 0, ":one": 1, ":win": won ? 1 : 0, ":leave": left ? 1 : 0, ":now": now };
-                        let updateExpression = "SET games = if_not_exists(games, :zero) + :one, wins = if_not_exists(wins, :zero) + :win, leaves = if_not_exists(leaves, :zero) + :leave, lastPlayedAt = :now, lastSeen = :now, lastActivityAt = :now, updatedAt = :now";
-                        if (isTemporary) { updateExpression += ", temporaryExpiresAt = :expiry"; exprValues[":expiry"] = buildTemporaryExpiry(nowMs); }
-                        return doc.send(new UpdateCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(accountId) }, UpdateExpression: updateExpression, ExpressionAttributeValues: exprValues }));
-                    })(),
-                    doc.send(new PutCommand({
-                        TableName: STATS_TABLE_NAME,
-                        Item: {
-                            playerName: ACCOUNTS_PARTITION_KEY,
-                            statKey: `${ACCOUNT_PROFILE_PREFIX}${accountId}${ACCOUNT_EVENT_PREFIX}${now}#${genId()}`,
-                            accountId, type: "game_end", eventKind: "game_end", displayName: p.name.trim(), roomId: room.id || "",
-                            role: p.role, team: teamOf(p.role), won, left, leaveReason: left ? "offline_threshold" : null, time: now,
-                        },
-                    })),
-                ]);
-            }
-        } catch (e) {
-            if (!resetInProgress) logAccountDbWarning(e);
-        }
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function queryAllAccountProfiles() {
-    const doc = await getDynamoDocClient();
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-        const out = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-            ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": ACCOUNT_PROFILE_PREFIX },
-            ExclusiveStartKey,
-        }));
-        items.push(...(out.Items || []).filter((it) => {
-            const sk = String(it.statKey || "");
-            return sk.startsWith(ACCOUNT_PROFILE_PREFIX) && !sk.includes(ACCOUNT_EVENT_PREFIX) && !sk.endsWith(ACCOUNT_TOTAL_SUFFIX) && !sk.includes(ACCOUNT_ROLE_PREFIX);
-        }));
-        ExclusiveStartKey = out.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    items.forEach((it) => accountProfileCache.set(String(it.accountId || it.statKey || "").replace(/^ACCOUNT#/, ""), it));
-    return items;
-}
-
-async function queryLegacyPlayerByName(name) {
-    const playerName = sanitizeName(name, "ผู้เล่น");
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new QueryCommand({
-        TableName: STATS_TABLE_NAME,
-        KeyConditionExpression: "playerName = :name",
-        ExpressionAttributeValues: { ":name": playerName },
-    }));
-    return out.Items || [];
-}
-
-async function deleteTableItemsWithFallback(doc, tableName, keys) {
-    if (!tableName || !keys.length) return;
-    try {
-        let pending = keys.map((k) => ({ DeleteRequest: { Key: k } }));
-        for (let i = 0; i < pending.length; i += 25) {
-            let batch = pending.slice(i, i + 25);
-            for (let attempt = 0; attempt < 7 && batch.length; attempt++) {
-                const out = await doc.send(new BatchWriteCommand({ RequestItems: { [tableName]: batch } }));
-                batch = (out.UnprocessedItems && out.UnprocessedItems[tableName]) || [];
-                if (batch.length) await sleepMs(100 * 2 ** attempt);
-            }
-            if (batch.length) throw new Error(`DynamoDB ยังประมวลผลรายการลบของ ${tableName} ไม่ครบ`);
-        }
-        return;
-    } catch (e) {
-        const denied = /AccessDenied|not authorized|UnauthorizedOperation/i.test(String(e?.message || e));
-        if (!denied) throw e;
-        // บาง IAM policy อนุญาต DeleteItem แต่ไม่ได้อนุญาต BatchWriteItem.
-        for (const key of keys) await doc.send(new DeleteCommand({ TableName: tableName, Key: key }));
-    }
-}
-
-async function deleteItemsWithFallback(doc, keys) {
-    return deleteTableItemsWithFallback(doc, STATS_TABLE_NAME, keys);
-}
-
-async function putItemsWithFallback(doc, items) {
-    if (!items.length) return;
-    try {
-        await batchWriteWithRetry(doc, items.map((Item) => ({ PutRequest: { Item } })));
-        return;
-    } catch (e) {
-        const denied = /AccessDenied|not authorized|UnauthorizedOperation/i.test(String(e?.message || e));
-        if (!denied) throw e;
-        for (const Item of items) await doc.send(new PutCommand({ TableName: STATS_TABLE_NAME, Item }));
-    }
-}
-
-async function batchWriteWithRetry(doc, requests) {
-    let pending = requests.slice();
-    for (let i = 0; i < pending.length; i += 25) {
-        let batch = pending.slice(i, i + 25);
-        for (let attempt = 0; attempt < 7 && batch.length; attempt++) {
-            const out = await doc.send(new BatchWriteCommand({ RequestItems: { [STATS_TABLE_NAME]: batch } }));
-            batch = (out.UnprocessedItems && out.UnprocessedItems[STATS_TABLE_NAME]) || [];
-            if (batch.length) await sleepMs(100 * 2 ** attempt);
-        }
-        if (batch.length) throw new Error("DynamoDB ยังประมวลผลรายการไม่ครบ");
-    }
-}
-
-async function renameLegacyPlayer(oldName, newName) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-    const from = String(oldName || "").trim();
-    const to = assertUserDisplayNameAllowed(newName);
-    if (!from) throw Object.assign(new Error("missing old name"), { code: "LEGACY_NOT_FOUND" });
-    if (!to || from === to) return { changed: false, oldName: from, newName: to };
-    const oldItems = await queryLegacyPlayerByName(from);
-    if (!oldItems.length) throw Object.assign(new Error("legacy player not found"), { code: "LEGACY_NOT_FOUND" });
-    const newItems = await queryLegacyPlayerByName(to);
-    if (newItems.length) throw Object.assign(new Error("ชื่อใหม่นี้มีข้อมูลอยู่แล้ว"), { code: "NAME_IN_USE" });
-    const modern = await queryAllAccountProfiles();
-    if (modern.some((it) => String(it.currentName || "") === to)) throw Object.assign(new Error("ชื่อใหม่นี้มีบัญชีจริงอยู่แล้ว"), { code: "NAME_IN_USE" });
-    const doc = await getDynamoDocClient();
-    const puts = oldItems.map((item) => ({ PutRequest: { Item: { ...item, playerName: to } } }));
-    await putItemsWithFallback(doc, puts.map((x) => x.PutRequest.Item));
-    const deletes = oldItems.map((item) => ({ DeleteRequest: { Key: { playerName: from, statKey: item.statKey } } }));
-    try {
-        await deleteItemsWithFallback(doc, deletes.map((x) => x.DeleteRequest.Key));
-    } catch (e) {
-        console.error("[legacy-rename] คัดลอกแล้วแต่ลบข้อมูลชื่อเดิมไม่สำเร็จ:", e.name, e.message);
-        throw Object.assign(new Error("คัดลอกข้อมูลไปชื่อใหม่แล้ว แต่ลบชื่อเดิมไม่สำเร็จ — ห้ามกดซ้ำจนกว่าจะตรวจฐานข้อมูล"), { code: "LEGACY_RENAME_PARTIAL" });
-    }
-    return { changed: true, oldName: from, newName: to, moved: oldItems.length };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function deleteLegacyPlayer(name) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-    const playerName = String(name || "").trim();
-    if (!playerName) throw Object.assign(new Error("missing name"), { code: "LEGACY_NOT_FOUND" });
-    const items = await queryLegacyPlayerByName(playerName);
-    if (!items.length) throw Object.assign(new Error("legacy player not found"), { code: "LEGACY_NOT_FOUND" });
-    const doc = await getDynamoDocClient();
-    const deletes = items.map((item) => ({ DeleteRequest: { Key: { playerName, statKey: item.statKey } } }));
-    await deleteItemsWithFallback(doc, deletes.map((x) => x.DeleteRequest.Key));
-    return { deleted: true, name: playerName, count: items.length };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function queryAccountDetails(accountId) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return null;
-    const doc = await getDynamoDocClient();
-    const items = [];
-    let ExclusiveStartKey;
-    do {
-        const out = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-            ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": `${ACCOUNT_PROFILE_PREFIX}${id}` },
-            ExclusiveStartKey,
-        }));
-        items.push(...(out.Items || []));
-        ExclusiveStartKey = out.LastEvaluatedKey;
-    } while (ExclusiveStartKey);
-    const profile = items.find((it) => it.statKey === accountProfileKey(id)) || null;
-    if (!profile) return null;
-    const total = items.find((it) => it.statKey === `${ACCOUNT_PROFILE_PREFIX}${id}${ACCOUNT_TOTAL_SUFFIX}`) || { games: 0, wins: 0, leaves: 0 };
-    const roles = items.filter((it) => String(it.statKey || "").includes(ACCOUNT_ROLE_PREFIX)).map((it) => {
-        const sk = String(it.statKey || "");
-        const role = sk.split(ACCOUNT_ROLE_PREFIX)[1] || "";
-        return { role, team: teamOf(role), teamLabel: roleTeamLabels[teamOf(role)] || "", ...rateBreakdown(it) };
-    }).sort((a,b) => b.games - a.games);
-    const events = items.filter((it) => String(it.statKey || "").includes(ACCOUNT_EVENT_PREFIX)).map((it) => ({
-        type: it.type,
-        eventKind: it.eventKind || (it.left ? "game_leave" : (it.type === "game_end" ? "game_end" : "room_join")),
-        roomId: it.roomId || "",
-        time: it.time,
-        displayName: it.displayName || profile.currentName || "",
-        leaveReason: it.leaveReason || null,
-        isHost: false,
-        isTester: false,
-        role: it.role || null,
-        team: it.team || null,
-        teamLabel: it.team ? (roleTeamLabels[it.team] || "") : null,
-        won: typeof it.won === "boolean" ? it.won : null,
-        left: !!it.left,
-    })).sort((a,b) => String(b.time).localeCompare(String(a.time)));
-    const live = getLiveSessionsForAccount(id);
-    return {
-        accountId: id,
-        name: profile.currentName || "",
-        aliases: Array.isArray(profile.aliases) ? Array.from(new Set(profile.aliases.filter(Boolean))) : [],
-        status: profile.status || "active",
-        accountType: profile.accountType || ACCOUNT_TYPE_TEMPORARY,
-        provider: profile.provider || "temporary",
-        temporaryExpiresAt: profile.temporaryExpiresAt || null,
-        firstSeen: profile.firstSeen || null,
-        lastSeen: profile.lastSeen || null,
-        createdAt: profile.createdAt || null,
-        lastPlayedAt: profile.lastPlayedAt || null,
-        joinCount: profile.joinCount || 0,
-        ...rateBreakdown(total),
-        roles,
-        events,
-        live,
-        connectionCount: live.length,
-        activeActivity: getAccountActiveActivity(profile),
-        sessionCount: live.length,
-    };
-}
-
-function getLiveSessionsForAccount(accountId) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return [];
-    const out = [];
-    for (const roomId in rooms) {
-        const room = rooms[roomId];
-        (room.players || []).forEach((p) => {
-            if (!p || p.isBot || p.isTester || normalizeAccountId(p.accountId || "") !== id) return;
-            if (p.isHost) {
-                const ids = (room.hostIds || []).filter((sid) => io.sockets.sockets.get(sid)?.connected);
-                ids.forEach((sid) => { const sock = io.sockets.sockets.get(sid); out.push({ roomId, socketId: sid, isHost: true, connected: true, deviceId: normalizeDeviceId(sock?.data?.deviceId || ""), tabId: normalizeTabId(sock?.data?.tabId || ""), membershipId: p.membershipId || room.hostMembershipId || "" }); });
-            } else if (isPlayerCurrentlyConnected(p)) {
-                const sock = p.id ? io.sockets.sockets.get(p.id) : null;
-                // A room player can remain connected through a secondary same-account tab while
-                // the canonical player.id points at an older/disconnected Socket.IO connection.
-                // Never count that stale id as a live Admin session; the fanout pass below will
-                // add the actual connected sockets for the account.
-                if (sock?.connected) {
-                    out.push({
-                        roomId, socketId: sock.id, isHost: false, connected: true,
-                        page: String(sock.data?.page || "player"), name: p.name || "",
-                        deviceId: normalizeDeviceId(sock.data?.deviceId || p.activeDeviceId || ""),
-                        tabId: normalizeTabId(sock.data?.tabId || p.activeTabId || ""),
-                        membershipId: p.membershipId || String(sock.data?.membershipId || ""),
-                    });
-                }
-            }
-        });
-    }
-    // รวม socket sessions ของ Account เดียวกันทุกแท็บ/iframe ก่อน แล้วจึงเติม index presence
-    // ที่ไม่ได้ผูกกับ room. Socket ID เป็น connection locator เท่านั้น.
-    for (const sock of getConnectedSocketsForAccount(id)) {
-        if (out.some((x) => x.socketId === sock.id)) continue;
-        out.push({
-            roomId: String(sock.data?.roomId || "").toUpperCase(),
-            socketId: sock.id,
-            page: String(sock.data?.page || "unknown"),
-            name: "",
-            isHost: !!sock.data?.isHost,
-            connected: true,
-            deviceId: normalizeDeviceId(sock.data?.deviceId || ""),
-            tabId: normalizeTabId(sock.data?.tabId || ""),
-            membershipId: String(sock.data?.membershipId || ""),
-        });
-    }
-    const presence = getVisibleAccountPresence(id);
-    const seen = new Set(out.map((x) => x.socketId));
-    presence.forEach((x) => {
-        if (seen.has(x.socketId)) return;
-        out.push(x);
-        seen.add(x.socketId);
-    });
-    return out;
-}
-
-function emitAccountEventToSockets(accountId, event, payload) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return;
-    const sent = new Set();
-    for (const roomId in rooms) {
-        const room = rooms[roomId];
-        (room.players || []).forEach((p) => {
-            if (!p || p.isBot || p.isTester || normalizeAccountId(p.accountId || "") !== id) return;
-            const ids = p.isHost ? (room.hostIds || []) : [p.id];
-            ids.forEach((sid) => {
-                if (sent.has(sid)) return;
-                const sock = io.sockets.sockets.get(sid);
-                if (sock?.connected) {
-                    sock.emit(event, payload);
-                    sent.add(sid);
-                }
-            });
-        });
-    }
-}
-
-function updateLiveAccountNames(accountId, newName) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return 0;
-    let changed = 0;
-    for (const roomId in rooms) {
-        const room = rooms[roomId];
-        let touched = false;
-        (room.players || []).forEach((p) => {
-            if (!p || p.isBot || p.isTester || normalizeAccountId(p.accountId || "") !== id) return;
-            p.accountId = id;
-            if (p.name !== newName) {
-                p.name = newName;
-                changed++;
-                touched = true;
-            }
-        });
-        if (touched) broadcastRoomUpdate(roomId, room);
-        if (touched) schedulePersistRoom(roomId, true);
-    }
-    return changed;
-}
-
-async function assertAccountNameAvailable(newName, excludeAccountId = "") {
-    const target = assertUserDisplayNameAllowed(newName);
-    const exclude = normalizeAccountId(excludeAccountId);
-    const modern = await queryAllAccountProfiles();
-    const modernHit = modern.find((it) => normalizeAccountId(it.accountId || String(it.statKey || "").replace(/^ACCOUNT#/, "")) !== exclude && sanitizeName(String(it.currentName || ""), "") === target);
-    if (modernHit) throw Object.assign(new Error("ชื่อใหม่นี้มีบัญชีอยู่แล้ว"), { code: "NAME_IN_USE" });
-    const legacy = await queryLegacyPlayerByName(target);
-    if (legacy.length) throw Object.assign(new Error("ชื่อใหม่นี้มีข้อมูลผู้เล่นเดิมอยู่แล้ว"), { code: "NAME_IN_USE" });
-    return target;
-}
-
-async function updateAccountName(accountId, newName) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-    const id = normalizeAccountId(accountId);
-    if (!id) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    const profile = await getAccountProfile(id, { forceFresh: true });
-    if (!profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    if (profile.status === "deleted") throw Object.assign(new Error("account deleted"), { code: "ACCOUNT_DELETED" });
-    const oldName = sanitizeName(profile.currentName || "ผู้เล่น", "ผู้เล่น");
-    const trimmed = assertUserDisplayNameAllowed(newName);
-    if (trimmed === oldName) return { profile, name: oldName, changed: false };
-    await assertAccountNameAvailable(trimmed, id);
-    const aliases = Array.isArray(profile.aliases) ? profile.aliases.slice(-30) : [];
-    if (!aliases.includes(oldName)) aliases.push(oldName);
-    const doc = await getDynamoDocClient();
-    const now = new Date().toISOString();
-    const out = await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-        UpdateExpression: "SET currentName = :name, aliases = :aliases, updatedAt = :now",
-        ExpressionAttributeValues: { ":name": trimmed, ":aliases": aliases, ":now": now },
-        ReturnValues: "ALL_NEW",
-    }));
-    const nextProfile = out.Attributes || { ...profile, currentName: trimmed, aliases, updatedAt: now };
-    accountProfileCache.set(id, nextProfile);
-    updateLiveAccountNames(id, trimmed);
-    emitAccountEventToSockets(id, "name_updated_by_host", { name: trimmed, accountId: id });
-    return { profile: nextProfile, name: trimmed, changed: true };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-async function setAccountStatus(accountId, status) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-    const id = normalizeAccountId(accountId);
-    if (!id || !["active", "suspended", "deleted"].includes(status)) throw Object.assign(new Error("bad account status"), { code: "BAD_STATUS" });
-    const profile = await getAccountProfile(id, { forceFresh: true });
-    if (!profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    // deleted เป็นสถานะจบแล้ว ไม่อนุญาตให้เปลี่ยนกลับเป็น active ผ่าน Admin
-    if (profile.status === "deleted" && status === "active") {
-        throw Object.assign(new Error("deleted account cannot be restored"), { code: "ACCOUNT_DELETED_FINAL" });
-    }
-    if (status === "deleted") {
-        await deleteAccountData(id, { reason: "admin_deleted" });
-        return { accountId: id, status: "deleted", deleted: true };
-    }
-    const now = new Date().toISOString();
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-        UpdateExpression: "SET #status = :status, updatedAt = :now, statusAt = :now",
-        ExpressionAttributeNames: { "#status": "status" },
-        ExpressionAttributeValues: { ":status": status, ":now": now },
-        ReturnValues: "ALL_NEW",
-    }));
-    const next = out.Attributes || { ...profile, status, updatedAt: now, statusAt: now };
-    accountProfileCache.set(id, next);
-    return next;
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-
-async function resetAccountStats(accountId) {
-    if (!beginGameDataWrite()) throw Object.assign(new Error("กำลังล้างข้อมูลเกม"), { code: "RESET_IN_PROGRESS" });
-    try {
-    const id = normalizeAccountId(accountId);
-    if (!id) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new QueryCommand({
-        TableName: STATS_TABLE_NAME,
-        KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-        ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": `${ACCOUNT_PROFILE_PREFIX}${id}` },
-    }));
-    const items = out.Items || [];
-    const profile = items.find((it) => it.statKey === accountProfileKey(id));
-    if (!profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    const deletes = items
-        .filter((it) => it.statKey !== accountProfileKey(id) && !String(it.statKey || "").includes(ACCOUNT_EVENT_PREFIX))
-        .map((it) => ({ DeleteRequest: { Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: it.statKey } } }));
-    if (deletes.length) await batchWriteWithRetry(doc, deletes);
-    const now = new Date().toISOString();
-    const update = await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-        UpdateExpression: "SET games = :zero, wins = :zero, leaves = :zero, updatedAt = :now",
-        ExpressionAttributeValues: { ":zero": 0, ":now": now },
-        ReturnValues: "ALL_NEW",
-    }));
-    accountProfileCache.set(id, update.Attributes || { ...profile, games: 0, wins: 0, leaves: 0, updatedAt: now });
-    return { ok: true, accountId: id, deletedStatRows: deletes.length };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-function disconnectAccountSessions(accountId, eventName, reason) {
-    const id = normalizeAccountId(accountId);
-    if (!id) return 0;
-    let count = 0;
-    const sent = new Set();
-    // Source of truth for live connections is the account identity carried by the socket.
-    // This covers secondary tabs/iframes whose socket is not the room player's canonical id.
-    for (const sock of getConnectedSocketsForAccount(id)) {
-        if (!sock?.connected || sent.has(sock.id)) continue;
-        try { sock.emit(eventName, { reason: reason || "admin" }); } catch (_) {}
-        sent.add(sock.id);
-        count++;
-        setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 50);
-    }
-    // Keep a presence fallback for legacy sockets that predate account.data binding.
-    const presence = accountPresence.get(id);
-    if (presence) {
-        for (const [sid] of presence) {
-            if (sent.has(sid)) continue;
-            const sock = io.sockets.sockets.get(sid);
-            if (sock?.connected) {
-                try { sock.emit(eventName, { reason: reason || "admin" }); } catch (_) {}
-                sent.add(sid);
-                count++;
-                setTimeout(() => { try { sock.disconnect(true); } catch (_) {} }, 50);
-            }
-        }
-        accountPresence.delete(id);
-    }
-    return count;
-}
-
-// สร้าง client แค่ครั้งเดียว (lazy) — resolve region สำหรับ AWS SDK โดยตรง
-// ใช้ env AWS_REGION ก่อน และ fallback ไป EC2 instance metadata เมื่อรันบน Elastic Beanstalk
-let dynamoDocClientPromise = null;
 async function resolveAwsRegion() {
     if (process.env.AWS_REGION) return process.env.AWS_REGION;
     const controller = new AbortController();
@@ -4955,7 +985,7 @@ async function getDynamoDocClient() {
                         FilterExpression: input.FilterExpression,
                     });
                     addDiagnosticBreadcrumb({ source:"server", type:"aws", label:`dynamodb.error ${operation}`, traceId:ctx.traceId || "", sessionId:ctx.sessionId || "", page:"server", detail:{ table:tableName, durationMs, error:err?.name || "Error", message:err?.message || String(err) } });
-                    recordDiagnostic({
+                    if (input.Item?.playerName !== "__BUG_REPORTS__" && input.Key?.playerName !== "__BUG_REPORTS__" && input.ExpressionAttributeValues?.[":partition"] !== "__BUG_REPORTS__") recordDiagnostic({
                         source:"server", kind:"aws_dynamodb_error", page:"server",
                         message:err?.message || String(err), stack:err?.stack || "", operation,
                         data:safeInput,
@@ -4973,1020 +1003,29 @@ async function getDynamoDocClient() {
     return dynamoDocClientPromise;
 }
 
-// บวกเพิ่ม 1 เกม ให้แถวใดแถวหนึ่งแบบ atomic — ใช้ทั้งกับแถว TOTAL และแถว ROLE#
-// เกมนึงลงได้แค่ 1 ใน 2 ช่องเท่านั้นเสมอ (ไม่ใช่ทั้งคู่): "wins" ถ้าชนะแล้วไม่ได้ "ออก" กลางเกม,
-// หรือ "leaves" ถ้า "ออก" กลางเกม (ดู didLeaveGame ด้านล่าง) — ถ้า won=false และ left=false ก็แปลว่า
-// "แพ้ปกติ" ซึ่งไม่ต้องมีช่องเก็บแยก เพราะคำนวณย้อนกลับได้เสมอจาก games - wins - leaves (ดู
-// /api/player-stats, /api/admin/player-history ด้านล่าง)
-async function bumpStatsRow(doc, playerName, statKey, { won, left } = {}) {
-    let updateExpression = "SET games = if_not_exists(games, :zero) + :one";
-    if (left) {
-        updateExpression += ", leaves = if_not_exists(leaves, :zero) + :one";
-    } else if (won) {
-        updateExpression += ", wins = if_not_exists(wins, :zero) + :one";
-    }
-    await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName, statKey },
-        UpdateExpression: updateExpression,
-        ExpressionAttributeValues: { ":zero": 0, ":one": 1 },
-    }));
-}
-
-// สัดส่วนเวลาที่ผู้เล่น "ออฟไลน์สะสม" ระหว่างเกม (เทียบกับเวลาที่เกมเล่นทั้งตาจนจบ) ที่ต้องเกิน
-// ถึงจะนับว่า "ออกเกม" แทนที่จะนับแพ้/ชนะตามผลจริง — กันกรณีกดย้อนกลับ/ปิดแอปทิ้งกลางเกมแล้วโผล่มา
-// รับผลชนะ (หรือโดนนับแพ้ทั้งที่ไม่ได้เล่นจริง) ทั้งที่ตัวเองไม่ได้อยู่เล่นจนจบเกมจริงๆ
-const LEAVE_OFFLINE_RATIO = 0.2; // 20%
-
-function getRoomGameRoundId(room) {
-    if (!room) return "";
-    if (room.gameRoundId) return String(room.gameRoundId);
-    if (room.startedAt) return `legacy-${room.startedAt}`;
-    return `lobby-${room.createdAt || room.id || "unknown"}`;
-}
-
-function hasImmediateLeaveRecorded(player, room) {
-    const roundId = getRoomGameRoundId(room);
-    return !!(player && roundId && player.leaveStatsRecordedRoundId === roundId);
-}
-
-// บันทึกการ "หนีออกเกม" แบบ explicit ทันที เมื่อผู้เล่นกด "หาห้องใหม่" ระหว่างเกมที่ยังไม่จบ
-// ใช้ transaction + deterministic event keys เพื่อให้ retry ปลอดภัยและไม่บวกสถิติซ้ำ
-// แม้ request เดิมจะ timeout หลัง DynamoDB บันทึกสำเร็จแล้วก็ตาม
-async function recordImmediateGameLeaveStats(room, player, reason = "new_room") {
-    if (!room || !player || player.isHost || !room.started || room.gameOver) {
-        if (player && room && room.started) player.leaveStatsRecordedRoundId = getRoomGameRoundId(room);
-        return { ok: true, skipped: true };
-    }
-
-    const roundId = getRoomGameRoundId(room);
-    if (!roundId) return { ok: false, code: "SERVER_ERROR" };
-    if (player.leaveStatsRecordedRoundId === roundId) return { ok: true, alreadyRecorded: true };
-
-    player.leftGameRoundId = roundId;
-    player.leaveReason = String(reason || "new_room").slice(0, 64);
-    player.leaveRecordedAt = Date.now();
-
-    // Bot/tester ไม่ถือเป็นสถิติผู้เล่นจริง แต่ต้อง lock round state เหมือนกันเพื่อกัน reconnect กลับเข้า
-    if (player.isBot || player.isTester) {
-        player.leaveStatsRecordedRoundId = roundId;
-        return { ok: true, skipped: true };
-    }
-
-    if (!beginGameDataWrite()) return { ok: false, code: "SERVER_ERROR" };
+async function deleteTableItemsWithFallback(doc, tableName, keys) {
+    if (!tableName || !Array.isArray(keys) || !keys.length) return;
     try {
-        const doc = await getDynamoDocClient();
-        const nowMs = Date.now();
-        const now = new Date(nowMs).toISOString();
-        const name = String(player.name || "").trim();
-        const accountId = normalizeAccountId(player.accountId || "");
-        const role = String(player.role || "");
-        if (!name || !accountId || !role) {
-            player.leaveStatsRecordedRoundId = roundId;
-            return { ok: true, skipped: true };
-        }
-
-        // ไม่เพิ่ม IAM action ใหม่: ใช้ UpdateItem/PutItem ที่ role ปัจจุบันมีอยู่แล้ว
-        // และใส่ round guard ในแต่ละ counter row เพื่อให้ retry หลัง timeout ไม่บวกซ้ำ
-        const leaveKey = crypto.createHash("sha256")
-            .update(`${String(room.id || "")}|${roundId}|${String(player.token || "")}`)
-            .digest("hex")
-            .slice(0, 32);
-        const legacyEventKey = `GAME_LEAVE#${leaveKey}`;
-        const accountEventKey = `${ACCOUNT_PROFILE_PREFIX}${accountId}${ACCOUNT_EVENT_PREFIX}GAME_LEAVE#${leaveKey}`;
-        const roleStatKey = `ROLE#${role}`;
-        const accountTotalKey = `${ACCOUNT_PROFILE_PREFIX}${accountId}${ACCOUNT_TOTAL_SUFFIX}`;
-        const accountRoleKey = `${ACCOUNT_PROFILE_PREFIX}${accountId}${ACCOUNT_ROLE_PREFIX}${role}`;
-        const roundSet = new Set([roundId]);
-
-        async function bumpLeaveStatOnce(key, updateExpression, extraValues = {}) {
-            try {
-                await doc.send(new UpdateCommand({
-                    TableName: STATS_TABLE_NAME,
-                    Key: key,
-                    UpdateExpression: `${updateExpression} ADD leaveRounds :roundSet`,
-                    ConditionExpression: "attribute_not_exists(leaveRounds) OR NOT contains(leaveRounds, :roundId)",
-                    ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":roundId": roundId, ":roundSet": roundSet, ...extraValues },
-                }));
-                return { recorded: true };
-            } catch (e) {
-                if (e?.name === "ConditionalCheckFailedException") return { alreadyRecorded: true };
-                throw e;
+        let pending = keys.map((k) => ({ DeleteRequest: { Key: k } }));
+        for (let i = 0; i < pending.length; i += 25) {
+            let batch = pending.slice(i, i + 25);
+            for (let attempt = 0; attempt < 7 && batch.length; attempt++) {
+                const out = await doc.send(new BatchWriteCommand({ RequestItems: { [tableName]: batch } }));
+                batch = (out.UnprocessedItems && out.UnprocessedItems[tableName]) || [];
+                if (batch.length) await sleepMs(100 * 2 ** attempt);
             }
-        }
-
-        async function putLeaveEventOnce(item) {
-            try {
-                await doc.send(new PutCommand({
-                    TableName: STATS_TABLE_NAME,
-                    Item: item,
-                    ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)",
-                }));
-                return { recorded: true };
-            } catch (e) {
-                if (e?.name === "ConditionalCheckFailedException") return { alreadyRecorded: true };
-                throw e;
-            }
-        }
-
-        const profile = accountProfileCache.get(accountId);
-        const isTemporary = (profile?.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY;
-        const profileValues = { ":zero": 0, ":one": 1, ":win": 0, ":leave": 1, ":now": now, ":roundId": roundId, ":roundSet": roundSet };
-        let profileUpdate = "SET games = if_not_exists(games, :zero) + :one, wins = if_not_exists(wins, :zero) + :win, leaves = if_not_exists(leaves, :zero) + :leave, lastPlayedAt = :now, lastSeen = :now, lastActivityAt = :now, updatedAt = :now";
-        if (isTemporary) {
-            profileUpdate += ", temporaryExpiresAt = :expiry";
-            profileValues[":expiry"] = buildTemporaryExpiry(nowMs);
-        }
-
-        await Promise.all([
-            bumpLeaveStatOnce({ playerName: name, statKey: "TOTAL" }, "SET games = if_not_exists(games, :zero) + :one, leaves = if_not_exists(leaves, :zero) + :one"),
-            bumpLeaveStatOnce({ playerName: name, statKey: roleStatKey }, "SET games = if_not_exists(games, :zero) + :one, leaves = if_not_exists(leaves, :zero) + :one"),
-            bumpLeaveStatOnce({ playerName: ACCOUNTS_PARTITION_KEY, statKey: accountTotalKey }, "SET games = if_not_exists(games, :zero) + :one, leaves = if_not_exists(leaves, :zero) + :one"),
-            bumpLeaveStatOnce({ playerName: ACCOUNTS_PARTITION_KEY, statKey: accountRoleKey }, "SET games = if_not_exists(games, :zero) + :one, leaves = if_not_exists(leaves, :zero) + :one"),
-            bumpLeaveStatOnce({ playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(accountId) }, profileUpdate, profileValues),
-            putLeaveEventOnce({
-                playerName: name,
-                statKey: legacyEventKey,
-                type: "game_end",
-                eventKind: "game_leave",
-                roomId: room.id || "",
-                roundId,
-                role,
-                team: teamOf(role),
-                won: false,
-                left: true,
-                leaveReason: player.leaveReason,
-                time: now,
-            }),
-            putLeaveEventOnce({
-                playerName: ACCOUNTS_PARTITION_KEY,
-                statKey: accountEventKey,
-                accountId,
-                type: "game_end",
-                eventKind: "game_leave",
-                displayName: name,
-                leaveReason: player.leaveReason,
-                roomId: room.id || "",
-                roundId,
-                role,
-                team: teamOf(role),
-                won: false,
-                left: true,
-                leaveReason: player.leaveReason,
-                time: now,
-            }),
-        ]);
-
-        player.leaveStatsRecordedRoundId = roundId;
-        return { ok: true, recorded: true };
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-// เช็คว่าผู้เล่นคนนี้ "ออกเกม" ตานี้หรือไม่ — สะสมเวลาออฟไลน์ทั้งหมดระหว่างเกม (ดู
-// markPlayerOfflineStart / flushPlayerOfflineTime ด้านล่าง) รวมช่วงที่ "ยังออฟไลน์อยู่ตอนจบเกม"
-// (นับต่อมาถึง ณ ตอนนี้ด้วย ไม่งั้นคนที่หลุดค้างไปจนจบเกมเลยจะไม่ถูกนับเวลาออฟไลน์ช่วงสุดท้ายเลย)
-// แล้วเทียบเป็นสัดส่วนกับเวลาที่เกมเล่นทั้งตาจนจบ (room.startedAt ถึงตอนนี้)
-function didLeaveGame(player, room) {
-    if (!player || !room || !room.startedAt) return false;
-    if (player.leftGameRoundId && player.leftGameRoundId === getRoomGameRoundId(room)) return true;
-    let offlineMs = player.gameOfflineMs || 0;
-    if (player.gameOfflineSince != null) {
-        offlineMs += Date.now() - player.gameOfflineSince;
-    }
-    const gameDurationMs = Date.now() - room.startedAt;
-    if (gameDurationMs <= 0) return false;
-    return offlineMs / gameDurationMs >= LEAVE_OFFLINE_RATIO;
-}
-
-// เรียกตอนจบเกมเท่านั้น (ดู endGame ด้านล่าง) — resultTeam คือทีมที่ชนะเกมจริง ๆ ของห้องนี้
-// นับสถิติ "ชนะ" ต่อผู้เล่นตามผลจริงของแต่ละคน (ผ่าน isWinner) ไม่ใช่แค่ "อยู่ทีมที่ชนะภาพรวม"
-// เพราะมีบทบาทที่ชนะแยกเงื่อนไขของตัวเอง (เช่นคนบ้า/นักล่าหัว/ผู้ยุยง) ตรงกับที่ isWinner ตัดสินอยู่แล้ว
-// ไม่นับโฮสต์ (ไม่ใช่ผู้เล่น) และไม่นับบอท (ไม่ใช่คนจริง อัตราชนะของบอทไม่มีประโยชน์จะดู)
-//
-// ผู้เล่นที่ "ออกเกม" (ออฟไลน์เกิน LEAVE_OFFLINE_RATIO ของเวลาทั้งตา ดู didLeaveGame) จะไม่ถูกนับ
-// แพ้/ชนะให้เลยไม่ว่าผลจริงจะออกมาทางไหน — นับเป็นสถิติ "ออกเกม" แทน (เพื่อไม่ให้อัตราชนะพองหรือ
-// ลีบผิดจากคนที่ไม่ได้อยู่เล่นจริงจนจบตา)
-//
-// จงใจไม่ await ตอนเรียกจาก endGame() (ดูด้านล่าง) เพราะไม่อยากให้การแจ้งผลจบเกมไปช้าเพราะรอเขียน
-// DynamoDB — ยิงทิ้งไว้เบื้องหลัง (fire-and-forget) ดัก error ไว้ในนี้แค่ log กันไม่ให้ process ล่ม
-async function recordGameStats(room, resultTeam) {
-    if (!beginGameDataWrite()) return;
-    try {
-    const players = room.players.filter((p) => p && !p.isHost && !p.isBot && !p.isTester && (p.name || "").trim() && p.role && !hasImmediateLeaveRecorded(p, room));
-    if (!players.length) return;
-
-    try {
-        const doc = await getDynamoDocClient();
-        const now = new Date().toISOString();
-        await Promise.all(players.flatMap((p) => {
-            const name = p.name.trim();
-            const left = didLeaveGame(p, room);
-            const won = !left && isWinner(p, resultTeam, room);
-            return [
-                bumpStatsRow(doc, name, "TOTAL", { won, left }),
-                bumpStatsRow(doc, name, `ROLE#${p.role}`, { won, left }),
-                // แถวประวัติ 1 แถวต่อคนต่อเกม (ดูคอมเมนต์ PLAYER REGISTRY ด้านบน) — ให้หน้า admin
-                // โชว์ "จบเกมนี้ ได้บท X ผลชนะ/แพ้/ออก" แทรกในไทม์ไลน์เดียวกับตอนเข้าห้อง
-                doc.send(new PutCommand({
-                    TableName: STATS_TABLE_NAME,
-                    Item: {
-                        playerName: name,
-                        statKey: genEventKey(),
-                        type: "game_end",
-                        eventKind: "game_end",
-                        roomId: room.id || "",
-                        role: p.role,
-                        team: teamOf(p.role),
-                        won,
-                        left,
-                        leaveReason: left ? "offline_threshold" : null,
-                        time: now,
-                    },
-                })),
-            ];
-        }));
-    } catch (e) {
-        console.error("[stats] บันทึกสถิติลง DynamoDB ล้มเหลว:", e.message);
-    }
-    // สถิติแบบ accountId ทำแยก fire-and-forget เพื่อให้ rename แล้วสถิติใหม่ยังอยู่บัญชีเดิม
-    if (!resetInProgress) recordAccountGameStats(room, resultTeam).catch((e) => logAccountDbWarning(e));
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-
-async function cleanupExpiredTemporaryAccounts() {
-    if (resetInProgress) return { checked: 0, deleted: 0 };
-    let checked = 0;
-    let deleted = 0;
-    try {
-        const profiles = await queryAllAccountProfiles();
-        for (const profile of profiles) {
-            if (profile.accountType !== ACCOUNT_TYPE_TEMPORARY || !isTemporaryExpired(profile)) continue;
-            checked++;
-            const id = normalizeAccountId(profile.accountId || String(profile.statKey || "").replace(/^ACCOUNT#/, ""));
-            if (!id) continue;
-            try {
-                const result = await deleteAccountData(id, { reason: "expired" });
-                if (result.ok) deleted++;
-            } catch (e) {
-                logAccountDbWarning(e);
-            }
+            if (batch.length) throw new Error(`DynamoDB ยังประมวลผลรายการลบของ ${tableName} ไม่ครบ`);
         }
     } catch (e) {
-        logAccountDbWarning(e);
-    }
-    if (deleted) console.log(`[accounts] ล้าง Temporary Account หมดอายุ ${deleted}/${checked} บัญชี`);
-    return { checked, deleted };
-}
-
-async function cleanupExpiredAccountSessions() {
-    if (resetInProgress) return 0;
-    try {
-        const doc = await getDynamoDocClient();
-        const items = [];
-        let ExclusiveStartKey;
-        const nowMs = Date.now();
-        do {
-            const out = await doc.send(new QueryCommand({
-                TableName: STATS_TABLE_NAME,
-                KeyConditionExpression: "playerName = :pk AND begins_with(statKey, :prefix)",
-                ExpressionAttributeValues: { ":pk": ACCOUNTS_PARTITION_KEY, ":prefix": ACCOUNT_SESSION_PREFIX },
-                ExclusiveStartKey,
-            }));
-            items.push(...(out.Items || []));
-            ExclusiveStartKey = out.LastEvaluatedKey;
-        } while (ExclusiveStartKey);
-        const expired = items.map((it) => {
-            const exp = Date.parse(it.expiresAt || "");
-            const hash = String(it.tokenHash || String(it.statKey || "").slice(ACCOUNT_SESSION_PREFIX.length)).trim();
-            return { item: it, hash, expired: Number.isFinite(exp) && exp <= nowMs && /^[a-f0-9]{64}$/i.test(hash) };
-        }).filter((x) => x.expired);
-        if (!expired.length) return 0;
-        const deletes = expired.map((x) => ({ playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(x.hash) }));
-        const markers = expired.filter((x) => x.item?.accountId).map((x) => ({
-            playerName: ACCOUNTS_PARTITION_KEY,
-            statKey: accountSessionByAccountKey(x.item.accountId, x.hash),
-        }));
-        await deleteItemsWithFallback(doc, [...deletes, ...markers]);
-        console.log(`[accounts] ล้าง Google session หมดอายุ ${expired.length} session`);
-        return expired.length;
-    } catch (e) {
-        logAccountDbWarning(e);
-        return 0;
+        const denied = /AccessDenied|not authorized|UnauthorizedOperation/i.test(String(e?.message || e));
+        if (!denied) throw e;
+        for (const key of keys) await doc.send(new DeleteCommand({ TableName: tableName, Key: key }));
     }
 }
 
-const ACCOUNT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-let accountCleanupTimer = null;
-function startAccountCleanupJob() {
-    if (accountCleanupTimer) return;
-    accountCleanupTimer = setInterval(() => {
-        cleanupExpiredTemporaryAccounts().catch(logAccountDbWarning);
-        cleanupExpiredAccountSessions().catch(logAccountDbWarning);
-    }, ACCOUNT_CLEANUP_INTERVAL_MS);
-    if (typeof accountCleanupTimer.unref === "function") accountCleanupTimer.unref();
-    setTimeout(() => {
-        cleanupExpiredTemporaryAccounts().catch(logAccountDbWarning);
-        cleanupExpiredAccountSessions().catch(logAccountDbWarning);
-    }, 15_000);
-}
-
-// เริ่ม job หลัง process โหลดฟังก์ชันแล้ว — ถ้า DynamoDB ใช้ไม่ได้จะ retry รอบถัดไปและไม่ทำให้เกมล่ม
-startAccountCleanupJob();
-
-// ============================================================
-// PLAYER REGISTRY (รายชื่อ "ทุกคน" ที่เคยตั้งชื่อเข้าเล่น — ไม่ใช่แค่คนที่เชื่อมต่ออยู่ตอนนี้)
-// ============================================================
-// ใช้ตาราง DynamoDB เดียวกับสถิติผู้เล่นด้านบน (STATS_TABLE_NAME) เพิ่ม statKey อีก 2 แบบ:
-//   - "REG"          แถวสรุปต่อชื่อ 1 แถว: firstSeen / lastSeen / joinCount (นับเข้าใหม่ทุกครั้ง
-//                     ที่ตั้งชื่อ "ครั้งแรก" ในห้องนั้น — reconnect ด้วย token เดิมไม่นับซ้ำ)
-//                     ใช้ Scan ทั้งตาราง กรองเฉพาะแถวนี้ เพื่อดึง "รายชื่อทุกคนที่เคยลงทะเบียน"
-//                     มาโชว์ในหน้า admin (แท็บ "ผู้เล่นทั้งหมด") — Scan ทั้งตารางยอมรับได้เพราะ
-//                     ตารางนี้เล็ก (เขียนไม่บ่อย, ใช้แค่หน้า admin ที่ไม่มีใครเปิดพร้อมกันหลายคน)
-//   - "EVENT#<ISO>"  แถวประวัติ 1 แถวต่อ 1 เหตุการณ์ (เข้าห้อง / จบเกม) เรียงตามเวลาได้เพราะ ISO
-//                     timestamp เรียง lexicographic ตรงกับเรียงเวลาอยู่แล้ว — ใช้ Query ตาม
-//                     playerName (partition key) ดึงประวัติทั้งหมดของคนคนนั้นมาโชว์ในหน้า admin
-const genEventKey = () => `EVENT#${new Date().toISOString()}#${genId()}`;
-
-// เรียกตอน "ตั้งชื่อเข้าห้องครั้งแรก" เท่านั้น (create_room และ join_room ฝั่งผู้เล่นใหม่) —
-// ไม่เรียกตอน reconnect ด้วย token เดิม เพราะไม่ใช่การลงทะเบียนใหม่ ไม่งั้น joinCount จะพองเกินจริง
-// จงใจไม่ await ตอนเรียกจาก handler (fire-and-forget เหมือน recordGameStats ด้านบน) กันไม่ให้
-// การเข้าห้องช้าเพราะรอเขียน DynamoDB
-async function recordPlayerRegistration(name, { roomId, isHost, isTester } = {}) {
-    // Tester คือเครื่องแอดมินชั่วคราว ห้ามสร้าง registry/ประวัติบัญชีจริงเด็ดขาด
-    if (isTester) return;
-    const trimmed = (name || "").trim();
-    if (!trimmed) return;
-    if (!beginGameDataWrite()) return;
-
-    try {
-        const doc = await getDynamoDocClient();
-        const now = new Date().toISOString();
-        await Promise.all([
-            doc.send(new UpdateCommand({
-                TableName: STATS_TABLE_NAME,
-                Key: { playerName: trimmed, statKey: "REG" },
-                UpdateExpression:
-                    "SET firstSeen = if_not_exists(firstSeen, :now), lastSeen = :now" +
-                    " ADD joinCount :one",
-                ExpressionAttributeValues: { ":now": now, ":one": 1 },
-            })),
-            doc.send(new PutCommand({
-                TableName: STATS_TABLE_NAME,
-                Item: {
-                    playerName: trimmed,
-                    statKey: genEventKey(),
-                    type: "join",
-                    eventKind: "room_join",
-                    roomId: roomId || "",
-                    isHost: !!isHost,
-                    isTester: !!isTester,
-                    time: now,
-                },
-            })),
-        ]);
-    } catch (e) {
-        if (!resetInProgress) console.error("[registry] บันทึกการลงทะเบียนผู้เล่นล้มเหลว:", e.name, e.message);
-    } finally {
-        endGameDataWrite();
-    }
-}
-
-// ทีมของแต่ละ role (field "team" ใน roles ด้านล่าง) มีค่าไม่กี่แบบ (wolf/villager/solo/cult/bandit)
-// ไว้ใช้จัดกลุ่มใน popup อัตราชนะฝั่ง client (ระดับกลาง: รวมทุก role ในทีมเดียวกัน ก่อนจะกางย่อยเป็น
-// รายอาชีพอีกที) แปลเป็นภาษาไทยไว้ให้ตรงกับชื่อที่ใช้แสดงผลจุดอื่น ๆ ในเกมนี้
-const roleTeamLabels = {
-    wolf: "หมาป่า",
-    villager: "ชาวบ้าน",
-    solo: "สายเดี่ยว",
-    cult: "ลัทธิ",
-    bandit: "โจร",
-};
-
-// แปลงแถวสถิติดิบจาก DynamoDB (games/wins/leaves) ให้เป็น "3 ช่อง" ชนะ/แพ้/ออก ครบทั้งจำนวนและ %
-// — losses ไม่ได้เก็บเป็นคอลัมน์แยกใน DynamoDB (ดูคอมเมนต์ bumpStatsRow ด้านบน) คำนวณย้อนกลับจาก
-// games - wins - leaves เอาตรงนี้จุดเดียว ให้ทุก endpoint ที่ต้องโชว์สถิติเรียกใช้ร่วมกันเสมอ
-function rateBreakdown(row) {
-    const games = row?.games || 0;
-    const wins = row?.wins || 0;
-    const leaves = row?.leaves || 0;
-    const losses = Math.max(0, games - wins - leaves);
-    const pct = (n) => (games ? Math.round((n / games) * 1000) / 10 : 0);
-    return {
-        games, wins, losses, leaves,
-        winRate: pct(wins), lossRate: pct(losses), leaveRate: pct(leaves),
-    };
-}
-
-// ============================================================
-// DIRECT GOOGLE OIDC AUTHENTICATION
-// ============================================================
-function parseGoogleContextCookie(req) {
-    return verifySignedState(readCookie(req.headers?.cookie, GOOGLE_STATE_COOKIE), AUTH_STATE_SECRET);
-}
-
-function createPkcePair() {
-    const verifier = crypto.randomBytes(32).toString("base64url");
-    const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-    return { verifier, challenge };
-}
-
-function issueGoogleContext(req, res, payload) {
-    const signed = createSignedState({ v: 1, exp: Date.now() + ACCOUNT_GOOGLE_STATE_TTL_MS, n: crypto.randomBytes(18).toString("hex"), ...payload });
-    setHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, signed, ACCOUNT_GOOGLE_STATE_TTL_MS, authCookieSecure(req));
-}
-
-function googleAuthorizeUrl(state, codeChallenge, nonce = "") {
-    const u = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    u.searchParams.set("response_type", "code");
-    u.searchParams.set("client_id", GOOGLE_CLIENT_ID);
-    u.searchParams.set("redirect_uri", GOOGLE_CALLBACK_URL);
-    u.searchParams.set("scope", GOOGLE_SCOPES);
-    u.searchParams.set("state", state);
-    u.searchParams.set("prompt", "select_account");
-    if (nonce) u.searchParams.set("nonce", nonce);
-    if (codeChallenge) {
-        u.searchParams.set("code_challenge_method", "S256");
-        u.searchParams.set("code_challenge", codeChallenge);
-    }
-    return u.toString();
-}
-
-async function linkGoogleIdentityToAccount(accountId, providerSubject, claims, displayNameHint, { deviceId = "" } = {}) {
-    const id = normalizeAccountId(accountId);
-    const identityKey = googleIdentityKey(providerSubject);
-    const existing = await getAccountByGoogleIdentity(providerSubject);
-    if (existing && normalizeAccountId(existing.accountId) !== id) {
-        throw Object.assign(new Error("Google บัญชีนี้เชื่อมกับ Game Account อื่นอยู่แล้ว"), { code: "GOOGLE_ALREADY_LINKED" });
-    }
-    const profile = await getAccountProfile(id, { forceFresh: true });
-    if (!profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-    if (profile.status === "deleted") throw Object.assign(new Error("account deleted"), { code: "ACCOUNT_DELETED" });
-    if (profile.status === "suspended") throw Object.assign(new Error("account suspended"), { code: "ACCOUNT_SUSPENDED" });
-    if (isTemporaryExpired(profile)) throw Object.assign(new Error("temporary account expired"), { code: "ACCOUNT_EXPIRED" });
-    if (profile.accountType === "google" && profile.provider === "google" && !existing) {
-        // profile looks linked but provider index is missing: the transaction below repairs the index.
-    }
-    const now = new Date().toISOString();
-    const googleName = sanitizeName(displayNameHint || claims?.name || claims?.given_name || profile.currentName || randomTemporaryDisplayName(), profile.currentName || "ผู้เล่น");
-    const oldTempHash = String(profile[ACCOUNT_IDENTITY_HASH_FIELD] || "");
-    const rawSession = crypto.randomBytes(48).toString("base64url");
-    const sessionHash = hashAccountToken(rawSession);
-    const sessionExpires = new Date(Date.now() + ACCOUNT_GOOGLE_SESSION_TTL_MS).toISOString();
-    const identityItem = { playerName: ACCOUNTS_PARTITION_KEY, statKey: identityKey, accountId: id, provider: "google", providerSubjectHash: googleIdentitySubjectHash(providerSubject), googleSub: String(claims?.sub || ""), createdAt: existing?.createdAt || now, updatedAt: now };
-    const sessionLookup = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(sessionHash), accountId: id, tokenHash: sessionHash, provider: "google", createdAt: now, expiresAt: sessionExpires, updatedAt: now };
-    const sessionMarker = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, sessionHash), accountId: id, tokenHash: sessionHash, provider: "google", createdAt: now, expiresAt: sessionExpires };
-    const deleteTempIdentity = oldTempHash ? { Delete: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountIdentityKey(oldTempHash) } } } : null;
-    const identityPut = existing
-        ? { Put: { TableName: STATS_TABLE_NAME, Item: identityItem, ConditionExpression: "attribute_exists(playerName) AND accountId = :accountId", ExpressionAttributeValues: { ":accountId": id } } }
-        : { Put: { TableName: STATS_TABLE_NAME, Item: identityItem, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } };
-    const tx = [
-        identityPut,
-        { Update: { TableName: STATS_TABLE_NAME, Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) }, UpdateExpression: "SET accountType = :google, provider = :google, currentName = if_not_exists(currentName, :name), lastSeen = :now, lastActivityAt = :now, updatedAt = :now, #active = :sessionHash, #activeAt = :now, #device = :device REMOVE loginTokenHash, loginIdentityKey, temporaryExpiresAt", ExpressionAttributeNames: { "#active": ACCOUNT_ACTIVE_SESSION_HASH_FIELD, "#activeAt": ACCOUNT_ACTIVE_SESSION_UPDATED_AT_FIELD, "#device": ACCOUNT_ACTIVE_DEVICE_ID_FIELD }, ExpressionAttributeValues: { ":google": "google", ":name": googleName, ":now": now, ":sessionHash": sessionHash, ":device": normalizeDeviceId(deviceId) } } },
-        { Put: { TableName: STATS_TABLE_NAME, Item: sessionLookup, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-        { Put: { TableName: STATS_TABLE_NAME, Item: sessionMarker, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-    ];
-    if (deleteTempIdentity) tx.push(deleteTempIdentity);
-    try {
-        await getDynamoDocClient().then((doc) => doc.send(new TransactWriteCommand({ TransactItems: tx })));
-    } catch (e) {
-        if (e?.name === "TransactionCanceledException" || e?.name === "ConditionalCheckFailedException") {
-            const winner = await getAccountByGoogleIdentity(providerSubject).catch(() => null);
-            if (winner && normalizeAccountId(winner.accountId) !== id) {
-                throw Object.assign(new Error("Google บัญชีนี้เชื่อมกับ Game Account อื่นอยู่แล้ว"), { code: "GOOGLE_ALREADY_LINKED" });
-            }
-            // Same-account concurrent callback: do not attempt a second linking transaction;
-            // instead issue a normal Google session for the already-linked account.
-            if (winner && normalizeAccountId(winner.accountId) === id) {
-                const current = await getAccountProfile(id, { forceFresh: true });
-                if (current?.accountType === "google" && current.provider === "google") {
-                    const session = await issueGoogleAccountSession(id, { deviceId });
-                    return { accountId: id, token: session.token, expiresAt: session.expiresAt, profile: current };
-                }
-            }
-        }
-        throw e;
-    }
-    await revokeAllOlderAccountSessions(id, sessionHash).catch((e) => { console.error("[accounts] old linked sessions cleanup failed:", e?.message || e); });
-    disconnectAccountSockets(id, sessionHash, "google_linked", normalizeDeviceId(deviceId));
-    const next = { ...profile, accountType: "google", provider: "google", currentName: profile.currentName || googleName, updatedAt: now, activeSessionHash: sessionHash, activeSessionUpdatedAt: now, activeDeviceId: normalizeDeviceId(deviceId) };
-    delete next.loginTokenHash;
-    delete next.loginIdentityKey;
-    delete next.temporaryExpiresAt;
-    accountProfileCache.set(id, next);
-    accountActivityDbAt.delete(id);
-    return { accountId: id, token: rawSession, expiresAt: sessionExpires, profile: next };
-}
-
-async function createGoogleGameAccount(providerSubject, claims, { deviceId = "" } = {}) {
-    const existing = await getAccountByGoogleIdentity(providerSubject);
-    if (existing?.accountId) {
-        const profile = await getAccountProfile(existing.accountId, { forceFresh: true });
-        if (!profile) throw Object.assign(new Error("linked account not found"), { code: "GOOGLE_ACCOUNT_BROKEN" });
-        if (profile.status === "deleted") throw Object.assign(new Error("linked account deleted"), { code: "ACCOUNT_DELETED" });
-        if (profile.status === "suspended") throw Object.assign(new Error("linked account suspended"), { code: "ACCOUNT_SUSPENDED" });
-        const session = await issueGoogleAccountSession(existing.accountId, { deviceId });
-        return { accountId: existing.accountId, token: session.token, expiresAt: session.expiresAt, profile };
-    }
-    let displayName = sanitizeName(claims?.name || claims?.given_name || "", "");
-    if (!displayName || displayName === "ผู้เล่น") displayName = randomTemporaryDisplayName();
-    try { displayName = await assertAccountNameAvailable(displayName, ""); }
-    catch (_) { displayName = randomTemporaryDisplayName(); }
-    const id = generateAccountId();
-    const now = new Date();
-    const iso = now.toISOString();
-    const rawSession = crypto.randomBytes(48).toString("base64url");
-    const sessionHash = hashAccountToken(rawSession);
-    const sessionExpires = new Date(now.getTime() + ACCOUNT_GOOGLE_SESSION_TTL_MS).toISOString();
-    const googleIdentityItem = { playerName: ACCOUNTS_PARTITION_KEY, statKey: googleIdentityKey(providerSubject), accountId: id, provider: "google", providerSubjectHash: googleIdentitySubjectHash(providerSubject), googleSub: String(claims?.sub || ""), createdAt: iso, updatedAt: iso };
-    const profile = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id), accountId: id, accountType: "google", provider: "google", currentName: displayName, aliases: [], status: "active", firstSeen: iso, createdAt: iso, lastSeen: iso, lastActivityAt: iso, updatedAt: iso, joinCount: 0, games: 0, wins: 0, leaves: 0, isTester: false, activeSessionHash: sessionHash, activeSessionUpdatedAt: iso, activeDeviceId: normalizeDeviceId(deviceId) };
-    const sessionLookup = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionKey(sessionHash), accountId: id, tokenHash: sessionHash, provider: "google", createdAt: iso, expiresAt: sessionExpires, updatedAt: iso };
-    const sessionMarker = { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountSessionByAccountKey(id, sessionHash), accountId: id, tokenHash: sessionHash, provider: "google", createdAt: iso, expiresAt: sessionExpires };
-    const tx = { TransactItems: [
-        { Put: { TableName: STATS_TABLE_NAME, Item: googleIdentityItem, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-        { Put: { TableName: STATS_TABLE_NAME, Item: profile, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-        { Put: { TableName: STATS_TABLE_NAME, Item: sessionLookup, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-        { Put: { TableName: STATS_TABLE_NAME, Item: sessionMarker, ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" } },
-    ] };
-    try {
-        await getDynamoDocClient().then((doc) => doc.send(new TransactWriteCommand(tx)));
-    } catch (e) {
-        if (e?.name === "TransactionCanceledException" || e?.name === "ConditionalCheckFailedException") {
-            // Another instance may have won the same Google identity between the initial read and the transaction.
-            const winner = await getAccountByGoogleIdentity(providerSubject).catch(() => null);
-            if (winner?.accountId) {
-                const winnerProfile = await getAccountProfile(winner.accountId, { forceFresh: true });
-                if (!winnerProfile) throw Object.assign(new Error("linked account not found"), { code: "GOOGLE_ACCOUNT_BROKEN" });
-                if (winnerProfile.status === "deleted") throw Object.assign(new Error("linked account deleted"), { code: "ACCOUNT_DELETED" });
-                if (winnerProfile.status === "suspended") throw Object.assign(new Error("linked account suspended"), { code: "ACCOUNT_SUSPENDED" });
-                const session = await issueGoogleAccountSession(winner.accountId, { deviceId });
-                return { accountId: winner.accountId, token: session.token, expiresAt: session.expiresAt, profile: winnerProfile };
-            }
-        }
-        throw e;
-    }
-    accountProfileCache.set(id, profile);
-    accountActivityDbAt.delete(id);
-    return { accountId: id, token: rawSession, expiresAt: sessionExpires, profile };
-}
-
-app.get("/api/auth/config", (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    const required = [
-        ["GOOGLE_CLIENT_ID", GOOGLE_CLIENT_ID],
-        ["GOOGLE_CALLBACK_URL", GOOGLE_CALLBACK_URL],
-        ["AUTH_STATE_SECRET", AUTH_STATE_SECRET_ENV],
-    ];
-    const missing = required.filter(([, value]) => !String(value || "").trim()).map(([key]) => key);
-    if (GOOGLE_CALLBACK_URL && !googleCallbackUrlIsAllowed()) missing.push("GOOGLE_CALLBACK_URL_HTTPS");
-    res.json({
-        ok: true,
-        googleConfigured: missing.length === 0,
-        googleLoginEnabled: missing.length === 0,
-        missing,
-        accountSessionTtlMs: ACCOUNT_GOOGLE_SESSION_TTL_MS,
-    });
-});
-
-async function prepareGoogleLoginStart(req, res, { mode = "login", accountId = "", accountToken = "", reauth = false, returnTo = "/", deviceId = "" } = {}) {
-    if (!googleIsConfigured()) throw Object.assign(new Error("Google is not configured"), { code: "GOOGLE_NOT_CONFIGURED" });
-    const safeMode = mode === "link" ? "link" : "login";
-    const safeAccountId = normalizeAccountId(accountId);
-    const safeAccountToken = normalizeAccountToken(accountToken);
-    const safeReauth = safeMode === "login" && reauth === true && !!safeAccountId;
-
-    // Link operations authenticate the existing Game Account before any Google redirect is created.
-    if (safeMode === "link") {
-        if (!safeAccountId || !safeAccountToken) throw Object.assign(new Error("account authentication required"), { code: "ACCOUNT_AUTH_REQUIRED" });
-        const verified = await withTimeout(
-            verifyAccountLogin(safeAccountId, safeAccountToken),
-            10000,
-            "ACCOUNT_AUTH_TIMEOUT",
-            "account verification timed out"
-        );
-        if (!verified.profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-        if (verified.ok === false) throw Object.assign(new Error("account authentication failed"), { code: verified.code || "ACCOUNT_AUTH_FAILED" });
-        if (verified.profile.accountType === "google" && verified.profile.provider === "google") throw Object.assign(new Error("Google already linked"), { code: "GOOGLE_ALREADY_LINKED" });
-    }
-
-    const pkce = createPkcePair();
-    const statePayload = {
-        v: 1, exp: Date.now() + ACCOUNT_GOOGLE_STATE_TTL_MS,
-        n: crypto.randomBytes(18).toString("hex"), mode: safeMode, reauth: safeReauth,
-        returnTo: normalizeReturnTo(returnTo || "/"),
-        deviceId: normalizeDeviceId(deviceId),
-        previousAccountId: safeMode === "login" ? safeAccountId : "",
-    };
-    const state = createSignedState(statePayload);
-    issueGoogleContext(req, res, {
-        stateNonce: statePayload.n, mode: safeMode, reauth: safeReauth,
-        accountId: safeMode === "link" ? safeAccountId : (safeReauth ? safeAccountId : ""),
-        accountTokenHash: safeMode === "link" ? hashAccountToken(safeAccountToken) : "",
-        returnTo: statePayload.returnTo, codeVerifier: pkce.verifier, deviceId: statePayload.deviceId, previousAccountId: statePayload.previousAccountId,
-    });
-    return { state, url: googleAuthorizeUrl(state, pkce.challenge, statePayload.n), mode: safeMode, reauth: safeReauth };
-}
-
-async function prepareAdminGoogleLoginStart(req, res) {
-    if (!ADMIN_GOOGLE_EMAILS.length) throw Object.assign(new Error("Google admin login is not configured"), { code: "ADMIN_GOOGLE_ADMIN_NOT_CONFIGURED" });
-    if (!googleIsConfigured()) throw Object.assign(new Error("Google is not configured"), { code: "GOOGLE_NOT_CONFIGURED" });
-    const tabId = sanitizeAdminTabId(req.query?.tabId);
-    if (!tabId) throw Object.assign(new Error("Admin tab id is required"), { code: "ADMIN_TAB_ID_REQUIRED" });
-    const pkce = createPkcePair();
-    const statePayload = {
-        v: 1,
-        exp: Date.now() + ACCOUNT_GOOGLE_STATE_TTL_MS,
-        n: crypto.randomBytes(18).toString("hex"),
-        mode: "admin",
-        tabId,
-        returnTo: "/admin.html",
-    };
-    const state = createSignedState(statePayload);
-    setHttpOnlyCookie(res, adminGoogleStateCookieName(tabId), createSignedState({
-        v: 1, exp: statePayload.exp, stateNonce: statePayload.n, mode: "admin", tabId, codeVerifier: pkce.verifier,
-    }), ACCOUNT_GOOGLE_STATE_TTL_MS, authCookieSecure(req));
-    return { state, url: googleAuthorizeUrl(state, pkce.challenge, statePayload.n) };
-}
-
-app.get("/auth/google/admin-start", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store, private");
-    res.setHeader("Pragma", "no-cache");
-    try {
-        const result = await prepareAdminGoogleLoginStart(req, res);
-        return res.redirect(302, result.url);
-    } catch (e) {
-        const code = String(e?.code || "ADMIN_GOOGLE_LOGIN_FAILED");
-        return res.redirect(`/admin.html?admin_error=${encodeURIComponent(code)}`);
-    }
-});
-
-// Browser navigation endpoint for login/re-authentication.
-// It intentionally uses GET because login start carries no credential and CloudFront deployments
-// commonly allow GET on the default behavior while a custom /api/* behavior may not forward POST.
-// This stays same-origin and still goes directly from the browser to Google's authorization endpoint.
-app.get("/auth/google/start", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store, private");
-    res.setHeader("Pragma", "no-cache");
-    const accountId = normalizeAccountId(req.query.accountId || "");
-    const reauth = String(req.query.reauth || "") === "1" && !!accountId;
-    try {
-        const result = await prepareGoogleLoginStart(req, res, { mode: "login", accountId, reauth, returnTo: req.query.returnTo || "/", deviceId: req.query.deviceId || "" });
-        return res.redirect(302, result.url);
-    } catch (e) {
-        const code = String(e?.code || "GOOGLE_AUTH_FAILED");
-        return res.redirect(`/auth/google/complete?error=${encodeURIComponent(code)}`);
-    }
-});
-
-// JSON start endpoint remains for account-linking, where the existing account credential must be
-// authenticated server-side before redirecting to Google. Login/re-auth clients should use the GET endpoint above.
-app.post("/api/auth/google/start", express.json({ limit: "6kb" }), async (req, res) => {
-    res.setHeader("Cache-Control", "no-store, private");
-    try {
-        const body = req.body || {};
-        const result = await prepareGoogleLoginStart(req, res, {
-            mode: body.mode === "link" ? "link" : "login",
-            accountId: body.accountId || "", accountToken: body.accountToken || "",
-            reauth: body.reauth === true, returnTo: body.returnTo || "/", deviceId: body.deviceId || "",
-        });
-        return res.json({ ok: true, url: result.url });
-    } catch (e) {
-        const code = String(e?.code || "GOOGLE_AUTH_FAILED");
-        const statusByCode = {
-            GOOGLE_NOT_CONFIGURED: 503, ACCOUNT_AUTH_REQUIRED: 401, ACCOUNT_NOT_FOUND: 404,
-            ACCOUNT_AUTH_FAILED: 403, GOOGLE_ALREADY_LINKED: 409, ACCOUNT_SUSPENDED: 403, ACCOUNT_DELETED: 403,
-            ACCOUNT_EXPIRED: 403, ACCOUNT_AUTH_TIMEOUT: 503,
-        };
-        return res.status(statusByCode[code] || 500).json({ ok: false, code });
-    }
-});
-
-function googleFriendlyError(code) {
-    const messages = {
-        GOOGLE_NOT_CONFIGURED: "ระบบเข้าสู่ระบบ Google ยังตั้งค่าไม่ครบ",
-        GOOGLE_TOKEN_INVALID: "ยืนยันตัวตนกับ Google ไม่สำเร็จ",
-        GOOGLE_KEY_NOT_FOUND: "ไม่พบกุญแจยืนยันตัวตนของ Google กรุณาลองใหม่",
-        GOOGLE_SUBJECT_MISSING: "ไม่พบข้อมูลบัญชี Google ที่จำเป็น",
-        GOOGLE_ALREADY_LINKED: "บัญชี Google นี้เชื่อมกับ Game Account อื่นอยู่แล้ว",
-        ACCOUNT_DELETED: "บัญชีเกมนี้ถูกลบแล้ว",
-        ACCOUNT_SUSPENDED: "บัญชีเกมนี้ถูกพักอยู่",
-        ACCOUNT_EXPIRED: "บัญชีชั่วคราวหมดอายุแล้ว",
-        ACCOUNT_AUTH_FAILED: "การยืนยันบัญชีไม่ผ่าน",
-        ACCOUNT_SESSION_REVOKED: "บัญชีนี้ถูกเข้าสู่ระบบจากอุปกรณ์อื่นแล้ว",
-        ACCOUNT_DEVICE_CONFLICT: "บัญชีชั่วคราวนี้ผูกกับอุปกรณ์อื่นแล้ว",
-        ACCOUNT_ACTIVITY_CONFLICT: "บัญชีนี้กำลังทำกิจกรรมอื่นอยู่",
-        ACCOUNT_ACTIVITY_ALREADY_ACTIVE: "บัญชีนี้กำลังเล่นอยู่ในอีกแท็บหนึ่ง",
-        HOST_OWNERSHIP_REQUIRED: "บัญชีนี้ไม่มีสิทธิ์คุมห้องนี้",
-        GOOGLE_STATE_INVALID: "เซสชันการเข้าสู่ระบบหมดอายุ กรุณาเริ่ม Google Login ใหม่",
-        GOOGLE_HANDOFF_EXPIRED: "การเข้าสู่ระบบหมดอายุ กรุณาลองใหม่อีกครั้ง",
-    };
-    return messages[String(code || "")] || "ไม่สามารถเข้าสู่ระบบด้วย Google ได้ กรุณาลองใหม่อีกครั้ง";
-}
-
-function googleCompleteHtml() {
-    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Google Login — Werewolf Online TH</title><style>
-html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 50% 10%,#51306e 0,#1a1726 46%,#0d0d13 100%);color:#fff}body{display:grid;place-items:center;padding:24px}.box{width:min(92vw,460px);box-sizing:border-box;padding:30px 26px;border:1px solid rgba(255,255,255,.13);border-radius:22px;background:rgba(23,20,34,.9);box-shadow:0 18px 60px rgba(0,0,0,.35);text-align:center}.icon{font-size:42px;line-height:1;margin-bottom:14px}.title{font-size:24px;font-weight:800;margin:0 0 8px}.msg{margin:0 0 20px;color:#d7d0e2;line-height:1.6;white-space:pre-wrap}.actions{display:flex;justify-content:center}.btn{display:inline-flex;align-items:center;justify-content:center;min-width:190px;padding:12px 18px;border-radius:14px;text-decoration:none;background:#19b7a5;color:#071b19;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.25)}.sub{margin-top:12px;color:#9d93ab;font-size:12px}.hidden{display:none}
-</style></head><body><div class="box"><div class="icon" id="icon">🔐</div><h1 class="title" id="title">กำลังเข้าสู่บัญชี...</h1><p class="msg" id="msg">กำลังยืนยันข้อมูลกับ Google และเซิร์ฟเวอร์เกม</p><div class="actions"><a class="btn hidden" id="back" href="/">กลับหน้าเกม</a></div><div class="sub" id="sub">Werewolf Online TH</div></div><script>
-(async()=>{const title=document.getElementById('title'),msg=document.getElementById('msg'),icon=document.getElementById('icon'),back=document.getElementById('back');const q=new URLSearchParams(location.search);const code=q.get('error')||'';const friendly={GOOGLE_STATE_INVALID:'เซสชันการเข้าสู่ระบบหมดอายุ กรุณากลับหน้าเกมแล้วเริ่มใหม่',GOOGLE_TOKEN_INVALID:'ยืนยันตัวตนกับ Google ไม่สำเร็จ',GOOGLE_KEY_NOT_FOUND:'ไม่พบกุญแจยืนยันตัวตนของ Google กรุณาลองใหม่',GOOGLE_SUBJECT_MISSING:'ไม่พบข้อมูลบัญชี Google ที่จำเป็น',GOOGLE_ALREADY_LINKED:'บัญชี Google นี้เชื่อมกับ Game Account อื่นอยู่แล้ว',ACCOUNT_DELETED:'บัญชีเกมนี้ถูกลบแล้ว',ACCOUNT_SUSPENDED:'บัญชีเกมนี้ถูกพักอยู่',ACCOUNT_EXPIRED:'บัญชีชั่วคราวหมดอายุแล้ว',ACCOUNT_AUTH_FAILED:'การยืนยันบัญชีไม่ผ่าน',GOOGLE_HANDOFF_EXPIRED:'การเข้าสู่ระบบหมดอายุ กรุณาลองใหม่อีกครั้ง'};if(code){icon.textContent='⚠️';title.textContent='เข้าสู่ระบบ Google ไม่สำเร็จ';msg.textContent=friendly[code]||'ไม่สามารถเข้าสู่ระบบด้วย Google ได้ กรุณาลองใหม่อีกครั้ง';back.classList.remove('hidden');return;}try{const r=await fetch('/api/auth/google/handoff',{cache:'no-store',credentials:'same-origin'});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.code||'GOOGLE_HANDOFF_EXPIRED');if(d.mode==='login'&&!d.reauth){try{['ww_joinedRoom','ww_lastRoom','ww_token','ww_host_room','ww_host_token','ww_bot_tokens'].forEach(k=>{localStorage.removeItem(k);sessionStorage.removeItem(k)})}catch(_){}}localStorage.setItem('ww_account_id',d.accountId);localStorage.setItem('ww_account_token',d.accountToken);localStorage.setItem('ww_account_type',d.accountType||'google');if(d.displayName)localStorage.setItem('ww_account_name',d.displayName);localStorage.removeItem('ww_account_expires');icon.textContent='✅';title.textContent='เข้าสู่ระบบสำเร็จ';msg.textContent='กำลังกลับเข้าเกม...';location.replace(d.returnTo||'/');}catch(_){icon.textContent='⚠️';title.textContent='เข้าสู่ระบบ Google ไม่สำเร็จ';msg.textContent='การเชื่อมต่อกลับเข้าเกมหมดอายุ กรุณากลับหน้าเกมแล้วลองใหม่อีกครั้ง';back.classList.remove('hidden');}})();
-</script></body></html>`;
-}
-
-app.get("/auth/google/callback", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    if (!googleIsConfigured()) return res.redirect("/auth/google/complete?error=GOOGLE_NOT_CONFIGURED");
-    const code = String(req.query.code || "");
-    const state = String(req.query.state || "");
-    const error = String(req.query.error || "");
-    const statePayload = verifySignedState(state);
-    if (error) {
-        if (statePayload?.mode === "admin") {
-            const tabId = sanitizeAdminTabId(statePayload.tabId);
-            if (tabId) clearHttpOnlyCookie(res, adminGoogleStateCookieName(tabId), authCookieSecure(req));
-            return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_CANCELLED")}`);
-        }
-        clearHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, authCookieSecure(req));
-        return res.redirect(`/auth/google/complete?error=${encodeURIComponent("GOOGLE_AUTH_CANCELLED")}`);
-    }
-    if (statePayload?.mode === "admin") {
-        const tabId = sanitizeAdminTabId(statePayload.tabId);
-        const adminContext = verifySignedState(readCookie(req.headers?.cookie, adminGoogleStateCookieName(tabId)));
-        const verifiedTabId = sanitizeAdminTabId(statePayload.tabId || adminContext?.tabId);
-        if (!code || !adminContext || adminContext.mode !== "admin" || statePayload.n !== adminContext.stateNonce || !adminContext.codeVerifier || !verifiedTabId || adminContext.tabId !== verifiedTabId) {
-            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
-            return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_STATE_INVALID")}`);
-        }
-        if (!ADMIN_GOOGLE_EMAILS.length) {
-            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
-            return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_NOT_CONFIGURED")}`);
-        }
-        try {
-            const form = { grant_type: "authorization_code", client_id: GOOGLE_CLIENT_ID, code, redirect_uri: GOOGLE_CALLBACK_URL, code_verifier: String(adminContext.codeVerifier) };
-            if (GOOGLE_CLIENT_SECRET) form.client_secret = GOOGLE_CLIENT_SECRET;
-            const tokens = await requestJsonHttps("https://oauth2.googleapis.com/token", { method: "POST", form });
-            const verified = await verifyGoogleIdToken(tokens?.id_token || "", adminContext.stateNonce);
-            const email = normalizeAdminEmail(verified.claims?.email);
-            if (!isAllowedAdminGoogleClaims(verified.claims)) {
-                clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
-                return res.redirect(`/admin.html?admin_error=${encodeURIComponent("ADMIN_GOOGLE_NOT_ALLOWED")}`);
-            }
-            const ticket = createSignedState({
-                v: 1, type: "admin_tab_handoff", admin: true, tabId,
-                provider: "google", googleSub: verified.providerSubject, email,
-                exp: Date.now() + ADMIN_TAB_HANDOFF_TTL_MS, n: crypto.randomBytes(24).toString("hex"),
-            }, ADMIN_SESSION_SECRET);
-            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
-            return res.redirect(`/admin.html#admin_ticket=${encodeURIComponent(ticket)}`);
-        } catch (e) {
-            console.error("[admin-google-auth] callback failed:", e?.name, e?.code || "", e?.message || "");
-            clearHttpOnlyCookie(res, adminGoogleStateCookieName(verifiedTabId || tabId), authCookieSecure(req));
-            return res.redirect(`/admin.html?admin_error=${encodeURIComponent(String(e?.code || "ADMIN_GOOGLE_LOGIN_FAILED"))}`);
-        }
-    }
-    const context = parseGoogleContextCookie(req);
-    if (!code || !statePayload || !context || statePayload.n !== context.stateNonce) {
-        clearHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, authCookieSecure(req));
-        return res.redirect("/auth/google/complete?error=GOOGLE_STATE_INVALID");
-    }
-    if (statePayload.mode !== context.mode || !!statePayload.reauth !== !!context.reauth || !context.codeVerifier) {
-        clearHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, authCookieSecure(req));
-        return res.redirect("/auth/google/complete?error=GOOGLE_STATE_INVALID");
-    }
-    try {
-        const form = { grant_type: "authorization_code", client_id: GOOGLE_CLIENT_ID, code, redirect_uri: GOOGLE_CALLBACK_URL, code_verifier: String(context.codeVerifier) };
-        if (GOOGLE_CLIENT_SECRET) form.client_secret = GOOGLE_CLIENT_SECRET;
-        const tokens = await requestJsonHttps("https://oauth2.googleapis.com/token", { method: "POST", form });
-        const verified = await verifyGoogleIdToken(tokens?.id_token || "", context.stateNonce);
-        let result;
-        if (context.mode === "link") {
-            const profile = await getAccountProfile(context.accountId, { forceFresh: true });
-            if (!profile) throw Object.assign(new Error("account not found"), { code: "ACCOUNT_NOT_FOUND" });
-            if (profile.status === "deleted") throw Object.assign(new Error("account deleted"), { code: "ACCOUNT_DELETED" });
-            if (profile.status === "suspended") throw Object.assign(new Error("account suspended"), { code: "ACCOUNT_SUSPENDED" });
-            if (isTemporaryExpired(profile)) throw Object.assign(new Error("temporary account expired"), { code: "ACCOUNT_EXPIRED" });
-            const storedHash = String(profile[ACCOUNT_IDENTITY_HASH_FIELD] || "");
-            if (!storedHash || storedHash !== context.accountTokenHash) throw Object.assign(new Error("account link credential is invalid"), { code: "ACCOUNT_AUTH_FAILED" });
-            result = await linkGoogleIdentityToAccount(context.accountId, verified.providerSubject, verified.claims, verified.claims?.name || "", { deviceId: context.deviceId || "" });
-        } else {
-            result = await createGoogleGameAccount(verified.providerSubject, verified.claims, { deviceId: context.deviceId || "" });
-            const previousAccountId = normalizeAccountId(context.previousAccountId || "");
-            if (previousAccountId && previousAccountId !== normalizeAccountId(result.accountId || "")) {
-                disconnectAccountSockets(previousAccountId, String(result.profile?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || ""), "new_account_login", "");
-            }
-        }
-        const sameAccountReauth = context.mode === "login" && !!context.reauth && normalizeAccountId(context.accountId || "") === normalizeAccountId(result.accountId || "");
-        const handoff = createSignedState({ v: 1, exp: Date.now() + ACCOUNT_GOOGLE_HANDOFF_TTL_MS, n: crypto.randomBytes(18).toString("hex"), mode: context.mode, reauth: sameAccountReauth, accountId: result.accountId, accountToken: result.token, accountType: result.profile?.accountType || "google", displayName: result.profile?.currentName || "", returnTo: normalizeReturnTo(context.returnTo || "/") });
-        setHttpOnlyCookie(res, GOOGLE_HANDOFF_COOKIE, handoff, ACCOUNT_GOOGLE_HANDOFF_TTL_MS, authCookieSecure(req));
-        clearHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, authCookieSecure(req));
-        return res.redirect("/auth/google/complete");
-    } catch (e) {
-        console.error("[google-auth] callback failed:", e?.name, e?.code || "", e?.message || "");
-        clearHttpOnlyCookie(res, GOOGLE_STATE_COOKIE, authCookieSecure(req));
-        return res.redirect(`/auth/google/complete?error=${encodeURIComponent(String(e?.code || "GOOGLE_AUTH_FAILED"))}`);
-    }
-});
-
-app.get("/auth/google/complete", (req, res) => { res.setHeader("Cache-Control", "no-store"); res.type("html").send(googleCompleteHtml()); });
-
-app.get("/api/auth/google/handoff", (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    const payload = verifySignedState(readCookie(req.headers?.cookie, GOOGLE_HANDOFF_COOKIE));
-    clearHttpOnlyCookie(res, GOOGLE_HANDOFF_COOKIE, authCookieSecure(req));
-    if (!payload?.accountId || !payload?.accountToken) return res.status(401).json({ ok: false, code: "GOOGLE_HANDOFF_EXPIRED" });
-    res.json({ ok: true, accountId: payload.accountId, accountToken: payload.accountToken, accountType: payload.accountType || "google", displayName: sanitizeName(payload.displayName || "", ""), mode: payload.mode || "login", reauth: !!payload.reauth, returnTo: normalizeReturnTo(payload.returnTo || "/") });
-});
-
-app.post("/api/account/logout", express.json({ limit: "4kb" }), async (req, res) => {
-    const accountId = normalizeAccountId(req.body?.accountId || "");
-    const accountToken = normalizeAccountToken(req.body?.accountToken || "");
-    const deviceId = normalizeDeviceId(req.body?.deviceId || req.headers["x-ww-device-id"] || "");
-    if (!accountId || !accountToken) return res.status(400).json({ ok: false, code: "ACCOUNT_AUTH_REQUIRED" });
-    try {
-        const verified = await verifyAccountLogin(accountId, accountToken, { deviceId });
-        if (!verified.profile) return res.status(404).json({ ok: false, code: "ACCOUNT_NOT_FOUND" });
-        if (verified.ok === false) return res.status(403).json({ ok: false, code: verified.code });
-        if (verified.session?.provider === "google") await revokeAccountSession(accountId, accountToken);
-        disconnectAccountSockets(accountId, "", "logout", deviceId);
-        res.json({ ok: true });
-    } catch (e) { res.status(500).json({ ok: false, code: "ACCOUNT_LOGOUT_FAILED" }); }
-});
-
-app.get("/api/account/context", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store, private");
-    const accountId = normalizeAccountId(req.query.accountId || req.headers["x-ww-account-id"] || "");
-    const accountToken = normalizeAccountToken(req.headers["x-ww-account-token"] || "");
-    const deviceId = normalizeDeviceId(req.headers["x-ww-device-id"] || "");
-    if (!accountId || !accountToken) return res.status(401).json({ ok: false, code: "ACCOUNT_AUTH_REQUIRED" });
-    try {
-        const verified = await verifyAccountLogin(accountId, accountToken, { deviceId });
-        if (!verified.profile) return res.status(404).json({ ok: false, code: "ACCOUNT_NOT_FOUND" });
-        if (verified.ok === false) return res.status(403).json({ ok: false, code: verified.code });
-        let activeActivity = getAccountActiveActivity(verified.profile);
-        let roomSummary = null;
-        if (activeActivity?.roomId) {
-            const room = rooms[activeActivity.roomId] || await recoverPersistedRoomById(activeActivity.roomId, { reason: "account_context" }).catch(() => null);
-            if (room) {
-                const member = (room.players || []).find((p) => !p.isHost && normalizeAccountId(p.accountId || "") === accountId) || (room.players || []).find((p) => p.isHost && normalizeAccountId(p.accountId || "") === accountId);
-                roomSummary = { roomId: room.id, started: !!room.started, gameOver: !!room.gameOver, isHost: !!member?.isHost, membershipId: member?.membershipId || activeActivity.membershipId || "", playerCount: (room.players || []).filter((p) => !p.isHost).length };
-            } else {
-                await clearAccountActivity(accountId, { force: true }).catch(() => {});
-                activeActivity = null;
-            }
-        }
-        res.json({ ok: true, account: accountPublicProfile(verified.profile), activeActivity, room: roomSummary });
-    } catch (e) {
-        const transient = ["ROOM_FAILOVER_WAIT", "ROOM_LEASE_UNAVAILABLE"].includes(String(e?.code || ""));
-        if (transient) {
-            res.status(503).json({ ok: false, code: String(e.code), retryAfterMs: Number(e.retryAfterMs) || ROOM_FAILOVER_RETRY_MS });
-        } else {
-            res.status(500).json({ ok: false, code: "ACCOUNT_CONTEXT_FAILED" });
-        }
-    }
-});
-
-// endpoint ให้หน้า lobby (index.html) ดึงสถิติของผู้เล่นคนเดียวไปโชว์ในป็อปอัป — ไม่ต้องใช้ socket
-// เพราะหน้านี้ไม่ได้เชื่อม socket.io อยู่แล้ว (ดู index.main.js) ขอแค่ query param name= พอ
-app.get("/api/player-stats", async (req, res) => {
-    const accountId = normalizeAccountId(req.query.accountId);
-    const accountToken = normalizeAccountToken(req.headers["x-ww-account-token"] || "");
-    const name = String(req.query.name || "").trim();
-    if (!accountId && !name) return res.status(400).json({ error: "missing name or accountId" });
-
-    try {
-        // บัญชีใหม่: ต้องพิสูจน์ accountToken ก่อนอ่านข้อมูลของ accountId
-        if (accountId) {
-            if (!accountToken) return res.status(401).json({ error: "account authentication required", code: "ACCOUNT_AUTH_REQUIRED" });
-            const verified = await verifyAccountLogin(accountId, accountToken);
-            if (!verified.profile) return res.status(404).json({ error: "account not found", code: "ACCOUNT_NOT_FOUND" });
-            if (verified.ok === false) return res.status(403).json({ error: verified.code.toLowerCase(), code: verified.code });
-            const data = await queryAccountDetails(accountId);
-            if (data) return res.json({ name: data.name || name, accountId, ...rateBreakdown(data), roles: data.roles || [], account: accountPublicProfile(verified.profile) });
-        }
-        const doc = await getDynamoDocClient();
-        const result = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :name",
-            ExpressionAttributeValues: { ":name": name },
-        }));
-
-        const items = result.Items || [];
-        const totalRow = items.find((it) => it.statKey === "TOTAL") || { games: 0, wins: 0, leaves: 0 };
-        const roles = items
-            .filter((it) => it.statKey.startsWith("ROLE#"))
-            .map((it) => {
-                const role = it.statKey.slice("ROLE#".length);
-                return { role, team: teamOf(role), teamLabel: roleTeamLabels[teamOf(role)] || "", ...rateBreakdown(it) };
-            })
-            .sort((a, b) => b.games - a.games);
-
-        res.json({ name, ...rateBreakdown(totalRow), roles });
-    } catch (e) {
-        // ยังไม่ได้สร้างตาราง/ยังไม่ได้ให้สิทธิ์ IAM/DynamoDB มีปัญหาชั่วคราว — ไม่พังทั้งหน้า lobby
-        // แค่โชว์ป็อปอัปว่าดึงสถิติไม่ได้ (ดู index.main.js) เกมส่วนอื่นเล่นต่อได้ปกติไม่กระทบ
-        console.error("[stats] ดึงสถิติจาก DynamoDB ล้มเหลว:", e.message);
-        res.status(500).json({ error: "stats unavailable" });
-    }
-});
-
-// ============================================================
-// ADMIN — รายชื่อผู้เล่นทั้งหมดที่เคยลงทะเบียน + ประวัติรายคน (ดู PLAYER REGISTRY ด้านบน)
-// ทุก /api/admin/* ผ่าน middleware ยืนยัน Admin session ก่อนถึง handler
-// ============================================================
-
-// ADMIN PLAYER DIRECTORY — บัญชีจริง + ผู้เล่น legacy เก่า (ไม่มี accountId)
-// บัญชีใหม่ใช้ accountId เป็นตัวตน; ชื่อเป็นเพียง displayName และเปลี่ยนจาก Admin ได้แม้ออฟไลน์
-app.get("/api/admin/players", async (req, res) => {
-    const q = String(req.query.q || "").trim().toLowerCase();
-    try {
-        const modern = await queryAllAccountProfiles();
-        const modernNames = new Set();
-        const players = modern.filter((it) => it.isTester !== true).map((it) => {
-            const accountId = normalizeAccountId(it.accountId || String(it.statKey || "").replace(/^ACCOUNT#/, ""));
-            const aliases = Array.isArray(it.aliases) ? Array.from(new Set(it.aliases.filter(Boolean))) : [];
-            if (it.currentName) modernNames.add(String(it.currentName));
-            aliases.forEach((a) => modernNames.add(String(a)));
-            const total = { games: it.games || 0, wins: it.wins || 0, leaves: it.leaves || 0 };
-            const live = getLiveSessionsForAccount(accountId);
-            return {accountId,name:it.currentName||"ผู้เล่น",aliases,firstSeen:it.firstSeen||null,lastSeen:it.lastSeen||null,joinCount:it.joinCount||0,status:it.status||"active",accountType:it.accountType||ACCOUNT_TYPE_TEMPORARY,provider:it.provider||"temporary",temporaryExpiresAt:it.temporaryExpiresAt||null,online:live.length>0,roomIds:Array.from(new Set(live.map(x=>x.roomId))),legacy:false,...rateBreakdown(total)};
-        });
-        const doc=await getDynamoDocClient(); const legacyItems=[]; let ExclusiveStartKey;
-        do { const out=await doc.send(new ScanCommand({TableName:STATS_TABLE_NAME,FilterExpression:"statKey = :reg",ExpressionAttributeValues:{":reg":"REG"},ExclusiveStartKey})); legacyItems.push(...(out.Items||[])); ExclusiveStartKey=out.LastEvaluatedKey; } while(ExclusiveStartKey);
-        for(const it of legacyItems){
-            const name=String(it.playerName||"");
-            if(!name||modernNames.has(name)) continue;
-            // Legacy tester records from older builds had EVENT rows marked isTester=true.
-            // Hide those from the real-player directory without deleting user data blindly.
-            let testerOnly = false;
-            try {
-                const ev = await doc.send(new QueryCommand({TableName:STATS_TABLE_NAME,KeyConditionExpression:"playerName = :name",ExpressionAttributeValues:{":name":name}}));
-                const events=(ev.Items||[]).filter(x=>String(x.statKey||"").startsWith("EVENT#"));
-                testerOnly = events.length > 0 && events.every(x=>x.isTester === true);
-            } catch (_) {}
-            if(testerOnly) continue;
-            players.push({accountId:"",name,aliases:[],firstSeen:it.firstSeen||null,lastSeen:it.lastSeen||null,joinCount:it.joinCount||0,status:"legacy",online:false,roomIds:[],legacy:true,games:0,wins:0,losses:0,leaves:0,winRate:0,lossRate:0,leaveRate:0});
-        }
-        const filtered=q?players.filter(x=>String(x.name).toLowerCase().includes(q)||(x.aliases||[]).some(a=>String(a).toLowerCase().includes(q))):players;
-        filtered.sort((a,b)=>String(b.lastSeen||"").localeCompare(String(a.lastSeen||"")));
-        res.json({ok:true,players:filtered});
-    } catch(e){ res.status(500).json({error:"registry unavailable",detail:`${e.name}: ${e.message}`}); }
-});
-
-app.get("/api/admin/player-account", async (req, res) => {
-    const accountId = normalizeAccountId(req.query.accountId);
-    if (!accountId) return res.status(400).json({ error: "missing accountId" });
-    try {
-        const account = await queryAccountDetails(accountId);
-        if (!account) return res.status(404).json({ error: "account not found" });
-        res.json({ ok: true, account });
-    } catch (e) {
-        console.error("[admin] player account failed:", e.name, e.message);
-        res.status(500).json({ error: "account unavailable", detail: `${e.name}: ${e.message}` });
-    }
-});
-
-app.get("/api/admin/player-history", async (req, res) => {
-    const accountId = normalizeAccountId(req.query.accountId);
-    const name = String(req.query.name || "").trim();
-    try {
-        if (accountId) {
-            const data = await queryAccountDetails(accountId);
-            if (!data) return res.status(404).json({ error: "account not found" });
-            return res.json(data);
-        }
-        if (!name) return res.status(400).json({ error: "missing name" });
-        const doc = await getDynamoDocClient();
-        const result = await doc.send(new QueryCommand({
-            TableName: STATS_TABLE_NAME,
-            KeyConditionExpression: "playerName = :name",
-            ExpressionAttributeValues: { ":name": name },
-        }));
-        const items = result.Items || [];
-        const regRow = items.find((it) => it.statKey === "REG") || {};
-        const totalRow = items.find((it) => it.statKey === "TOTAL") || { games: 0, wins: 0, leaves: 0 };
-        const events = items.filter((it) => String(it.statKey || "").startsWith("EVENT#")).map((it) => ({
-            type: it.type, eventKind: it.eventKind || (it.left ? "game_leave" : (it.type === "game_end" ? "game_end" : "room_join")),
-            roomId: it.roomId || "", time: it.time, isHost: !!it.isHost, isTester: !!it.isTester,
-            role: it.role || null, team: it.team || null, teamLabel: it.team ? (roleTeamLabels[it.team] || "") : null,
-            won: typeof it.won === "boolean" ? it.won : null, left: !!it.left, leaveReason: it.leaveReason || null,
-        })).sort((a,b) => String(b.time).localeCompare(String(a.time)));
-        return res.json({ name, legacy: true, status: "legacy", firstSeen: regRow.firstSeen || null, lastSeen: regRow.lastSeen || null, joinCount: regRow.joinCount || 0, ...rateBreakdown(totalRow), events });
-    } catch (e) {
-        console.error("[admin] player history failed:", e.name, e.message);
-        res.status(500).json({ error: "history unavailable", detail: `${e.name}: ${e.message}` });
-    }
-});
-
-// ============================================================
-// ADMIN — ELASTIC BEANSTALK VERSION MANAGER
-// ============================================================
-// สิทธิ์เข้าถึงทุก route ใต้ /api/admin ถูกบังคับผ่าน Admin session middleware
-// ด้านบนแล้ว ดังนั้น endpoint เหล่านี้ไม่รับ "รหัสผ่าน" จาก UI เป็นตัวตัดสินซ้ำ
-// แต่ใช้ session/tab credential ที่ผ่าน middleware เป็นตัวตนจริงแทน
-function adminVersionError(res, status, code, message, extra = {}) {
-    return res.status(status).json({ ok: false, error: code, code, message, ...extra });
+const ADMIN_VERSION_DOWNLOAD_TTL_MS = 5 * 60_000;
+function adminVersionError(res, status, code, message, details = {}) {
+    return res.status(status).json({ ok:false, error:code, code, message, ...details });
 }
 
 app.get("/api/admin/versions", async (req, res) => {
@@ -6118,1508 +1157,182 @@ getAppVersion({ force: true }).then((version) => {
 // คำนวณ version สดทุกครั้งที่มีการเรียก (ไม่ใช้ค่า cache ตายตัว) เพื่อให้จับการเปลี่ยนไฟล์ static
 // ได้ทันทีแม้ deploy แบบสลับไฟล์โดยไม่ restart process
 // Client-side error intake — deliberately separate from game socket so a broken game JS file can still report.
-app.post("/api/diagnostics/client-error", express.json({ limit: "64kb" }), (req, res) => {
-    if (!diagnosticRequestAllowed(req)) return res.status(429).json({ ok: false, error: "rate_limited" });
-    const b = req.body || {};
-    recordDiagnostic({
-        source: "client",
-        kind: b.kind || "client_error",
-        page: b.page || "unknown",
-        message: b.message || "",
-        stack: b.stack || "",
-        file: b.file || "",
-        line: b.line,
-        column: b.column,
-        status: b.status,
-        endpoint: b.endpoint,
-        data: b.context || b.data,
-        context: b.context || {},
-        state: b.state || {},
-        breadcrumbs: b.breadcrumbs || [],
-        traceId: b.traceId || "",
-        sessionId: b.sessionId || "",
-        action: b.action || "",
-        roomId: b.roomId || "",
-        requestId: b.requestId || "",
-        clientRequestId: req.headers["x-ww-client-request-id"] || "",
-        operationId: b.operationId || "",
-        causalHint: b.causalHint || null,
-        fingerprint: b.fingerprint || "",
-    });
-    res.json({ ok: true });
-});
-
-
-function publicDiagnosticText(value) {
-    return String(value ?? "")
-        .slice(0, 12000)
-        .replace(/([?&](?:token|accountToken|testerPass|tp|ts|jr|ac|authorization|cookie|secret|password)=)[^&\s)]+/gi, "$1[REDACTED]")
-        .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{16,}\b/gi, "[REDACTED_CREDENTIAL]")
-        .replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]")
-        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]");
+// ============================================================
+// LIGHTWEIGHT BUG REPORTS
+// ============================================================
+// Production keeps only a small report inbox for Admin. No diagnostic graph, replay,
+// screenshot pipeline, incident correlation, or runtime audit is stored here.
+const BUG_REPORT_MAX = 200;
+const BUG_REPORT_TEXT_MAX = 6000;
+const bugReports = [];
+const bugReportRate = new Map();
+const { createBugReportStore } = require("./utils/bug-report-store");
+const bugReportStore = createBugReportStore({ client:getDynamoDocClient, table:ROOM_PERSISTENCE_TABLE,
+    QueryCommand, PutCommand, DeleteCommand, GetCommand, enabled:process.env.BUG_REPORT_PERSISTENCE_ENABLED === "true" || (process.env.BUG_REPORT_PERSISTENCE_ENABLED !== "false" && ROOM_PERSISTENCE_ENABLED) });
+let bugReportStorageError = "";
+const pendingBugReportIds = new Set();
+const githubReportInFlight = new Set();
+function cacheBugReport(report) {
+    const index = bugReports.findIndex(item => item.id === report.id);
+    if (index >= 0) bugReports.splice(index, 1);
+    bugReports.push(report);
+    bugReports.sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+    while (bugReports.length > BUG_REPORT_MAX) pendingBugReportIds.delete(bugReports.pop().id);
 }
-
-function publicDiagnosticValue(value, depth = 0) {
-    if (depth > 3 || value === null || value === undefined) return value == null ? "" : String(value);
-    if (typeof value === "string") return value.slice(0, 1200);
-    if (typeof value === "number" || typeof value === "boolean") return value;
-    if (Array.isArray(value)) return value.slice(0, 24).map((v) => publicDiagnosticValue(v, depth + 1));
-    if (typeof value === "object") {
-        const out = {};
-        for (const key of Object.keys(value).slice(0, 40)) {
-            if (/token|secret|password|authorization|cookie|accountToken|googleSub|email|ipAddress|remoteAddress|hostname/i.test(key)) continue;
-            out[String(key).slice(0, 100)] = publicDiagnosticValue(value[key], depth + 1);
-        }
-        return out;
+async function persistBugReport(report) {
+    try { await bugReportStore.save(report); pendingBugReportIds.delete(report.id); bugReportStorageError = ""; }
+    catch (error) { bugReportStorageError = String(error.name || "StorageError"); throw error; }
+}
+async function refreshBugReportInbox() {
+    if (!bugReportStore.enabled) return;
+    try {
+        const durable = await bugReportStore.list(BUG_REPORT_MAX);
+        const pending = bugReports.filter(report => pendingBugReportIds.has(report.id));
+        bugReports.length = 0;
+        for (const report of [...durable, ...pending]) cacheBugReport(report);
+        bugReportStorageError = "";
     }
-    return String(value).slice(0, 1200);
+    catch (error) { bugReportStorageError = String(error.name || "StorageError"); }
 }
 
-function publicDiagnosticResource(resource) {
-    const raw = String(resource || "");
-    if (!raw) return "";
-    return raw.replace(/arn:aws:([^:]+):([^:]*):([0-9]{12}):/, "arn:aws:$1:$2:***:");
+function bugReportClientIp(req) {
+    return String(req.headers["x-forwarded-for"] || "").split(",")[0].trim()
+        || String(req.ip || req.socket?.remoteAddress || "unknown");
 }
-
-
-function publicDiagnosticEventForShare(event = {}, keepAnalysis = false) {
-    const out = publicDiagnosticEvent(event);
-    // Share snapshots are intentionally slimmer than the Admin live feed to leave room for graph links.
-    const crumbLimit = keepAnalysis ? 20 : 8;
-    const serverCrumbLimit = keepAnalysis ? 40 : 16;
-    out.breadcrumbs = Array.isArray(out.breadcrumbs) ? out.breadcrumbs.slice(-crumbLimit) : [];
-    out.serverBreadcrumbs = Array.isArray(out.serverBreadcrumbs) ? out.serverBreadcrumbs.slice(-serverCrumbLimit) : [];
-    out.stack = publicDiagnosticText(out.stack).slice(0, keepAnalysis ? 5000 : 3000);
-    out.context = publicDiagnosticValue(out.context || {});
-    out.state = publicDiagnosticValue(out.state || {});
-    if (!keepAnalysis) delete out.analysis;
-    return out;
+function trimBugReportText(value, max = BUG_REPORT_TEXT_MAX) {
+    return String(value ?? "").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "").slice(0, max);
 }
-
-function publicDiagnosticEvent(event = {}) {
-    const out = {
-        id: String(event.id || "").slice(0, 120),
-        sequence: Number(event.sequence) || 0,
-        time: String(event.time || ""),
-        source: String(event.source || "").slice(0, 32),
-        kind: String(event.kind || "").slice(0, 64),
-        page: String(event.page || "").slice(0, 48),
-        message: publicDiagnosticText(event.message),
-        stack: publicDiagnosticText(event.stack),
-        file: String(event.file || "").slice(0, 600),
-        line: Number(event.line) || 0,
-        column: Number(event.column) || 0,
-        status: Number(event.status) || 0,
-        endpoint: String(event.endpoint || "").slice(0, 600),
-        data: publicDiagnosticValue(event.data || ""),
-        context: publicDiagnosticValue(event.context || {}),
-        state: publicDiagnosticValue(event.state || {}),
-        breadcrumbs: Array.isArray(event.breadcrumbs) ? event.breadcrumbs.slice(-80).map(publicDiagnosticValue) : [],
-        serverBreadcrumbs: Array.isArray(event.serverBreadcrumbs) ? event.serverBreadcrumbs.slice(-120).map(publicDiagnosticValue) : [],
-        traceId: String(event.traceId || "").slice(0, 120),
-        sessionId: String(event.sessionId || "").slice(0, 120),
-        action: String(event.action || "").slice(0, 120),
-        operation: String(event.operation || "").slice(0, 120),
-        roomId: String(event.roomId || "").slice(0, 32),
-        requestId: String(event.requestId || "").slice(0, 120),
-        clientRequestId: String(event.clientRequestId || "").slice(0, 120),
-        durationMs: Number(event.durationMs) || 0,
-        operationId: String(event.operationId || "").slice(0, 120),
-        causalHint: publicDiagnosticValue(event.causalHint || {}),
-        fingerprint: String(event.fingerprint || "").slice(0, 80),
-        featureKeys: Array.isArray(event.featureKeys) ? event.featureKeys.slice(0, 32).map((x) => String(x).slice(0, 80)) : [],
-        featureLabels: Array.isArray(event.featureLabels) ? event.featureLabels.slice(0, 32).map((x) => String(x).slice(0, 160)) : [],
-        featureArea: String(event.featureArea || "").slice(0, 80),
-        gameProfileRef: event.gameProfileRef ? publicDiagnosticValue(event.gameProfileRef) : null,
-        gameProfileSnapshot: event.gameProfileSnapshot ? publicDiagnosticValue(event.gameProfileSnapshot) : null,
-        permission: event.permission ? { action:String(event.permission.action || "").slice(0, 120), resource:publicDiagnosticResource(event.permission.resource), accessDenied:!!event.permission.accessDenied } : null,
-        coalescedCount: Math.max(1, Number(event.coalescedCount) || 1),
-        firstSeenAt: String(event.firstSeenAt || event.time || "").slice(0, 80),
-        lastSeenAt: String(event.lastSeenAt || event.time || "").slice(0, 80),
-        coalescedEventIds: Array.isArray(event.coalescedEventIds) ? event.coalescedEventIds.slice(0, 12).map((x) => String(x).slice(0, 120)) : [],
-        serverInstance: event.serverInstance ? { appVersion:String(event.serverInstance.appVersion || "").slice(0, 120), uptimeSec:Number(event.serverInstance.uptimeSec) || 0 } : null,
-    };
-    out.analysis = publicDiagnosticValue(event.analysis || {});
-    return out;
-}
-
-function relatedDiagnosticEventsFor(event) {
-    const exact = diagnosticEvents.filter((x) =>
-        (event.traceId && x.traceId === event.traceId) ||
-        (event.sessionId && x.sessionId === event.sessionId) ||
-        (event.operationId && x.operationId === event.operationId) ||
-        (event.requestId && (x.requestId === event.requestId || x.clientRequestId === event.requestId)) ||
-        (event.clientRequestId && (x.clientRequestId === event.clientRequestId || x.requestId === event.clientRequestId))
-    );
-    const cluster = diagnosticCausalClusterForEvent(event, DIAGNOSTIC_CAUSAL_MAX_NODES);
-    const map = new Map();
-    for (const x of [...exact, ...cluster]) if (x?.id) map.set(x.id, x);
-    return Array.from(map.values()).sort((a,b) => diagnosticTimeMs(b) - diagnosticTimeMs(a));
-}
-
-function diagnosticShareToken() {
-    return crypto.randomBytes(DIAGNOSTIC_SHARE_TOKEN_BYTES).toString("base64url");
-}
-
-function diagnosticShareStatKey(token) {
-    return `${DIAGNOSTIC_SHARE_STAT_PREFIX}${token}`;
-}
-
-function diagnosticIncidentIdentity(event = {}) {
-    const operationId = String(event.operationId || event.context?.operationId || event.detail?.operationId || "").trim();
-    const requestId = String(event.requestId || event.context?.requestId || event.detail?.requestId || event.clientRequestId || "").trim();
-    const traceId = String(event.traceId || "").trim();
-    const sessionId = String(event.sessionId || "").trim();
-    const roomId = String(event.roomId || "").trim().toUpperCase();
-    // Prefer identifiers that represent one concrete attempt. A bare roomId is never enough.
-    if (operationId) return `operation:${operationId}`;
-    if (requestId) return `request:${requestId}`;
-    if (traceId) return `trace:${traceId}${sessionId ? `|session:${sessionId}` : ""}${roomId ? `|room:${roomId}` : ""}`;
-    if (sessionId) return `session:${sessionId}${roomId ? `|room:${roomId}` : ""}`;
-    return "";
-}
-
-function normalizeGithubBugReplayFingerprintText(value = "") {
-    return publicDiagnosticText(value)
-        .replace(/\b(replay|tr|ses|req|srvreq)-[A-Za-z0-9_-]+\b/gi, "$1:<id>")
-        .replace(/\b(err|incident)-[A-Za-z0-9_-]+\b/gi, "$1:<id>")
-        .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, "<timestamp>")
-        .replace(/\b0x[0-9a-f]+\b/gi, "0x<id>")
-        .replace(/[\r\n]+/g, "\n")
-        .trim()
-        .slice(0, 6000);
-}
-
-function diagnosticGithubIncidentIdentity(event = {}) {
-    const kind = String(event.kind || event.type || "").toLowerCase().trim();
-    if (kind === "bug_replay_failure") {
-        const data = event.data && typeof event.data === "object" ? event.data : {};
-        const context = event.context && typeof event.context === "object" ? event.context : {};
-        const testPath = String(data.testPath || context.testPath || event.testPath || "").trim();
-        const exitCode = data.exitCode ?? context.exitCode ?? event.exitCode ?? "";
-        const signal = String(data.signal || context.signal || event.signal || "").trim();
-        const timedOut = !!(data.timedOut ?? context.timedOut ?? event.timedOut);
-        const output = normalizeGithubBugReplayFingerprintText(data.stderr || data.stdout || event.stack || event.message || "");
-        const existingFingerprint = String(event.fingerprint || "").trim();
-        if (!testPath && !output && existingFingerprint) return `bug-replay:${existingFingerprint}`;
-        return `bug-replay:${diagnosticFingerprint(["BUG_REPLAY_FAILED", testPath, exitCode, signal, timedOut ? "timeout" : "", output])}`;
-    }
-    return diagnosticIncidentIdentity(event);
-}
-
-function diagnosticIncidentIndexKey(incidentKey) {
-    const digest = crypto.createHash("sha256").update(String(incidentKey || "")).digest("hex").slice(0, 40);
-    return `${DIAGNOSTIC_INCIDENT_INDEX_PREFIX}${digest}`;
-}
-
-function validDiagnosticShareToken(token) {
-    return /^[A-Za-z0-9_-]{20,80}$/.test(String(token || ""));
-}
-
-function diagnosticSharePublicBaseUrl(req) {
-    const configured = String(process.env.DIAGNOSTIC_PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
-    if (configured) return configured;
-    const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || (req.secure ? "https" : "http");
-    const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
-    const host = forwardedHost || req.get("host");
-    return `${/^https?$/i.test(forwardedProto) ? forwardedProto : "https"}://${host}`;
-}
-
-function diagnosticShareUrls(baseUrl, token) {
-    const base = String(baseUrl || "").replace(/\/+$/, "");
-    const safeToken = encodeURIComponent(String(token || ""));
-    if (!base || !safeToken) return { html:"", json:"", ai:"" };
-    const html = `${base}/diagnostics/share/${safeToken}`;
-    const json = `${html}.json`;
-    return { html, json, ai:json };
-}
-
-function diagnosticShareEventUrl(bundle, token, eventId, json = false) {
-    const base = String(bundle?.shareBaseUrl || "").replace(/\/+$/, "");
-    if (!base || !token || !eventId) return "";
-    const suffix = `/event/${encodeURIComponent(String(eventId))}`;
-    return `${base}/diagnostics/share/${encodeURIComponent(String(token))}${suffix}${json ? ".json" : ""}`;
-}
-
-function diagnosticShareFocusedBundle(bundle, eventId) {
-    const id = String(eventId || "");
-    if (!id) return null;
-    const event = Array.isArray(bundle?.relatedEvents) ? bundle.relatedEvents.find(x => String(x.id || "") === id) : null;
-    if (!event) return null;
-    const nodeReport = Array.isArray(bundle?.nodeReports) ? bundle.nodeReports.find(x => String(x.eventId || "") === id) : null;
+function publicBugReport(report) {
     return {
-        ...bundle,
-        focusEventId: id,
-        focusNotice: `รายงานนี้โฟกัสที่ event ${id} ภายใน incident snapshot เดียวกัน`,
-        primary: event,
-        analysis: nodeReport?.analysis || event.analysis || bundle.analysis || {},
+        id: String(report.id || ""),
+        createdAt: String(report.createdAt || ""),
+        source: String(report.source || "client"),
+        page: String(report.page || ""),
+        version: String(report.version || ""),
+        message: trimBugReportText(report.message, 2400),
+        stack: trimBugReportText(report.stack, 5000),
+        roomId: String(report.roomId || "").slice(0, 20),
+        playerName: String(report.playerName || "").slice(0, 120),
+        status: String(report.status || "new"),
+        githubIssueUrl: String(report.githubIssueUrl || ""),
+        userAgent: String(report.userAgent || "").slice(0, 600),
     };
 }
-
-function diagnosticShareEdgeLines(bundle, token, graph, focusId) {
-    const edges = Array.isArray(graph?.edges) ? graph.edges : [];
-    const nodes = new Map((Array.isArray(graph?.nodes) ? graph.nodes : []).map(n => [n.id, n]));
-    const upstream = edges.filter(e => e.to === focusId && e.relation === "probable_cause").sort((a,b) => b.score-a.score).slice(0, 10);
-    const downstream = edges.filter(e => e.from === focusId && ["probable_cause","downstream_effect","causal_context"].includes(e.relation)).sort((a,b) => b.score-a.score).slice(0, 12);
-    const correlated = edges.filter(e => (e.to === focusId || e.from === focusId) && e.relation === "correlated_event").sort((a,b) => b.score-a.score).slice(0, 10);
-    const lineFor = (e) => {
-        const otherId = e.from === focusId ? e.to : e.from;
-        const n = nodes.get(otherId) || {};
-        const url = diagnosticShareEventUrl(bundle, token, otherId, false);
-        const jsonUrl = diagnosticShareEventUrl(bundle, token, otherId, true);
-        return `${otherId} | ${n.kind || "event"} | ${n.code || "-"} | ${n.stage || "unknown"} | confidence=${e.confidence} | score=${e.score} | Δ=${e.timeDeltaMs}ms\n  reason: ${(e.reasons || []).join("; ")}\n  REPORT: ${url || "-"}\n  JSON: ${jsonUrl || "-"}`;
+function addBugReport(data = {}) {
+    const report = {
+        id: /^[a-zA-Z0-9_-]{1,96}$/.test(String(data.id || "")) ? String(data.id) : makeDiagnosticId("bug"),
+        createdAt: Number.isFinite(Date.parse(data.createdAt)) && Math.abs(Date.now()-Date.parse(data.createdAt)) < 30*86400_000
+            ? new Date(data.createdAt).toISOString() : new Date().toISOString(),
+        source: trimBugReportText(data.source || "client", 30),
+        page: trimBugReportText(data.page || "", 80),
+        version: trimBugReportText(data.version || "", 100),
+        message: trimBugReportText(data.message || "", BUG_REPORT_TEXT_MAX),
+        stack: trimBugReportText(data.stack || "", BUG_REPORT_TEXT_MAX),
+        roomId: trimBugReportText(data.roomId || "", 20),
+        playerName: trimBugReportText(data.playerName || "", 120),
+        userAgent: trimBugReportText(data.userAgent || "", 600),
+        status: "new",
+        githubIssueUrl: "",
     };
-    return { upstream, downstream, correlated, lineFor };
+    if (!report.message && !report.stack) return null;
+    cacheBugReport(report);
+    pendingBugReportIds.add(report.id);
+    return report;
 }
-
-function diagnosticShareText(bundle, token = "", focusEventId = "") {
-    const a = bundle.analysis || {};
-    const focusId = String(focusEventId || bundle.focusEventId || bundle.primary?.id || "");
-    const graph = bundle.causalGraph || {};
-    const edgeLines = diagnosticShareEdgeLines(bundle, token, graph, focusId);
-    const focusUrl = diagnosticShareEventUrl(bundle, token, focusId, false) || "";
-    const focusJsonUrl = diagnosticShareEventUrl(bundle, token, focusId, true) || "";
-    const isFocused = !!bundle.focusEventId;
-    const lines = [
-        "WEREWOLF DIAGNOSTIC SHARE REPORT v3",
-        "====================================",
-        `ชนิดรายงาน: ${isFocused ? "FOCUSED NODE / INCIDENT SNAPSHOT" : "INCIDENT ROOT"}`,
-        `สร้างเมื่อ: ${bundle.createdAt}`,
-        `หมดอายุ: ${bundle.expiresAt}`,
-        `Report ID: ${bundle.reportId}`,
-        `โฟกัส Event ID: ${focusId || "-"}`,
-        bundle.focusNotice ? `หมายเหตุ: ${bundle.focusNotice}` : "",
-        focusUrl ? `FOCUSED REPORT URL: ${focusUrl}` : "",
-        focusJsonUrl ? `FOCUSED JSON URL: ${focusJsonUrl}` : "",
-        `ROOT REPORT URL: ${bundle.shareBaseUrl && token ? `${bundle.shareBaseUrl.replace(/\/+$/, "")}/diagnostics/share/${encodeURIComponent(String(token))}` : "-"}`,
-        `ชนิด Error: ${bundle.primary?.kind || "error"}`,
-        `แหล่งที่มา: ${bundle.primary?.source || "-"}`,
-        `หน้า: ${bundle.primary?.page || "-"}`,
-        `Trace ID: ${bundle.primary?.traceId || "-"}`,
-        `Session ID: ${bundle.primary?.sessionId || "-"}`,
-        `Operation ID: ${bundle.primary?.operationId || "-"}`,
-        `Request ID: ${bundle.primary?.requestId || "-"}`,
-        `ห้อง: ${bundle.primary?.roomId || "-"}`,
-        `Fingerprint: ${bundle.primary?.fingerprint || "-"}`,
-        "",
-        "INCIDENT GROUPING / REPORT CONSOLIDATION",
-        `INCIDENT KEY HASH: ${bundle.incident?.incidentKeyHash || "-"}`,
-        `SHARE REUSED FROM SAME INCIDENT: ${bundle.incident?.reusedExistingShare ? "YES" : "NO / NEW INCIDENT"}`,
-        `INCIDENT REUSE WINDOW: ${bundle.incident?.reuseWindowMs ? `${Math.round(Number(bundle.incident.reuseWindowMs) / 60000)} minutes` : "-"}`,
-        `INCIDENT STATEMENT: ${bundle.incident?.statement || "-"}`,
-        `INCIDENT MASTER URL: ${bundle.shareUrls?.incident || bundle.shareUrls?.html || "-"}`,
-        "หมายเหตุ: หากพบลิงก์หลายใบจากความพยายามเดียวกัน ให้ใช้ INCIDENT MASTER URL เป็นจุดเริ่มต้น และไล่ upstream/downstream จาก graph แทนการสรุปจาก log ใบเดียว",
-        "",
-        "ROOT CAUSE",
-        `สรุป: ${a.rootCause || "ยังระบุไม่ได้"}`,
-        `CAUSE CODE: ${a.causeCode || "UNCLASSIFIED"}`,
-        `FAILURE STAGE: ${a.failureStage || "unknown"}`,
-        `ROOT SOURCE: ${a.rootCauseSource || "unknown"}`,
-        `CONFIDENCE: ${a.confidence || "low"}`,
-        `FIRST FAILURE: ${a.firstFailureAt || "-"}`,
-        `ROOT CAUSE AT: ${a.rootCauseAt || "-"}`,
-        `LAST SEEN: ${a.lastSeenAt || "-"}`,
-        `RELATED EVENTS: ${a.relatedEventCount || 0}`,
-        `EVIDENCE ITEMS: ${a.evidenceItemCount || 0}`,
-        a.evidence?.length ? `EVIDENCE: ${a.evidence.join(" | ")}` : "EVIDENCE: -",
-        "",
-        "CAUSAL IMPACT / CROSS-LOG RELATIONSHIPS",
-        `THIS LOG CAUSED ANOTHER LOG?: ${edgeLines.downstream.length ? "YES — มี downstream ที่ระบบให้เหตุผลเชิงเหตุ→ผล" : "NO DIRECT EVIDENCE IN SNAPSHOT"}`,
-        `UPSTREAM CAUSE LOGS: ${edgeLines.upstream.length}`,
-        `DOWNSTREAM EFFECT LOGS: ${edgeLines.downstream.length}`,
-        `CORRELATED LOGS (ยังไม่ฟันธงเหตุ→ผล): ${edgeLines.correlated.length}`,
-        `GRAPH NODES: ${graph.nodeCount || 0}`,
-        `GRAPH EDGES: ${graph.edgeCount || 0}`,
-        graph.impact?.statement ? `IMPACT STATEMENT: ${graph.impact.statement}` : "",
-        "",
-        "UPSTREAM CAUSES (ย้อนกลับไปหาต้นเหตุ)",
-        ...(edgeLines.upstream.length ? edgeLines.upstream.map(edgeLines.lineFor) : ["(ไม่พบ upstream ที่เข้าเกณฑ์ causal)"]),
-        "",
-        "DOWNSTREAM EFFECTS (log ที่เกิดตามหลังและสัมพันธ์กับเหตุการณ์นี้)",
-        ...(edgeLines.downstream.length ? edgeLines.downstream.map(edgeLines.lineFor) : ["(ไม่พบ downstream ที่เข้าเกณฑ์ causal)"]),
-        "",
-        "CORRELATED / AMBIGUOUS EVENTS",
-        ...(edgeLines.correlated.length ? edgeLines.correlated.map(edgeLines.lineFor) : ["(ไม่มี)"]),
-        "",
-        "ROOT CAUSE CANDIDATES (ผู้ต้องสงสัยต้นเหตุที่มีหลักฐานเชื่อม downstream)",
-        ...(Array.isArray(graph.rootCauseCandidates) && graph.rootCauseCandidates.length ? graph.rootCauseCandidates.map((n, i) => {
-            const url = diagnosticShareEventUrl(bundle, token, n.id, false);
-            return `${i + 1}. ${n.id} | ${n.kind} | ${n.code || "-"} | ${n.stage} | downstream=${n.downstreamCount} | score=${n.strongestDownstreamScore}\n   REPORT: ${url || "-"}\n   EVIDENCE: ${(n.evidence || []).join(" | ") || "-"}`;
-        }) : ["(ยังไม่พบ root candidate ที่แยกจาก event ปัจจุบันได้)"]),
-        "",
-        "TERMINAL EFFECTS (ปลายทางของ causal chain)",
-        ...(Array.isArray(graph.terminalEffects) && graph.terminalEffects.length ? graph.terminalEffects.map((n, i) => {
-            const url = diagnosticShareEventUrl(bundle, token, n.id, false);
-            return `${i + 1}. ${n.id} | ${n.kind} | ${n.code || "-"} | ${n.stage} | REPORT: ${url || "-"}`;
-        }) : ["(ยังไม่พบ terminal effect)"]),
-        "",
-        "CAUSAL ROOT PATH",
-        ...(Array.isArray(graph.rootPath) && graph.rootPath.length ? graph.rootPath.map((n, i) => {
-            const url = diagnosticShareEventUrl(bundle, token, n.id, false);
-            return `${i + 1}. ${n.id} | ${n.kind} | ${n.code || "-"} | ${n.stage} | ${n.message || ""}\n   REPORT: ${url || "-"}`;
-        }) : ["(ยังสร้าง root path ไม่ได้)"]),
-        "",
-        "CAUSAL CHAIN (ต้นสาย → ปลายเหตุ)",
-        ...(Array.isArray(graph.rootPath) && graph.rootPath.length ? graph.rootPath.map((n, i) => `${i + 1}. ${n.id} | ${n.stage} | ${n.code || "-"}`) : ["(ยังไม่มี causal chain ที่ชัดเจน)"]),
-        "",
-        "AUTH EVIDENCE (client → server)",
-        JSON.stringify(a.authEvidence || {}, null, 2),
-        "",
-        "BLOCKING EVENT",
-        JSON.stringify(a.blockingEvent || {}, null, 2),
-        "",
-        "CORRELATION",
-        JSON.stringify(a.correlation || {}, null, 2),
-        "",
-        "NEXT STEP",
-        a.nextStep || "-",
-        "",
-        "TIMELINE",
-        ...(Array.isArray(a.timeline) && a.timeline.length ? a.timeline.map((x) => `${x.time} | ${x.stage} | ${x.kind} | ${x.code || "-"} | ${x.label}`) : ["(ไม่มี)"]),
-        "",
-        "PRIMARY / FOCUSED EVENT DETAIL",
-        JSON.stringify(bundle.primary || {}, null, 2),
-        "",
-        "RELATED EVENT DETAILS",
-        ...(Array.isArray(bundle.relatedEvents) && bundle.relatedEvents.length ? bundle.relatedEvents.map((x) => `--- ${x.time} | ${x.id} | ${x.kind} | ${x.source} ---\nREPORT: ${diagnosticShareEventUrl(bundle, token, x.id, false) || "-"}\nJSON: ${diagnosticShareEventUrl(bundle, token, x.id, true) || "-"}\n${JSON.stringify(x, null, 2)}`) : ["(ไม่มี)"]),
-        "",
-        "HOW TO TRACE FURTHER",
-        "เปิด REPORT URL ของ upstream เพื่อย้อนหาต้นเหตุของ log นั้นต่อ และเปิด REPORT URL ของ downstream เพื่อดูผลกระทบ/สาเหตุของ log ปลายทางต่อไป; ทุกลิงก์เป็น snapshot incident เดียวกันและผูกกับ event ID ใน graph",
-    ];
-    return lines.filter((x, i) => x !== "" || lines[i-1] !== "").join("\n");
-}
-
-function escapeDiagnosticHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[c]));
-}
-
-function diagnosticShareHtml(bundle, token, focusEventId = "") {
-    const text = diagnosticShareText(bundle, token, focusEventId);
-    const cause = bundle.analysis?.causeCode || "UNCLASSIFIED";
-    const jsonHref = token ? `./${encodeURIComponent(String(token))}.json` : "";
-    const focusedHref = token && focusEventId ? `./${encodeURIComponent(String(token))}/event/${encodeURIComponent(String(focusEventId))}` : "";
-    const focusedJsonHref = focusedHref ? `${focusedHref}.json` : "";
-    const linkedText = escapeDiagnosticHtml(text).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
-    return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta name="description" content="Werewolf diagnostic report ${escapeDiagnosticHtml(cause)}"><meta http-equiv="Referrer-Policy" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"><title>Werewolf Diagnostic ${escapeDiagnosticHtml(cause)}</title><style>body{margin:0;background:#0a0d14;color:#e8edf8;font:14px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}main{width:min(1120px,calc(100% - 32px));margin:24px auto}header{margin-bottom:14px;padding:16px 18px;border:1px solid #222a3b;border-radius:14px;background:#101624}h1{font-size:18px;margin:0 0 5px}p{margin:0;color:#aab5ca}a{color:#aeb8ff}.links{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}.links a{padding:6px 9px;border:1px solid #303a51;border-radius:8px;text-decoration:none}pre{margin:0;padding:18px;white-space:pre-wrap;word-break:break-word;overflow:auto;border:1px solid #222a3b;border-radius:14px;background:#070a11;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}pre a{color:#9fb5ff;text-decoration:underline}code{font-family:inherit}</style></head><body><main><header><h1>🩺 Werewolf Diagnostic Share Report</h1><p>Cause: <b>${escapeDiagnosticHtml(cause)}</b> · หมดอายุ: ${escapeDiagnosticHtml(bundle.expiresAt)}</p><div class="links">${jsonHref ? `<a href="${jsonHref}">machine-readable JSON</a>` : ""}${focusedHref ? `<a href="${focusedHref}">focused event</a>` : ""}${focusedJsonHref ? `<a href="${focusedJsonHref}">focused JSON</a>` : ""}</div></header><pre>${linkedText}</pre></main></body></html>`;
-}
-
-async function persistDiagnosticShare(bundle, token, overwrite = false) {
-    const doc = await getDynamoDocClient();
-    const item = {
-        playerName: DIAGNOSTIC_SHARE_PARTITION_KEY,
-        statKey: diagnosticShareStatKey(token),
-        entityType: "DIAGNOSTIC_SHARE",
-        schemaVersion: DIAGNOSTIC_SHARE_VERSION,
-        reportId: bundle.reportId,
-        createdAt: bundle.createdAt,
-        expiresAt: bundle.expiresAt,
-        expiresAtEpoch: Math.floor(new Date(bundle.expiresAt).getTime() / 1000),
-        bundle,
-    };
-    await doc.send(new PutCommand({
-        TableName: STATS_TABLE_NAME,
-        Item: item,
-        ...(overwrite ? {} : { ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)" }),
-    }));
-}
-
-async function getOrClaimDiagnosticIncidentShare(incidentKey, nowMs = Date.now()) {
-    if (!incidentKey) return { token: "", reused: false };
-    const doc = await getDynamoDocClient();
-    const statKey = diagnosticIncidentIndexKey(incidentKey);
-    const existing = await doc.send(new GetCommand({
-        TableName: STATS_TABLE_NAME,
-        Key: { playerName: DIAGNOSTIC_SHARE_PARTITION_KEY, statKey },
-        ConsistentRead: true,
-    }));
-    const existingToken = String(existing.Item?.token || "");
-    const existingExpires = Number(existing.Item?.expiresAtEpoch || 0) * 1000;
-    if (validDiagnosticShareToken(existingToken) && existingExpires > nowMs) {
-        return { token: existingToken, reused: true, incidentKey };
-    }
-
-    const token = diagnosticShareToken();
-    const expiresAtEpoch = Math.floor((nowMs + Math.min(DIAGNOSTIC_SHARE_TTL_MS, DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS)) / 1000);
-    try {
-        await doc.send(new PutCommand({
-            TableName: STATS_TABLE_NAME,
-            Item: {
-                playerName: DIAGNOSTIC_SHARE_PARTITION_KEY,
-                statKey,
-                entityType: "DIAGNOSTIC_INCIDENT_INDEX",
-                schemaVersion: DIAGNOSTIC_SHARE_VERSION,
-                incidentKeyHash: diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length),
-                token,
-                createdAt: new Date(nowMs).toISOString(),
-                expiresAtEpoch,
-            },
-            ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)",
-        }));
-        return { token, reused: false, incidentKey };
-    } catch (e) {
-        if (!/ConditionalCheckFailed/i.test(String(e?.name || e?.message || ""))) throw e;
-        const winner = await doc.send(new GetCommand({
-            TableName: STATS_TABLE_NAME,
-            Key: { playerName: DIAGNOSTIC_SHARE_PARTITION_KEY, statKey },
-            ConsistentRead: true,
-        }));
-        const winnerToken = String(winner.Item?.token || "");
-        if (validDiagnosticShareToken(winnerToken)) return { token: winnerToken, reused: true, incidentKey };
-        throw e;
-    }
-}
-
-async function refreshDiagnosticIncidentShareIndex(incidentKey, token, expiresAt) {
-    if (!incidentKey || !validDiagnosticShareToken(token)) return;
-    try {
-        const doc = await getDynamoDocClient();
-        await doc.send(new PutCommand({
-            TableName: STATS_TABLE_NAME,
-            Item: {
-                playerName: DIAGNOSTIC_SHARE_PARTITION_KEY,
-                statKey: diagnosticIncidentIndexKey(incidentKey),
-                entityType: "DIAGNOSTIC_INCIDENT_INDEX",
-                schemaVersion: DIAGNOSTIC_SHARE_VERSION,
-                incidentKeyHash: diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length),
-                token,
-                createdAt: new Date().toISOString(),
-                expiresAtEpoch: Math.floor(Math.min(new Date(expiresAt).getTime(), Date.now() + DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS) / 1000),
-            },
-        }));
-    } catch (_) {}
-}
-
-async function readDiagnosticShare(token) {
-    if (!validDiagnosticShareToken(token)) return null;
-    const cached = diagnosticShares.get(token);
+bugReportSink = data => {
+    const recent = bugReports.find(report => report.source === "server" && report.message === trimBugReportText(data.message) && report.page === data.page && Date.now()-Date.parse(report.createdAt)<8000);
+    if (recent) return recent;
+    const report = addBugReport(data);
+    if (report) persistBugReport(report).catch(error => console.error("[bug-inbox] Persistence failed:", error.name));
+    return report;
+};
+let bugReportRetryBusy = false;
+const bugReportRetryTimer = setInterval(async () => {
+    if (bugReportRetryBusy || !pendingBugReportIds.size || !bugReportStore.enabled) return;
+    bugReportRetryBusy = true;
+    try { for (const report of bugReports.filter(item => pendingBugReportIds.has(item.id)).slice(0, 10)) {
+        try { await persistBugReport(report); } catch (_) { break; }
+    } } finally { bugReportRetryBusy = false; }
+}, 30_000);
+bugReportRetryTimer.unref?.();
+app.post("/api/bug-reports", express.json({ limit: "24kb" }), async (req, res) => {
+    const ip = bugReportClientIp(req);
     const now = Date.now();
-    if (cached) {
-        if (cached.expiresAtEpoch * 1000 > now) return cached.bundle;
-        diagnosticShares.delete(token);
+    const old = bugReportRate.get(ip);
+    if (old && now - old.at < 60_000 && old.count >= 120) {
+        res.setHeader("Retry-After", "60");
+        return res.status(429).json({ ok:false, error:"rate_limited", code:"BUG_REPORT_RATE_LIMITED" });
     }
-    const doc = await getDynamoDocClient();
-    const out = await doc.send(new GetCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: DIAGNOSTIC_SHARE_PARTITION_KEY, statKey: diagnosticShareStatKey(token) }, ConsistentRead: true }));
-    const item = out.Item;
-    if (!item || Number(item.expiresAtEpoch || 0) * 1000 <= now || !item.bundle) {
-        if (item) { doc.send(new DeleteCommand({ TableName: STATS_TABLE_NAME, Key: { playerName: DIAGNOSTIC_SHARE_PARTITION_KEY, statKey: diagnosticShareStatKey(token) } })).catch(() => {}); }
-        return null;
+    bugReportRate.set(ip, (!old || now - old.at >= 60_000) ? { at:now, count:1 } : { at:old.at, count:old.count+1 });
+    const data = req.body || {};
+    let duplicate = bugReports.find(report => report.id === data.id);
+    if (!duplicate && data.id && Number.isFinite(Date.parse(data.createdAt))) {
+        try { duplicate = await bugReportStore.find({id:String(data.id),createdAt:new Date(data.createdAt).toISOString()}); }
+        catch (_) { return res.status(503).json({ok:false,error:"report_storage_unavailable"}); }
     }
-    diagnosticShares.set(token, { expiresAtEpoch:Number(item.expiresAtEpoch), bundle:item.bundle });
-    while (diagnosticShares.size > DIAGNOSTIC_SHARE_MAX_MEMORY) diagnosticShares.delete(diagnosticShares.keys().next().value);
-    return item.bundle;
-}
-
-function rememberDiagnosticShare(token, bundle) {
-    diagnosticShares.set(token, { expiresAtEpoch:Math.floor(new Date(bundle.expiresAt).getTime() / 1000), bundle });
-    while (diagnosticShares.size > DIAGNOSTIC_SHARE_MAX_MEMORY) diagnosticShares.delete(diagnosticShares.keys().next().value);
-}
-
-// Admin-only Bug Replay control plane. All test cases are server-side allow-listed scenarios.
-app.get("/api/admin/bug-replay/scenarios", (req, res) => {
-    cleanupBugReplayJobs();
-    const requestedMode = String(req.query?.mode || "all");
-    const mode = requestedMode === "first" ? "first" : (requestedMode === "phase2" ? "phase2" : "all");
-    res.setHeader("Cache-Control", "no-store");
-    res.json({ ok:true, mode, scenarios:listBugReplayScenarios(mode) });
+    const report = duplicate || addBugReport(data);
+    if (!report) return res.status(400).json({ ok:false, error:"report_empty", code:"BUG_REPORT_EMPTY" });
+    try { await persistBugReport(report); }
+    catch (_) { return res.status(503).json({ ok:false, code:"BUG_REPORT_STORAGE_UNAVAILABLE", error:"report_storage_unavailable" }); }
+    res.status(201).json({ ok:true, report:publicBugReport(report) });
 });
-
-app.post("/api/admin/bug-replay/start", async (req, res) => {
-    try {
-        const requestedMode = String(req.body?.mode || "all");
-        const mode = requestedMode === "first" ? "first" : (requestedMode === "phase2" ? "phase2" : "all");
-        const result = await startBugReplayJob(mode, { publicBaseUrl: diagnosticSharePublicBaseUrl(req) });
-        res.setHeader("Cache-Control", "no-store");
-        if (!result.ok) return res.status(409).json(result);
-        res.json(result);
-    } catch (e) {
-        res.status(500).json({ ok:false, error:"bug_replay_start_failed", code:"BUG_REPLAY_START_FAILED", message:publicDiagnosticText(e?.message || String(e)) });
-    }
-});
-
-app.get("/api/admin/bug-replay/status", (req, res) => {
-    cleanupBugReplayJobs();
-    const runId = String(req.query.runId || bugReplayActiveRunId || "");
-    const job = runId ? bugReplayJobs.get(runId) : null;
-    res.setHeader("Cache-Control", "no-store");
-    res.json({ ok:true, activeRunId:bugReplayActiveRunId || "", job:publicBugReplayJob(job) });
-});
-
-app.get("/api/admin/bug-replay/audit", (req, res) => {
-    cleanupBugReplayJobs();
-    const runId = String(req.query.runId || bugReplayActiveRunId || "");
-    const job = runId ? bugReplayJobs.get(runId) : null;
-    res.setHeader("Cache-Control", "no-store");
-    if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
-    res.json({ ok:true, runId, audit:job.audit ? job.audit.snapshot({ timelineLimit:220, findingLimit:100 }) : null });
-});
-
-
-app.post("/api/admin/bug-replay/share", async (req, res) => {
-    cleanupBugReplayJobs();
-    const runId = String(req.body?.runId || "").slice(0, 120);
-    const job = runId ? bugReplayJobs.get(runId) : null;
-    res.setHeader("Cache-Control", "no-store");
-    if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
-    if (job.status === "running") return res.status(409).json({ ok:false, error:"bug_replay_still_running", code:"BUG_REPLAY_STILL_RUNNING", job:publicBugReplayJob(job) });
-    if (job.report?.status === "generating") return res.status(409).json({ ok:false, error:"bug_replay_report_generating", code:"BUG_REPLAY_REPORT_GENERATING", job:publicBugReplayJob(job) });
-    if (!job.publicBaseUrl) job.publicBaseUrl = diagnosticSharePublicBaseUrl(req);
-    try {
-        await finalizeBugReplayRunReport(job);
-        if (job.report?.status !== "ready") return res.status(503).json({ ok:false, error:"bug_replay_report_unavailable", code:"BUG_REPLAY_REPORT_UNAVAILABLE", report:job.report || null });
-        return res.json({ ok:true, runId, report:job.report, job:publicBugReplayJob(job) });
-    } catch (e) {
-        return res.status(503).json({ ok:false, error:"bug_replay_report_unavailable", code:"BUG_REPLAY_REPORT_UNAVAILABLE", message:publicDiagnosticText(e?.message || String(e)) });
-    }
-});
-
-app.get("/api/admin/bug-replay/export", async (req, res) => {
-    cleanupBugReplayJobs();
-    const runId = String(req.query.runId || bugReplayActiveRunId || "").slice(0, 120);
-    const format = String(req.query.format || "json").toLowerCase() === "text" ? "text" : "json";
-    const eventId = String(req.query.eventId || "").slice(0, 160);
-    const requestedScope = String(req.query.reportScope || "").toLowerCase();
-    const firstScope = requestedScope === 'first_failure' || (!requestedScope && String(req.query.mode || '') === 'first') || (!requestedScope && !eventId && runId && bugReplayJobs.get(runId)?.mode === 'first');
-    const job = runId ? bugReplayJobs.get(runId) : null;
+app.get("/api/admin/bug-reports", async (req, res) => {
+    await refreshBugReportInbox();
+    const limit = Math.min(BUG_REPORT_MAX, Math.max(1, Number(req.query.limit) || 50));
     res.setHeader("Cache-Control", "no-store, private");
-    if (!job) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
-    if (job.status === "running") return res.status(409).json({ ok:false, error:"bug_replay_still_running", code:"BUG_REPLAY_STILL_RUNNING" });
+    res.json({ ok:true, reports:bugReports.slice(0, limit).map(publicBugReport), total:bugReports.length,
+        storage:bugReportStorageError ? "degraded" : bugReportStore.enabled ? "durable" : "memory",
+        storageError:bugReportStorageError, github:buildGithubBugReportStatus() });
+});
+app.post("/api/admin/bug-reports/:id/status", express.json({ limit:"2kb" }), async (req,res) => {
+    await refreshBugReportInbox();
+    const id=String(req.params.id || "").trim();
+    const status=String(req.body?.status || "").trim();
+    if (!['new','reviewed','sent_to_github','closed'].includes(status)) return res.status(400).json({ok:false,error:"status_invalid",code:"BUG_REPORT_STATUS_INVALID"});
+    const report=bugReports.find((item)=>item.id===id);
+    if (!report) return res.status(404).json({ok:false,error:"report_not_found",code:"BUG_REPORT_NOT_FOUND"});
+    const updated = { ...report, status };
+    try { await persistBugReport(updated); } catch (_) { return res.status(503).json({ok:false,error:"report_storage_unavailable"}); }
+    cacheBugReport(updated);
+    res.json({ok:true,report:publicBugReport(updated)});
+});
+app.post("/api/admin/bug-reports/:id/github", express.json({ limit:"2kb" }), async (req,res) => {
+    const requestId = String(req.params.id || "").trim();
+    if (githubReportInFlight.has(requestId)) return res.status(409).json({ok:false,error:"github_send_in_progress"});
+    githubReportInFlight.add(requestId);
     try {
-        let bundle = firstScope
-            ? buildBugReplayFirstFailureBundle(job, { token:'', includeShareUrls:false })
-            : buildBugReplayRunBundle(job, { token:'', includeShareUrls:false });
-        if (!bundle) return res.status(404).json({ ok:false, error:"bug_replay_run_not_found", code:"BUG_REPLAY_RUN_NOT_FOUND" });
-        if (eventId && !firstScope) {
-            const focused = diagnosticShareFocusedBundle(bundle, eventId);
-            if (!focused) return res.status(404).json({ ok:false, error:"bug_replay_event_not_found", code:"BUG_REPLAY_EVENT_NOT_FOUND", eventId });
-            bundle = focused;
-        }
-        if (format === "text") {
-            const body = firstScope ? bugReplayFirstFailureShareText(bundle, '') : (eventId ? diagnosticShareText(bundle, '', eventId) : bugReplayShareText(bundle, ''));
-            res.setHeader("Content-Type", "text/plain; charset=utf-8");
-            res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`werewolf-bug-replay-${runId}${firstScope ? '-first-failure' : (eventId ? '-focused' : '')}.txt`)}`);
-            return res.send(body);
-        }
-        const reportText = firstScope ? bugReplayFirstFailureShareText(bundle, "") : (eventId ? diagnosticShareText(bundle, "", eventId) : bugReplayShareText(bundle, ""));
-        const body = JSON.stringify({ ok:true, ...bundle, reportText }, null, 2);
-        res.setHeader("Content-Type", "application/json; charset=utf-8");
-        res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`werewolf-bug-replay-${runId}${firstScope ? '-first-failure' : (eventId ? '-focused' : '')}.json`)}`);
-        return res.send(body);
+    await refreshBugReportInbox();
+    const report=bugReports.find((item)=>item.id===String(req.params.id || "").trim());
+    if (!report) return res.status(404).json({ok:false,error:"report_not_found",code:"BUG_REPORT_NOT_FOUND"});
+    if (report.githubIssueUrl) {
+        try { await persistBugReport(report); } catch (_) { return res.status(503).json({ok:false,error:"report_storage_unavailable"}); }
+        return res.json({ok:true,issue:{issueUrl:report.githubIssueUrl},report:publicBugReport(report)});
+    }
+    const config=getGithubBugReportConfig();
+    if (!config.configured) return res.status(503).json({ok:false,error:"github_not_configured",code:config.configurationError || "GITHUB_NOT_CONFIGURED"});
+    try {
+        const issue=buildGithubBugReportIssue({ report:publicBugReport(report) });
+        const created=await createGithubBugReportIssue({ issue, config });
+        report.status="sent_to_github";
+        report.githubIssueUrl=created.issueUrl;
+        pendingBugReportIds.add(report.id);
+        await persistBugReport(report);
+        res.json({ok:true,issue:created,report:publicBugReport(report)});
     } catch (e) {
-        return res.status(500).json({ ok:false, error:"bug_replay_export_failed", code:"BUG_REPLAY_EXPORT_FAILED", message:publicDiagnosticText(e?.message || String(e)) });
+        const code=String(e?.publicCode || e?.code || "GITHUB_CREATE_ISSUE_FAILED");
+        res.status(502).json({ok:false,error:"github_bug_report_failed",code,message:publicGithubText(e?.message || String(e))});
     }
+    } finally { githubReportInFlight.delete(requestId); }
 });
-
-app.post("/api/admin/bug-replay/stop", (req, res) => {
-    const result = stopBugReplayJob(String(req.body?.runId || ""));
-    res.setHeader("Cache-Control", "no-store");
-    if (!result.ok) return res.status(409).json(result);
-    res.json(result);
-});
-
-// Admin-only diagnostics feed. Admin page does not depend on game JS/socket state to read this.
-app.get("/api/admin/diagnostics", (req, res) => {
-    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
-    const traceId = String(req.query.traceId || "").slice(0, 120);
-    const sessionId = String(req.query.sessionId || "").slice(0, 120);
-    const operationId = String(req.query.operationId || "").slice(0, 120);
-    const requestId = String(req.query.requestId || "").slice(0, 120);
-    const base = diagnosticEvents.filter((e) => {
-        if (!(traceId || sessionId || operationId || requestId)) return true;
-        return (traceId && e.traceId === traceId) || (sessionId && e.sessionId === sessionId) || (operationId && e.operationId === operationId) || (requestId && (e.requestId === requestId || e.clientRequestId === requestId));
-    });
-    const events = base.slice(0, limit).map((e) => {
-        const related = relatedDiagnosticEventsFor(e);
-        const serverBreadcrumbs = e.serverBreadcrumbs?.length ? e.serverBreadcrumbs : relatedServerBreadcrumbs({ traceId:e.traceId, sessionId:e.sessionId, limit:160 });
-        const allForAnalysis = related.concat(serverBreadcrumbs.map((b) => ({ source:"server", kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
-        return { ...e, serverBreadcrumbs, analysis: buildDiagnosticAnalysis(e, allForAnalysis) };
-    });
-    const errors = events.filter((e) => e.kind !== "http_error" || e.status >= 500);
-    res.json({
-        ok: true,
-        now: new Date().toISOString(),
-        server: { uptimeSec: Math.round(process.uptime()), node: process.version, serverClosed: !!serverClosed, table: STATS_TABLE_NAME, ebEnvironmentConfigured: !!EB_ENVIRONMENT_NAME },
-        summary: { stored: diagnosticEvents.length, shown: events.length, serious: errors.length, accessDenied: events.filter((e) => e.permission?.accessDenied).length },
-        permissions: permissionChecklist(),
-        githubBugReports: buildGithubBugReportStatus(),
-        events,
-    });
-});;
-
-
-
-function buildDiagnosticJsonExportEvent(event) {
-    const primary = event || null;
-    if (!primary) return null;
-    const related = relatedDiagnosticEventsFor(primary);
-    const serverBreadcrumbs = primary.serverBreadcrumbs?.length ? primary.serverBreadcrumbs : relatedServerBreadcrumbs({ traceId:primary.traceId, sessionId:primary.sessionId, limit:160 });
-    const allForAnalysis = related.concat(serverBreadcrumbs.map((b) => ({ source:"server", kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
-    return {
-        event: primary,
-        analysis: buildDiagnosticAnalysis(primary, allForAnalysis),
-        relatedEvents: related,
-        serverBreadcrumbs,
-    };
-}
-
-function diagnosticExportFilename(scope, eventId = "") {
-    const safe = String(eventId || "").replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 60);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return scope === "event"
-        ? `werewolf-bug-report-${safe || "event"}-${stamp}.json`
-        : `werewolf-online-bug-reports-all-${stamp}.json`;
-}
-
-
-function cleanupDiagnosticGithubReports(now = Date.now()) {
-    for (const [eventId, item] of diagnosticGithubReports) {
-        if (!item || Number(item.createdAtMs || 0) + DIAGNOSTIC_GITHUB_REPORT_TTL_MS <= now) diagnosticGithubReports.delete(eventId);
-    }
-    for (const [incidentKey, item] of diagnosticGithubIncidentReports) {
-        if (!item || Number(item.createdAtMs || 0) + DIAGNOSTIC_GITHUB_INCIDENT_TTL_MS <= now) diagnosticGithubIncidentReports.delete(incidentKey);
-    }
-    while (diagnosticGithubReports.size > 200) {
-        const oldest = [...diagnosticGithubReports.entries()].sort((a, b) => Number(a[1]?.createdAtMs || 0) - Number(b[1]?.createdAtMs || 0))[0];
-        if (!oldest) break;
-        diagnosticGithubReports.delete(oldest[0]);
-    }
-    while (diagnosticGithubIncidentReports.size > 120) {
-        const oldest = [...diagnosticGithubIncidentReports.entries()].sort((a, b) => Number(a[1]?.createdAtMs || 0) - Number(b[1]?.createdAtMs || 0))[0];
-        if (!oldest) break;
-        diagnosticGithubIncidentReports.delete(oldest[0]);
-    }
-}
-
-function diagnosticIncidentKeyHash(incidentKey = "") {
-    return incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "";
-}
-
-function selectDiagnosticIncidentPrimary(event = {}, related = []) {
-    const pool = [event, ...(Array.isArray(related) ? related : [])].filter(Boolean);
-    const operationId = String(event.operationId || event.context?.operationId || event.detail?.operationId || "").trim();
-    const failures = pool.filter(diagnosticIsFailureEvent);
-    const scoped = operationId
-        ? failures.filter((x) => String(x.operationId || x.context?.operationId || x.detail?.operationId || "").trim() === operationId)
-        : failures;
-    const candidates = (scoped.length ? scoped : failures).slice().sort((a,b) => diagnosticTimeMs(a) - diagnosticTimeMs(b));
-    return candidates[0] || event;
-}
-
-async function findExistingGithubIncidentIssue(incidentKey, config, { event = null } = {}) {
-    const hash = diagnosticIncidentKeyHash(incidentKey);
-    if (!config?.configured) return null;
-    // An incident lookup failure must propagate instead of silently falling through to
-    // Issue creation; otherwise a temporary GitHub/rate-limit error can create duplicates.
-    const listed = await listAllGithubIssues({ config });
-    if (hash) {
-        const marker = `incident:${hash.slice(0, 20)}`;
-        const currentMatches = (listed.issues || [])
-            .filter((issue) => String(issue?.state || "").toUpperCase() === "OPEN" && String(issue?.title || "").includes(marker))
-            .sort((a, b) => Number(a?.number || 0) - Number(b?.number || 0));
-        if (currentMatches.length) return currentMatches[0];
-    }
-
-    // Backward-compatible migration guard: older releases used a different incident hash
-    // for the same diagnostic event. Reuse an existing Issue carrying the exact event marker
-    // instead of creating a second historical copy.
-    const eventId = String(event?.id || "").trim();
-    if (eventId) {
-        const legacyMarker = `WEREWOLF-DIAGNOSTIC-ID: ${eventId}`;
-        const legacyMatches = await searchGithubIssuesByText({ queryText: legacyMarker, config });
-        const openLegacy = legacyMatches
-            .filter((issue) => String(issue?.state || "").toUpperCase() === "OPEN" && String(issue?.body || "").includes(legacyMarker))
-            .sort((a, b) => Number(a?.number || 0) - Number(b?.number || 0));
-        if (openLegacy.length) return openLegacy[0];
-    }
-    return null;
-}
-
-function diagnosticGithubPublicError(error) {
-    const code = String(error?.publicCode || error?.code || 'GITHUB_CREATE_ISSUE_FAILED');
-    const map = {
-        GITHUB_TOKEN_MISSING: 'ยังไม่ได้ตั้งค่า GitHub token สำหรับส่งรายงาน',
-        GITHUB_REPOSITORY_INVALID: 'ตั้งค่า GitHub repository ไม่ถูกต้อง',
-        GITHUB_FETCH_UNAVAILABLE: 'เซิร์ฟเวอร์นี้ไม่รองรับการเชื่อมต่อ GitHub',
-        GITHUB_AUTH_FAILED: 'GitHub ปฏิเสธ token',
-        GITHUB_FORBIDDEN_OR_RATE_LIMITED: 'GitHub ไม่อนุญาตคำสั่ง หรือ API ถูกจำกัดอัตราการใช้งาน',
-        GITHUB_REPOSITORY_NOT_FOUND: 'ไม่พบ repository รับรายงานบั๊ก',
-        GITHUB_VALIDATION_FAILED: 'GitHub ปฏิเสธข้อมูลรายงาน',
-        GITHUB_REQUEST_TIMEOUT: 'เชื่อมต่อ GitHub เกินเวลาที่กำหนด',
-        GITHUB_RESPONSE_INVALID: 'GitHub ส่งผลลัพธ์กลับมาไม่ครบ',
-        GITHUB_CREATE_ISSUE_FAILED: 'สร้าง GitHub Issue ไม่สำเร็จ',
-    };
-    return { code, message: map[code] || 'ส่งรายงานเข้า GitHub ไม่สำเร็จ' };
-}
-
-function cleanupAdminGithubScreenshotUploads(now = Date.now()) {
-    for (const [captureId, item] of adminGithubScreenshotUploads) {
-        if (!item || Number(item.createdAtMs || 0) + ADMIN_GITHUB_SCREENSHOT_UPLOAD_TTL_MS <= now) adminGithubScreenshotUploads.delete(captureId);
-    }
-    while (adminGithubScreenshotUploads.size > 120) {
-        const oldest = [...adminGithubScreenshotUploads.entries()].sort((a, b) => Number(a[1]?.createdAtMs || 0) - Number(b[1]?.createdAtMs || 0))[0];
-        if (!oldest) break;
-        adminGithubScreenshotUploads.delete(oldest[0]);
-    }
-}
-
-function githubScreenshotPageSlug(rawPath, rawTitle) {
-    const pathValue = String(rawPath || '').split('?')[0].split('#')[0];
-    const titleValue = String(rawTitle || '').toLowerCase();
-    if (pathValue === '/' || pathValue.endsWith('/index.html') || /game|home|lobby/.test(titleValue)) return 'index';
-    if (pathValue.endsWith('/host.html') || /host/.test(titleValue)) return 'host';
-    if (pathValue.endsWith('/player.html') || /player/.test(titleValue)) return 'player';
-    if (pathValue.endsWith('/admin.html') || /admin/.test(titleValue)) return 'admin';
-    return pathValue.replace(/^\/+|\/+$/g, '').replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 60) || 'page';
-}
-
-function githubIssueClearPublicError(error) {
-    const code = String(error?.publicCode || error?.code || 'GITHUB_ISSUE_CLEAR_FAILED');
-    const map = {
-        GITHUB_TOKEN_MISSING: 'ยังไม่ได้ตั้งค่า GitHub token สำหรับล้าง Issues',
-        GITHUB_REPOSITORY_INVALID: 'ตั้งค่า GitHub repository ไม่ถูกต้อง',
-        GITHUB_FETCH_UNAVAILABLE: 'เซิร์ฟเวอร์นี้ไม่รองรับการเชื่อมต่อ GitHub',
-        GITHUB_AUTH_FAILED: 'GitHub ปฏิเสธ token',
-        GITHUB_FORBIDDEN_OR_RATE_LIMITED: 'GitHub ไม่อนุญาตให้ลบ Issues หรือ API ถูกจำกัดอัตราการใช้งาน',
-        GITHUB_REPOSITORY_NOT_FOUND: 'ไม่พบ repository สำหรับล้าง Issues',
-        GITHUB_GRAPHQL_FAILED: 'คำขอ GitHub GraphQL ล้มเหลว',
-        GITHUB_GRAPHQL_ERROR: 'GitHub GraphQL ปฏิเสธคำสั่ง',
-        GITHUB_PAGINATION_INVALID: 'GitHub ส่งข้อมูลหน้า Issues ไม่ครบ',
-        GITHUB_REQUEST_TIMEOUT: 'เชื่อมต่อ GitHub เกินเวลาที่กำหนด',
-        GITHUB_RESPONSE_INVALID: 'GitHub ส่งผลลัพธ์กลับมาไม่ครบ',
-        GITHUB_ISSUE_ID_REQUIRED: 'ไม่พบรหัส Issue สำหรับลบ',
-        GITHUB_ISSUE_CLEAR_CONFIRMATION_REQUIRED: 'ต้องยืนยันการล้าง Issues',
-        GITHUB_ISSUE_CLEAR_IN_PROGRESS: 'กำลังมีการล้าง GitHub Issues อีกครั้งอยู่',
-        GITHUB_ISSUE_CLEAR_FAILED: 'ล้าง GitHub Issues ไม่สำเร็จ',
-    };
-    return { code, message:map[code] || 'ล้าง GitHub Issues ไม่สำเร็จ' };
-}
-
-function adminGithubScreenshotPublicError(error) {
-    const code = String(error?.publicCode || error?.code || 'GITHUB_CREATE_SCREENSHOT_FAILED');
-    const map = {
-        GITHUB_TOKEN_MISSING: 'ยังไม่ได้ตั้งค่า GitHub token สำหรับบันทึกภาพ',
-        GITHUB_REPOSITORY_INVALID: 'ตั้งค่า GitHub repository ไม่ถูกต้อง',
-        GITHUB_FETCH_UNAVAILABLE: 'เซิร์ฟเวอร์นี้ไม่รองรับการเชื่อมต่อ GitHub',
-        GITHUB_AUTH_FAILED: 'GitHub ปฏิเสธ token',
-        GITHUB_CONTENTS_PERMISSION_REQUIRED: 'GitHub token ยังไม่มีสิทธิ์ Contents: Read and write สำหรับ repository นี้',
-        GITHUB_RATE_LIMITED: 'GitHub จำกัดอัตราการเรียก API ชั่วคราว กรุณาลองใหม่ภายหลัง',
-        GITHUB_FORBIDDEN_OR_RATE_LIMITED: 'GitHub ไม่อนุญาตการเขียนไฟล์ หรือ API ถูกจำกัดอัตราการใช้งาน',
-        GITHUB_REPOSITORY_NOT_FOUND: 'ไม่พบ repository สำหรับเก็บภาพ',
-        GITHUB_CONTENT_CONFLICT: 'GitHub พบ conflict ระหว่างบันทึกไฟล์',
-        GITHUB_VALIDATION_FAILED: 'GitHub ปฏิเสธข้อมูลภาพ',
-        GITHUB_PATH_INVALID: 'เส้นทางไฟล์ภาพไม่ถูกต้อง',
-        GITHUB_FILE_EMPTY: 'ไม่พบไฟล์ภาพที่จะบันทึก',
-        GITHUB_SCREENSHOT_TOO_LARGE: 'ภาพใหญ่เกินขนาดที่ระบบกำหนด (20 MB)',
-        GITHUB_SCREENSHOT_METADATA_TOO_LARGE: 'ข้อมูลภาพใหญ่เกินขนาดที่ระบบกำหนด',
-        GITHUB_REQUEST_TIMEOUT: 'เชื่อมต่อ GitHub เกินเวลาที่กำหนด',
-        GITHUB_RESPONSE_INVALID: 'GitHub ส่งผลลัพธ์กลับมาไม่ครบ',
-        GITHUB_CREATE_FILE_FAILED: 'บันทึกไฟล์ภาพเข้า GitHub ไม่สำเร็จ',
-    };
-    return { code, message: map[code] || 'บันทึกภาพเข้า GitHub ไม่สำเร็จ' };
-}
-
-app.post('/api/admin/internal-browser/screenshots/github', express.raw({ type: 'image/png', limit: `${Math.ceil(MAX_SCREENSHOT_BYTES / (1024 * 1024))}mb` }), async (req, res) => {
-    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const captureId = String(req.headers['x-ww-screenshot-id'] || '').replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 120);
-    if (!captureId) return res.status(400).json({ ok:false, error:'screenshot_id_required', code:'SCREENSHOT_ID_REQUIRED' });
-    if (!buffer.length) return res.status(400).json({ ok:false, error:'screenshot_png_required', code:'SCREENSHOT_PNG_REQUIRED' });
-    if (buffer.length > MAX_SCREENSHOT_BYTES) return res.status(413).json({ ok:false, error:'screenshot_too_large', code:'GITHUB_SCREENSHOT_TOO_LARGE' });
-    if (buffer.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return res.status(415).json({ ok:false, error:'invalid_png', code:'SCREENSHOT_PNG_INVALID' });
-
-    cleanupAdminGithubScreenshotUploads();
-    const existing = adminGithubScreenshotUploads.get(captureId);
-    if (existing?.imageUrl) return res.json({ ok:true, reused:true, ...existing });
-
-    const config = getGithubBugReportConfig();
-    if (!config.configured) {
-        const detail = adminGithubScreenshotPublicError({ code:config.configurationError });
-        return res.status(503).json({ ok:false, error:'github_screenshot_not_configured', code:detail.code, message:detail.message, repository:config.repository });
-    }
-
-    const capturedAt = String(req.headers['x-ww-screenshot-captured-at'] || new Date().toISOString()).slice(0, 80);
-    const rawMeta = {
-        page: String(req.headers['x-ww-screenshot-page'] || 'unknown').slice(0, 120),
-        path: String(req.headers['x-ww-screenshot-path'] || '/').slice(0, 240),
-        width: Number(req.headers['x-ww-screenshot-width'] || 0),
-        height: Number(req.headers['x-ww-screenshot-height'] || 0),
-        mode: String(req.headers['x-ww-screenshot-viewport-mode'] || 'unknown').slice(0, 30),
-        presetId: String(req.headers['x-ww-screenshot-preset-id'] || '').slice(0, 80),
-        presetLabel: String(req.headers['x-ww-screenshot-preset-label'] || '').slice(0, 120),
-        orientation: String(req.headers['x-ww-screenshot-orientation'] || '').slice(0, 30),
-        zoom: String(req.headers['x-ww-screenshot-zoom'] || '').slice(0, 30),
-        dpr: Number(req.headers['x-ww-screenshot-dpr'] || 1),
-        captureMode: String(req.headers['x-ww-screenshot-capture-mode'] || 'evidence').slice(0, 20),
-        capturedAt,
-        browser: String(req.headers['x-ww-screenshot-browser'] || '').slice(0, 240),
-        userAgent: String(req.headers['user-agent'] || '').slice(0, 600),
-        captureEngine: String(req.headers['x-ww-screenshot-capture-engine'] || 'html2canvas-viewport').slice(0, 60),
-        scrollX: Number(req.headers['x-ww-screenshot-scroll-x'] || 0),
-        scrollY: Number(req.headers['x-ww-screenshot-scroll-y'] || 0),
-        activeScrollContainers: Number(req.headers['x-ww-screenshot-active-scroll-containers'] || 0),
-        visualViewportScale: Number(req.headers['x-ww-screenshot-visual-viewport-scale'] || 1),
-    };
-    const page = githubScreenshotPageSlug(rawMeta.path, rawMeta.page);
-    const width = Math.max(1, Math.min(7680, Math.round(Number(rawMeta.width) || 0)));
-    const height = Math.max(1, Math.min(4320, Math.round(Number(rawMeta.height) || 0)));
-    if (!width || !height) return res.status(400).json({ ok:false, error:'screenshot_viewport_required', code:'SCREENSHOT_VIEWPORT_REQUIRED' });
-    const originalFile = String(req.headers['x-ww-screenshot-file'] || `werewolf-${page}-${width}x${height}.png`).replace(/[^A-Za-z0-9_.-]+/g, '-').slice(0, 180);
-    const fileBase = originalFile.replace(/\.png$/i, '').slice(0, 150);
-    const safeFileName = `${fileBase}-${captureId.slice(-20)}.png`;
-    const imagePath = screenshotGithubPath({ capturedAt, page, width, height, fileName:safeFileName });
-    const metadataPath = imagePath.replace(/\.png$/i, '.json');
-
-    try {
-        const result = await createGithubScreenshotFiles({
-            imageBuffer:buffer,
-            imagePath,
-            metadataPath,
-            metadata:rawMeta,
-            config,
-        });
-        const record = {
-            createdAtMs:Date.now(),
-            captureId,
-            repository:config.repository,
-            branch:result.image.branch,
-            imagePath:result.image.path,
-            imageUrl:result.image.htmlUrl,
-            imageDownloadUrl:result.image.downloadUrl,
-            metadataPath:result.metadata.path,
-            metadataUrl:result.metadata.htmlUrl,
-            viewport:`${width}x${height}`,
-            page,
-            capturedAt,
-        };
-        adminGithubScreenshotUploads.set(captureId, record);
-        addDiagnosticBreadcrumb({ source:'server', type:'admin', label:'admin.screenshot.github.saved', page:'admin', detail:{ captureId, repository:config.repository, imagePath:record.imagePath, viewport:record.viewport, page } });
-        cleanupAdminGithubScreenshotUploads();
-        return res.json({ ok:true, reused:false, ...record });
-    } catch (error) {
-        const detail = adminGithubScreenshotPublicError(error);
-        recordDiagnostic({
-            source:'server', kind:'admin_screenshot_github_failed', page:'admin', action:'admin.screenshot.github',
-            operation:detail.code, message:detail.message,
-            data:{
-                repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0, viewport:`${width}x${height}`, page,
-                githubMessage:String(error?.githubMessage || error?.message || '').slice(0, 700),
-                acceptedPermissions:String(error?.githubAcceptedPermissions || '').slice(0, 240),
-                rateLimitRemaining:String(error?.githubRateLimitRemaining || '').slice(0, 40),
-                rateLimitReset:String(error?.githubRateLimitReset || '').slice(0, 40),
-            }
-        });
-        const status = detail.code === 'GITHUB_TOKEN_MISSING' ? 503
-            : detail.code === 'GITHUB_SCREENSHOT_TOO_LARGE' ? 413
-            : detail.code === 'GITHUB_AUTH_FAILED' || detail.code === 'GITHUB_CONTENTS_PERMISSION_REQUIRED' ? 403
-            : detail.code === 'GITHUB_RATE_LIMITED' ? 429
-            : 502;
-        return res.status(status).json({
-            ok:false, error:'github_screenshot_failed', code:detail.code, message:detail.message, repository:config.repository,
-            githubStatus:Number(error?.githubStatus || 0) || 0,
-            hint: detail.code === 'GITHUB_CONTENTS_PERMISSION_REQUIRED'
-                ? 'ตั้ง Fine-grained PAT ของ repository นี้ให้ Contents: Read and write แล้วอัปเดต GITHUB_BUG_REPORT_TOKEN ที่เซิร์ฟเวอร์'
-                : detail.code === 'GITHUB_RATE_LIMITED' ? 'รอจน GitHub เปิด rate limit แล้วลองใหม่' : '',
-        });
-    }
-});
-
-app.post('/api/admin/diagnostics/github/screenshots/clear', express.json({ limit:'8kb' }), async (req, res) => {
-    const confirmation = String(req.body?.confirmation || '');
-    if (confirmation !== 'DELETE_ALL_GITHUB_SCREENSHOT_FILES') return res.status(400).json({ ok:false, error:'github_screenshot_clear_confirmation_required', code:'GITHUB_SCREENSHOT_CLEAR_CONFIRMATION_REQUIRED' });
-    const config = getGithubBugReportConfig();
-    if (!config.configured) return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:config.configurationError, repository:config.repository });
-    if (githubScreenshotClearInFlight) return res.status(409).json({ ok:false, error:'github_screenshot_clear_in_progress', code:'GITHUB_SCREENSHOT_CLEAR_IN_PROGRESS', repository:config.repository });
-    githubScreenshotClearInFlight=true;
-    try {
-        const result=await clearAllGithubScreenshotFiles({config});
-        addDiagnosticBreadcrumb({source:'server',type:'github',label:'admin.github.screenshots.cleared',page:'admin',detail:{repository:config.repository,found:result.found,deleted:result.deleted,failed:result.failed.length}});
-        // A full successful cleanup is an intentional maintenance action, not a bug.
-        // Only partial cleanup is diagnosable because it means some requested files remain.
-        if (result.failed.length) {
-            recordDiagnostic({source:'server',kind:'github_screenshot_clear_partial_failure',page:'admin',action:'github.screenshots.clear',operation:'GITHUB_SCREENSHOT_PARTIAL_CLEAR',message:'GitHub Screenshot files ลบบางรายการไม่สำเร็จ',data:{repository:config.repository,found:result.found,deleted:result.deleted,failed:result.failed.length}});
-        }
-        return res.status(result.failed.length?502:200).json(result);
-    } catch(error) {
-        const code=String(error?.publicCode||error?.code||'GITHUB_SCREENSHOT_CLEAR_FAILED');
-        recordDiagnostic({source:'server',kind:'github_screenshot_clear_failed',page:'admin',action:'github.screenshots.clear',message:'GitHub Screenshot clear failed',data:{repository:config.repository,code}});
-        return res.status(code==='GITHUB_AUTH_FAILED'||code==='GITHUB_FORBIDDEN_OR_RATE_LIMITED'?403:502).json({ok:false,error:'github_screenshot_clear_failed',code,message:String(error?.message||code),repository:config.repository});
-    } finally { githubScreenshotClearInFlight=false; }
-});
-
-app.get('/api/admin/diagnostics/github-status', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, private');
-    return res.json({ ok:true, githubBugReports:buildGithubBugReportStatus() });
-});
-
-app.post('/api/admin/diagnostics/github/issues/clear', express.json({ limit:'8kb' }), async (req, res) => {
-    const confirmation = String(req.body?.confirmation || '');
-    if (confirmation !== 'DELETE_ALL_GITHUB_ISSUES') {
-        return res.status(400).json({ ok:false, error:'github_issue_clear_confirmation_required', code:'GITHUB_ISSUE_CLEAR_CONFIRMATION_REQUIRED' });
-    }
-
-    const config = getGithubBugReportConfig();
-    if (!config.configured) {
-        const detail = diagnosticGithubPublicError({ code:config.configurationError });
-        recordDiagnostic({
-            source:'server', kind:'github_issue_clear_not_configured', page:'admin',
-            action:'github.issues.clear', message:detail.message,
-            data:{ repository:config.repository, code:detail.code },
-        });
-        return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:detail.code, message:detail.message, repository:config.repository });
-    }
-
-    if (githubIssueClearInFlight) {
-        return res.status(409).json({
-            ok:false, error:'github_issue_clear_in_progress', code:'GITHUB_ISSUE_CLEAR_IN_PROGRESS',
-            message:'กำลังมีการล้าง GitHub Issues อีกคำขอหนึ่งอยู่ กรุณารอให้คำขอนั้นเสร็จสิ้นก่อน',
-            repository:config.repository,
-        });
-    }
-
-    githubIssueClearInFlight = true;
-    try {
-        const result = await clearAllGithubIssues({ config });
-        // A deleted issue must not remain in the short-lived dedup cache; otherwise
-        // submitting the same diagnostic again could return a URL to a deleted issue.
-        if (result.deleted > 0) { diagnosticGithubReports.clear(); diagnosticGithubIncidentReports.clear(); }
-
-        addDiagnosticBreadcrumb({
-            source:'server', type:'github', label:'admin.github.issues.cleared', page:'admin',
-            detail:{ repository:config.repository, found:result.found, deleted:result.deleted, failed:result.failed.length },
-        });
-        // Full success is an operational breadcrumb, not a diagnostic error.
-        // Recording a successful clear as a diagnostic event makes the GitHub bug-report
-        // button turn normal maintenance activity into a false-positive [BUG] Issue.
-        if (result.failed.length) {
-            recordDiagnostic({
-                source:'server', kind:'github_issue_clear_failed', page:'admin', action:'github.issues.clear',
-                operation:'GITHUB_ISSUE_PARTIAL_CLEAR',
-                message:'GitHub Issues ลบบางรายการไม่สำเร็จ',
-                data:{ repository:config.repository, found:result.found, deleted:result.deleted, failed:result.failed.length },
-            });
-        }
-
-        const status = result.failed.length ? 502 : 200;
-        return res.status(status).json({
-            ok:result.ok, repository:result.repository, found:result.found,
-            deleted:result.deleted, remaining:Math.max(0, result.found - result.deleted),
-            failed:result.failed, deletedIssueNumbers:result.deletedIssueNumbers,
-        });
-    } catch (error) {
-        const detail = githubIssueClearPublicError(error);
-        recordDiagnostic({
-            source:'server', kind:'github_issue_clear_failed', page:'admin', action:'github.issues.clear',
-            operation:detail.code, message:detail.message, data:{ repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0 },
-        });
-        const status = detail.code === 'GITHUB_TOKEN_MISSING' ? 503 : 502;
-        return res.status(status).json({ ok:false, error:'github_issue_clear_failed', code:detail.code, message:detail.message, repository:config.repository });
-    } finally {
-        githubIssueClearInFlight = false;
-    }
-});
-
-async function submitDiagnosticEventToGithub(primary, config) {
-    if (!primary?.id) {
-        const error = new Error('DIAGNOSTIC_EVENT_REQUIRED');
-        error.publicCode = 'DIAGNOSTIC_EVENT_REQUIRED';
-        throw error;
-    }
-    cleanupDiagnosticGithubReports();
-    const eventId = String(primary.id);
-    const previous = diagnosticGithubReports.get(eventId);
-    if (previous && previous.issueUrl) {
-        return { ok:true, reused:true, reportId:eventId, number:previous.number, issueUrl:previous.issueUrl, title:previous.title, repository:previous.repository };
-    }
-
-    const related = relatedDiagnosticEventsFor(primary);
-    const incidentKey = diagnosticGithubIncidentIdentity(primary);
-    const incidentHash = diagnosticIncidentKeyHash(incidentKey);
-    const isBugReplayFailure = String(primary.kind || primary.type || "").toLowerCase() === "bug_replay_failure";
-    const scopedRelated = (() => {
-        const map = new Map();
-        const source = isBugReplayFailure
-            ? [primary, ...related.filter((event) => diagnosticGithubIncidentIdentity(event) === incidentKey)]
-            : [primary, ...related];
-        for (const event of source) if (event?.id) map.set(event.id, event);
-        return [...map.values()].sort((a, b) => diagnosticTimeMs(b) - diagnosticTimeMs(a));
-    })();
-    const incidentPrevious = incidentKey ? diagnosticGithubIncidentReports.get(incidentKey) : null;
-    if (incidentPrevious && incidentPrevious.issueUrl) {
-        const cached = { ok:true, reused:true, reportId:eventId, number:incidentPrevious.number, issueUrl:incidentPrevious.issueUrl, title:incidentPrevious.title, repository:incidentPrevious.repository };
-        diagnosticGithubReports.set(eventId, { ...incidentPrevious, createdAtMs:Date.now() });
-        return cached;
-    }
-
-    const runSubmission = async () => {
-        cleanupDiagnosticGithubReports();
-        const cached = incidentKey ? diagnosticGithubIncidentReports.get(incidentKey) : null;
-        if (cached?.issueUrl) {
-            diagnosticGithubReports.set(eventId, { ...cached, createdAtMs:Date.now() });
-            return { ok:true, reused:true, reportId:eventId, number:cached.number, issueUrl:cached.issueUrl, title:cached.title, repository:cached.repository };
-        }
-
-        const existingIssue = await findExistingGithubIncidentIssue(incidentKey, config, { event:primary });
-        if (existingIssue?.url && Number(existingIssue.number) > 0) {
-            const existing = { createdAtMs:Date.now(), number:Number(existingIssue.number), issueUrl:String(existingIssue.url), title:String(existingIssue.title || ''), repository:config.repository };
-            if (incidentKey) diagnosticGithubIncidentReports.set(incidentKey, existing);
-            diagnosticGithubReports.set(eventId, existing);
-            addDiagnosticBreadcrumb({ source:'server', type:'diagnostic', label:'diagnostic.github.issue_reused', traceId:String(primary.traceId || ''), sessionId:String(primary.sessionId || ''), page:'admin', detail:{ reportId:eventId, incidentKeyHash:incidentHash, repository:config.repository, issueNumber:existing.number } });
-            return { ok:true, reused:true, reportId:eventId, number:existing.number, issueUrl:existing.issueUrl, title:existing.title, repository:existing.repository };
-        }
-
-        const serverBreadcrumbs = primary.serverBreadcrumbs?.length
-            ? primary.serverBreadcrumbs
-            : relatedServerBreadcrumbs({ traceId:primary.traceId, sessionId:primary.sessionId, limit:160 });
-        const allForAnalysis = scopedRelated.concat(serverBreadcrumbs.map((b) => ({ source:'server', kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
-        const analysis = buildDiagnosticAnalysis(primary, allForAnalysis);
-        const rootEvent = isBugReplayFailure ? primary : selectDiagnosticIncidentPrimary(primary, scopedRelated);
-        const safePrimary = publicDiagnosticEvent(rootEvent);
-        const safeRelated = scopedRelated.filter((event) => String(event?.id || '') !== String(rootEvent?.id || '')).map(publicDiagnosticEvent);
-        let reportGameProfile = safePrimary?.gameProfileSnapshot || primary?.gameProfileSnapshot || null;
-        if (!reportGameProfile && typeof getCurrentGameDiagnosticProfile === 'function' && typeof diagnosticGameProfileSnapshot === 'function') {
-            reportGameProfile = diagnosticGameProfileSnapshot(getCurrentGameDiagnosticProfile({ roomId:String(primary.roomId || rootEvent.roomId || '') }));
-        }
-        const issue = buildGithubBugReportIssue({
-            event:{ ...safePrimary, incidentKeyHash:incidentHash },
-            analysis:publicDiagnosticValue(analysis),
-            relatedEvents:safeRelated,
-            serverBreadcrumbs:publicDiagnosticValue(serverBreadcrumbs),
-            incident:{
-                incidentKeyHash:incidentHash,
-                githubBugKeyHash:incidentHash,
-                rootEventId:String(rootEvent?.id || eventId),
-                requestedEventId:eventId,
-                relatedFailureCount:scopedRelated.filter(diagnosticIsFailureEvent).length,
-                replayRunId:String(primary?.operationId || rootEvent?.operationId || '')
-            },
-            gameProfile: reportGameProfile,
-            serverInfo:{
-                appVersion:getCachedAppVersion(),
-                node:process.version,
-                uptimeSec:Math.round(process.uptime()),
-                serverClosed:!!serverClosed,
-            },
-        });
-        const result = await createGithubBugReportIssue({ issue, config });
-        const stored = { createdAtMs:Date.now(), number:result.number, issueUrl:result.issueUrl, title:result.title, repository:result.repository };
-        diagnosticGithubReports.set(eventId, stored);
-        if (incidentKey) diagnosticGithubIncidentReports.set(incidentKey, stored);
-        cleanupDiagnosticGithubReports();
-        addDiagnosticBreadcrumb({ source:'server', type:'diagnostic', label:'diagnostic.github.issue_created', traceId:String(primary.traceId || ''), sessionId:String(primary.sessionId || ''), page:'admin', detail:{ reportId:eventId, rootEventId:String(rootEvent?.id || eventId), incidentKeyHash:incidentHash, repository:config.repository, issueNumber:result.number } });
-        return { ok:true, reused:false, reportId:eventId, rootReportId:String(rootEvent?.id || eventId), number:result.number, issueUrl:result.issueUrl, title:result.title, repository:result.repository };
-    };
-
-    const eventInFlight = diagnosticGithubEventInFlight.get(eventId);
-    if (eventInFlight) {
-        const result = await eventInFlight;
-        return { ...result, reused:true, reportId:eventId };
-    }
-
-    const execute = async () => {
-        if (!incidentKey) return runSubmission();
-        const inFlight = diagnosticGithubIncidentInFlight.get(incidentKey);
-        if (inFlight) {
-            const result = await inFlight;
-            return { ...result, reused:true, reportId:eventId };
-        }
-        const promise = runSubmission();
-        diagnosticGithubIncidentInFlight.set(incidentKey, promise);
-        try {
-            return await promise;
-        } finally {
-            if (diagnosticGithubIncidentInFlight.get(incidentKey) === promise) diagnosticGithubIncidentInFlight.delete(incidentKey);
-        }
-    };
-
-    const eventPromise = execute();
-    diagnosticGithubEventInFlight.set(eventId, eventPromise);
-    try {
-        return await eventPromise;
-    } finally {
-        if (diagnosticGithubEventInFlight.get(eventId) === eventPromise) diagnosticGithubEventInFlight.delete(eventId);
-    }
-}
-
-app.post('/api/admin/diagnostics/github', express.json({ limit:'16kb' }), async (req, res) => {
-    const eventId = String(req.body?.eventId || '').slice(0, 120);
-    if (!eventId) return res.status(400).json({ ok:false, error:'event_id_required', code:'DIAGNOSTIC_EVENT_REQUIRED' });
-    const primary = diagnosticEvents.find((event) => String(event?.id || '') === eventId);
-    if (!primary) return res.status(404).json({ ok:false, error:'diagnostic_event_not_found', code:'DIAGNOSTIC_EVENT_NOT_FOUND' });
-
-    const config = getGithubBugReportConfig();
-    if (!config.configured) {
-        const detail = diagnosticGithubPublicError({ code:config.configurationError });
-        recordDiagnostic({ source:'server', kind:'diagnostic_github_not_configured', page:'admin', action:'diagnostic.github.submit', message:detail.message, data:{ repository:config.repository, code:detail.code } });
-        return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:detail.code, message:detail.message, repository:config.repository });
-    }
-
-    try {
-        const result = await submitDiagnosticEventToGithub(primary, config);
-        return res.json(result);
-    } catch (error) {
-        const detail = diagnosticGithubPublicError(error);
-        recordDiagnostic({ source:'server', kind:'diagnostic_github_submit_failed', page:'admin', action:'diagnostic.github.submit', operation:detail.code, message:detail.message, data:{ repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0 } });
-        return res.status(detail.code === 'GITHUB_TOKEN_MISSING' ? 503 : 502).json({ ok:false, error:'github_bug_report_failed', code:detail.code, message:detail.message, repository:config.repository });
-    }
-});
-
-app.post('/api/admin/diagnostics/github/all', express.json({ limit:'48kb' }), async (req, res) => {
-    const requestedIds = Array.isArray(req.body?.eventIds) ? req.body.eventIds : [];
-    const eventIds = [...new Set(requestedIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 100);
-    if (!eventIds.length) return res.status(400).json({ ok:false, error:'diagnostic_events_required', code:'DIAGNOSTIC_EVENTS_REQUIRED' });
-    if (diagnosticGithubBatchInFlight) return res.status(409).json({ ok:false, error:'github_batch_in_progress', code:'GITHUB_BATCH_IN_PROGRESS' });
-
-    const config = getGithubBugReportConfig();
-    if (!config.configured) {
-        const detail = diagnosticGithubPublicError({ code:config.configurationError });
-        recordDiagnostic({ source:'server', kind:'diagnostic_github_not_configured', page:'admin', action:'diagnostic.github.submit_all', message:detail.message, data:{ repository:config.repository, code:detail.code, requested:eventIds.length } });
-        return res.status(503).json({ ok:false, error:'github_bug_reports_not_configured', code:detail.code, message:detail.message, repository:config.repository });
-    }
-
-    diagnosticGithubBatchInFlight = true;
-    try {
-        const eventsById = new Map(diagnosticEvents.map((event) => [String(event?.id || ''), event]));
-        const results = new Array(eventIds.length);
-        let cursor = 0;
-        const worker = async () => {
-            while (true) {
-                const index = cursor++;
-                if (index >= eventIds.length) return;
-                const eventId = eventIds[index];
-                const primary = eventsById.get(eventId);
-                if (!primary) {
-                    results[index] = { ok:false, reused:false, reportId:eventId, code:'DIAGNOSTIC_EVENT_NOT_FOUND', message:'ไม่พบรายงานนี้ใน instance ปัจจุบัน' };
-                    continue;
-                }
-                try {
-                    results[index] = await submitDiagnosticEventToGithub(primary, config);
-                } catch (error) {
-                    const detail = diagnosticGithubPublicError(error);
-                    results[index] = { ok:false, reused:false, reportId:eventId, code:detail.code, message:detail.message, githubStatus:Number(error?.githubStatus || 0) || 0 };
-                }
-            }
-        };
-        await Promise.all(Array.from({ length:Math.min(4, eventIds.length) }, () => worker()));
-        const created = results.filter((item) => item?.ok && !item.reused).length;
-        const reused = results.filter((item) => item?.ok && item.reused).length;
-        const failed = results.filter((item) => !item?.ok).length;
-        const uniqueIssues = new Set(results.filter((item) => item?.ok && Number(item.number) > 0).map((item) => Number(item.number))).size;
-        if (failed) {
-            recordDiagnostic({ source:'server', kind:'diagnostic_github_batch_partial', page:'admin', action:'diagnostic.github.submit_all', message:'ส่งรายงานบั๊กขึ้น GitHub ได้บางส่วน', data:{ requested:eventIds.length, created, reused, failed, uniqueIssues, repository:config.repository } });
-        }
-        addDiagnosticBreadcrumb({ source:'server', type:'diagnostic', label:'diagnostic.github.batch_completed', page:'admin', detail:{ requested:eventIds.length, created, reused, failed, uniqueIssues, repository:config.repository } });
-        return res.json({ ok:true, requested:eventIds.length, created, reused, failed, uniqueIssues, repository:config.repository, results });
-    } catch (error) {
-        const detail = diagnosticGithubPublicError(error);
-        recordDiagnostic({ source:'server', kind:'diagnostic_github_batch_failed', page:'admin', action:'diagnostic.github.submit_all', operation:detail.code, message:detail.message, data:{ repository:config.repository, githubStatus:Number(error?.githubStatus || 0) || 0, requested:eventIds.length } });
-        return res.status(502).json({ ok:false, error:'github_bug_report_batch_failed', code:detail.code, message:detail.message, repository:config.repository });
-    } finally {
-        diagnosticGithubBatchInFlight = false;
-    }
-});
-
-// Machine-readable diagnostic exports. These are generated from the current in-memory
-// diagnostics snapshot and intentionally use the same admin session as the Diagnostics UI.
-app.get("/api/admin/diagnostics/export", (req, res) => {
-    try {
-        const scope = String(req.query.scope || "all").toLowerCase();
-        const eventId = String(req.query.eventId || "").slice(0, 120);
-        const generatedAt = new Date().toISOString();
-        const base = {
-            schemaVersion: "WEREWOLF_DIAGNOSTIC_JSON_EXPORT_V1",
-            generatedAt,
-            server: { uptimeSec: Math.round(process.uptime()), node: process.version, serverClosed: !!serverClosed, table: STATS_TABLE_NAME, ebEnvironmentConfigured: !!EB_ENVIRONMENT_NAME },
-        };
-        if (scope === "event") {
-            const event = diagnosticEvents.find((x) => String(x?.id || "") === eventId);
-            if (!event) return res.status(404).json({ ok:false, error:"diagnostic_event_not_found", code:"DIAGNOSTIC_EVENT_NOT_FOUND" });
-            const report = buildDiagnosticJsonExportEvent(event);
-            const payload = { ok:true, ...base, reportKind:"BUG_REPORT", ...report };
-            const body = JSON.stringify(payload, null, 2);
-            res.setHeader("Cache-Control", "no-store, private");
-            res.setHeader("Content-Type", "application/json; charset=utf-8");
-            res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(diagnosticExportFilename("event", eventId))}`);
-            return res.send(body);
-        }
-        if (scope !== "all") return res.status(400).json({ ok:false, error:"invalid_export_scope", code:"DIAGNOSTIC_EXPORT_SCOPE_INVALID" });
-        const events = diagnosticEvents.map((event) => {
-            const report = buildDiagnosticJsonExportEvent(event);
-            return report ? { ...report.event, analysis: report.analysis, serverBreadcrumbs: report.serverBreadcrumbs } : null;
-        }).filter(Boolean);
-        const serious = diagnosticEvents.filter((e) => e.kind !== "http_error" || e.status >= 500).length;
-        const payload = {
-            ok:true,
-            ...base,
-            reportKind:"ALL_BUG_REPORTS",
-            summary:{ stored:diagnosticEvents.length, exported:events.length, serious, accessDenied:diagnosticEvents.filter((e) => e.permission?.accessDenied).length },
-            permissions: permissionChecklist(),
-            events,
-        };
-        const body = JSON.stringify(payload, null, 2);
-        res.setHeader("Cache-Control", "no-store, private");
-        res.setHeader("Content-Type", "application/json; charset=utf-8");
-        res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(diagnosticExportFilename("all"))}`);
-        return res.send(body);
-    } catch (e) {
-        return res.status(500).json({ ok:false, error:"diagnostic_export_failed", code:"DIAGNOSTIC_EXPORT_FAILED", message:publicDiagnosticText(e?.message || String(e)).slice(0, 500) });
-    }
-});
-
-app.post("/api/admin/diagnostics/share", express.json({ limit: "12kb" }), async (req, res) => {
-    try {
-        const eventId = String(req.body?.eventId || "").slice(0, 120);
-        if (!eventId) return res.status(400).json({ ok:false, error:"event_id_required", code:"DIAGNOSTIC_EVENT_REQUIRED" });
-        const primary = diagnosticEvents.find((e) => e.id === eventId);
-        if (!primary) return res.status(404).json({ ok:false, error:"diagnostic_event_not_found", code:"DIAGNOSTIC_EVENT_NOT_FOUND" });
-
-        const related = relatedDiagnosticEventsFor(primary);
-        const serverBreadcrumbs = primary.serverBreadcrumbs?.length ? primary.serverBreadcrumbs : relatedServerBreadcrumbs({ traceId:primary.traceId, sessionId:primary.sessionId, limit:160 });
-        const allForAnalysis = related.concat(serverBreadcrumbs.map((b) => ({ source:"server", kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
-        const analysis = buildDiagnosticAnalysis(primary, allForAnalysis);
-        const causalGraph = buildDiagnosticCausalGraph(primary, related);
-        const incidentKey = diagnosticIncidentIdentity(primary);
-        let token = "";
-        let reusedIncident = false;
-        let stored = false;
-        const createdAt = new Date().toISOString();
-        const expiresAt = new Date(Date.now() + DIAGNOSTIC_SHARE_TTL_MS).toISOString();
-        const baseUrl = diagnosticSharePublicBaseUrl(req);
-        const graphIds = new Set((causalGraph.nodes || []).map(n => n.id));
-
-        // Graph nodes get priority because these are exactly the logs that the report promises to link.
-        const rankedRelated = related.slice().sort((a,b) => {
-            const ag = graphIds.has(a.id) ? 1 : 0;
-            const bg = graphIds.has(b.id) ? 1 : 0;
-            if (ag !== bg) return bg - ag;
-            const at = diagnosticTimeMs(a), bt = diagnosticTimeMs(b);
-            return bt - at;
-        });
-        const publicRelated = rankedRelated.slice(0, 42).map((e) => publicDiagnosticEventForShare(e, e.id === primary.id));
-        const publicPrimary = publicDiagnosticEventForShare(primary, true);
-
-        const nodeReports = [];
-        const nodeEvents = rankedRelated.filter(e => graphIds.has(e.id));
-        for (const node of nodeEvents) {
-            const nodeCrumbs = node.serverBreadcrumbs?.length ? node.serverBreadcrumbs : relatedServerBreadcrumbs({ traceId:node.traceId, sessionId:node.sessionId, limit:80 });
-            const nodePool = related.concat(nodeCrumbs.map((b) => ({ source:"server", kind:b.type, type:b.type, time:b.time, label:b.label, message:b.label, detail:b.detail, context:b.detail })));
-            const nodeAnalysis = buildDiagnosticAnalysis(node, nodePool);
-            nodeReports.push({ eventId:String(node.id), analysis:compactDiagnosticAnalysisForShare(nodeAnalysis, causalGraph, node.id) });
-        }
-
-        let bundle = {
-            schemaVersion: DIAGNOSTIC_SHARE_VERSION,
-            reportId: primary.id,
-            createdAt,
-            expiresAt,
-            shareBaseUrl: baseUrl,
-            focusEventId: primary.id,
-            primary: publicPrimary,
-            relatedEvents: publicRelated,
-            causalGraph: publicDiagnosticValue(causalGraph),
-            nodeReports: publicDiagnosticValue(nodeReports),
-            analysis: publicDiagnosticValue(analysis),
-            incident: {
-                incidentKeyHash: incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "",
-                reusedExistingShare: reusedIncident,
-                reuseWindowMs: DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS,
-                statement: incidentKey ? (reusedIncident ? "เหตุการณ์นี้อยู่ใน incident เดียวกับลิงก์ที่สร้างก่อนหน้า จึงใช้ลิงก์ incident เดิมเพื่อรวมต้นเหตุและผลกระทบไว้ในรายงานเดียว" : "incident นี้ได้รับลิงก์กลาง เพื่อให้ log หลายตัวจากความพยายามเดียวกันไม่แตกเป็นหลายรายงาน") : "ไม่มี correlation ID ที่ปลอดภัยพอสำหรับ incident grouping"
-            },
-            server: { node:process.version, appVersion:getCachedAppVersion(), serverClosed:!!serverClosed },
-            gameProfile: publicPrimary?.gameProfileSnapshot || diagnosticGameProfileSnapshot(getCurrentGameDiagnosticProfile({ roomId:String(primary.roomId||'') })),
-            generation: {
-                requestedFromEventId: String(primary.id || ""),
-                requestedFromKind: String(primary.kind || primary.type || ""),
-                requestedAt: createdAt,
-                sourceEventCount: related.length,
-                serverBreadcrumbCount: serverBreadcrumbs.length,
-                graphNodeCount: Number(causalGraph.nodes?.length || 0),
-                graphEdgeCount: Number(causalGraph.edges?.length || 0),
-                correlationMode: incidentKey ? (String(primary.operationId || primary.context?.operationId || "") ? "operationId" : (String(primary.requestId || primary.context?.requestId || primary.clientRequestId || "") ? "requestId/clientRequestId" : (String(primary.traceId || "") ? "trace/session/room" : "session/room"))) : "none",
-                note: "event = log เดี่ยว, incident = กลุ่ม log ที่มี correlation และ causal evidence เชื่อมกัน; report นี้เก็บทั้งเหตุการณ์ก่อนหน้าและผลกระทบหลังเหตุการณ์เท่าที่พบใน snapshot",
-            },
-        };
-        // Keep DynamoDB item comfortably below its 400 KB item limit and keep every graph node link valid.
-        while (Buffer.byteLength(JSON.stringify(bundle), "utf8") > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.relatedEvents.length > 12) {
-            const graphEventIds = new Set((bundle.causalGraph?.nodes || []).map(n => n.id));
-            const removable = [...bundle.relatedEvents].reverse().findIndex((x) => x.id !== primary.id && !graphEventIds.has(x.id));
-            if (removable >= 0) bundle.relatedEvents.splice(bundle.relatedEvents.length - 1 - removable, 1);
-            else bundle.relatedEvents.pop();
-        }
-        if (Buffer.byteLength(JSON.stringify(bundle), "utf8") > DIAGNOSTIC_SHARE_MAX_BYTES) {
-            return res.status(413).json({ ok:false, error:"diagnostic_report_too_large", code:"DIAGNOSTIC_SHARE_TOO_LARGE" });
-        }
-
-        if (incidentKey) {
-            const claim = await getOrClaimDiagnosticIncidentShare(incidentKey, Date.now());
-            token = claim.token;
-            reusedIncident = !!claim.reused;
-        }
-        for (let attempt = 0; attempt < 3 && !stored; attempt++) {
-            if (!token) token = diagnosticShareToken();
-            const shareUrls = diagnosticShareUrls(baseUrl, token);
-            const url = shareUrls.html;
-            const jsonUrl = shareUrls.json;
-            // Put recursive links directly into the JSON so an AI does not need to infer URLs from prose.
-            bundle.shareUrls = { ...shareUrls, focusedHtml:diagnosticShareEventUrl(bundle, token, primary.id, false), focusedJson:diagnosticShareEventUrl(bundle, token, primary.id, true) };
-            if (bundle.causalGraph?.edges) {
-                bundle.causalGraph.edges = bundle.causalGraph.edges.map((edge) => ({
-                    ...edge,
-                    reportUrl:diagnosticShareEventUrl(bundle, token, edge.to, false),
-                    jsonReportUrl:diagnosticShareEventUrl(bundle, token, edge.to, true),
-                    fromReportUrl:diagnosticShareEventUrl(bundle, token, edge.from, false),
-                    fromJsonReportUrl:diagnosticShareEventUrl(bundle, token, edge.from, true),
-                }));
-            }
-            if (Array.isArray(bundle.causalGraph?.nodes)) {
-                bundle.causalGraph.nodes = bundle.causalGraph.nodes.map((node) => ({
-                    ...node,
-                    reportUrl:diagnosticShareEventUrl(bundle, token, node.id, false),
-                    jsonReportUrl:diagnosticShareEventUrl(bundle, token, node.id, true),
-                }));
-            }
-            bundle.relatedEvents = bundle.relatedEvents.map((event) => ({
-                ...event,
-                reportUrl:diagnosticShareEventUrl(bundle, token, event.id, false),
-                jsonReportUrl:diagnosticShareEventUrl(bundle, token, event.id, true),
-            }));
-            bundle.nodeReports = bundle.nodeReports.map((node) => ({
-                ...node,
-                reportUrl:diagnosticShareEventUrl(bundle, token, node.eventId, false),
-                jsonReportUrl:diagnosticShareEventUrl(bundle, token, node.eventId, true),
-            }));
-            // URL metadata is part of the persisted snapshot, so perform the byte-limit check again after adding it.
-            while (Buffer.byteLength(JSON.stringify(bundle), "utf8") > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.relatedEvents.length > 12) {
-                const graphEventIds = new Set((bundle.causalGraph?.nodes || []).map(n => n.id));
-                const removable = [...bundle.relatedEvents].reverse().findIndex((x) => x.id !== primary.id && !graphEventIds.has(x.id));
-                if (removable < 0) break;
-                bundle.relatedEvents.splice(bundle.relatedEvents.length - 1 - removable, 1);
-            }
-            if (Buffer.byteLength(JSON.stringify(bundle), "utf8") > DIAGNOSTIC_SHARE_MAX_BYTES && bundle.nodeReports.length > 8) {
-                bundle.nodeReports = bundle.nodeReports.slice(0, 8);
-            }
-            if (Buffer.byteLength(JSON.stringify(bundle), "utf8") > DIAGNOSTIC_SHARE_MAX_BYTES) {
-                return res.status(413).json({ ok:false, error:"diagnostic_report_too_large", code:"DIAGNOSTIC_SHARE_TOO_LARGE" });
-            }
-            try {
-                await persistDiagnosticShare(bundle, token, reusedIncident);
-                stored = true;
-            } catch (e) {
-                if (/ConditionalCheckFailed/i.test(String(e?.name || e?.message || "")) && !incidentKey && attempt < 2) {
-                    token = diagnosticShareToken();
-                    continue;
-                }
-                if (!/ConditionalCheckFailed/i.test(String(e?.name || e?.message || "")) || attempt === 2) throw e;
-            }
-        }
-        if (incidentKey) await refreshDiagnosticIncidentShareIndex(incidentKey, token, expiresAt);
-        rememberDiagnosticShare(token, bundle);
-        const shareUrls = diagnosticShareUrls(baseUrl, token);
-        const url = shareUrls.html;
-        const jsonUrl = shareUrls.json;
-        bundle.shareUrls = { ...(bundle.shareUrls || {}), ...shareUrls, focusedHtml:diagnosticShareEventUrl(bundle, token, primary.id, false), focusedJson:diagnosticShareEventUrl(bundle, token, primary.id, true), incident:url, incidentJson:jsonUrl };
-        bundle.incident = {
-            incidentKeyHash: incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "",
-            reusedExistingShare: reusedIncident,
-            reuseWindowMs: DIAGNOSTIC_INCIDENT_REUSE_WINDOW_MS,
-            statement: incidentKey ? (reusedIncident ? "เหตุการณ์นี้อยู่ใน incident เดียวกับลิงก์ที่สร้างก่อนหน้า จึงใช้ลิงก์ incident เดิมเพื่อไม่ให้เกิดรายงานแยกหลายใบ" : "สร้างลิงก์ incident กลางสำหรับเหตุการณ์ชุดนี้") : "เหตุการณ์นี้ไม่มี correlation ID ที่ปลอดภัยพอสำหรับการรวมเป็น incident เดียว"
-        };
-        addDiagnosticBreadcrumb({ source:"server", type:"diagnostic", label:"diagnostic.share.created", traceId:primary.traceId || "", sessionId:primary.sessionId || "", page:"admin", detail:{ reportId:primary.id, relatedEvents:related.length, graphNodes:causalGraph.nodes?.length || 0, graphEdges:causalGraph.edges?.length || 0, expiresAt, persisted:stored, incidentKeyHash:incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "", reusedIncident } });
-        res.setHeader("Cache-Control", "no-store");
-        res.json({ ok:true, reportId:primary.id, token, url, jsonUrl, aiUrl:jsonUrl, expiresAt, persisted:stored, reusedIncident, incidentKey:incidentKey ? diagnosticIncidentIndexKey(incidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "", relatedEvents:related.length, graphNodes:causalGraph.nodes?.length || 0, graphEdges:causalGraph.edges?.length || 0, sizeBytes:Buffer.byteLength(JSON.stringify(bundle), "utf8") });
-    } catch (e) {
-        const storageError = {
-            code: String(e?.code || e?.name || "DIAGNOSTIC_SHARE_CREATE_ERROR").slice(0, 100),
-            name: String(e?.name || "Error").slice(0, 100),
-            message: publicDiagnosticText(e?.message || String(e)).slice(0, 600),
-        };
-        const bodyEventId = String(req.body?.eventId || "").slice(0, 120);
-        const failedIncidentKey = bodyEventId ? (() => {
-            const event = diagnosticEvents.find((x) => x.id === bodyEventId);
-            return event ? diagnosticIncidentIdentity(event) : "";
-        })() : "";
-        const incidentKeyHash = failedIncidentKey ? diagnosticIncidentIndexKey(failedIncidentKey).slice(DIAGNOSTIC_INCIDENT_INDEX_PREFIX.length) : "";
-        const requestId = makeDiagnosticId("diagshare");
-        recordDiagnostic({
-            source:"server", kind:"diagnostic_share_create_error", page:"admin",
-            message:storageError.message, stack:e?.stack || "",
-            requestId, operationId:bodyEventId ? `share:${bodyEventId}` : "",
-            context:{
-                code:"DIAGNOSTIC_SHARE_CREATE_FAILED",
-                failureStage:"diagnostic.share.storage_or_generation",
-                storageBackend:"dynamodb",
-                eventId:bodyEventId, incidentKeyHash, requestId,
-                storageError,
-            },
-        });
-        res.status(503).json({
-            ok:false, error:"diagnostic_share_storage_unavailable", code:"DIAGNOSTIC_SHARE_STORAGE_UNAVAILABLE",
-            causeCode:storageError.code, causeName:storageError.name, causeMessage:storageError.message,
-            failureStage:"diagnostic.share.storage_or_generation", requestId, eventId:bodyEventId, incidentKeyHash,
-            diagnostic:"รายงานแชร์ล้มเหลวที่ขั้นตอนสร้าง/บันทึก snapshot ไม่ควรสรุปว่า DynamoDB เสียจากรหัสนี้เพียงอย่างเดียว; ตรวจ causeName/causeMessage และ requestId นี้ใน Diagnostics",
-        });
-    }
-});
-
-app.get("/diagnostics/share/:token.json", async (req, res) => {
-    try {
-        const bundle = await readDiagnosticShare(String(req.params.token || ""));
-        res.setHeader("Cache-Control", "no-store, private");
-        res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
-        res.setHeader("Referrer-Policy", "no-referrer");
-        if (!bundle) return res.status(404).json({ ok:false, error:"diagnostic_share_not_found", code:"DIAGNOSTIC_SHARE_NOT_FOUND" });
-        res.json({ ok:true, ...bundle, reportText:bundle.reportKind === "BUG_REPLAY_RUN" ? bugReplayShareText(bundle, String(req.params.token || "")) : (bundle.reportKind === "BUG_REPLAY_FIRST_FAILURE" ? bugReplayFirstFailureShareText(bundle, String(req.params.token || "")) : diagnosticShareText(bundle)) });
-    } catch (e) {
-        res.status(503).json({ ok:false, error:"diagnostic_share_unavailable", code:"DIAGNOSTIC_SHARE_UNAVAILABLE" });
-    }
-});
-
-
-app.get("/diagnostics/share/:token/event/:eventId.json", async (req, res) => {
-    try {
-        const bundle = await readDiagnosticShare(String(req.params.token || ""));
-        res.setHeader("Cache-Control", "no-store, private");
-        res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
-        res.setHeader("Referrer-Policy", "no-referrer");
-        if (!bundle) return res.status(404).json({ ok:false, error:"diagnostic_share_not_found", code:"DIAGNOSTIC_SHARE_NOT_FOUND" });
-        const token = String(req.params.token || "");
-        const focused = diagnosticShareFocusedBundle(bundle, String(req.params.eventId || ""));
-        if (!focused) return res.status(404).json({ ok:false, error:"diagnostic_share_event_not_found", code:"DIAGNOSTIC_SHARE_EVENT_NOT_FOUND" });
-        focused.shareUrls = { ...(bundle.shareUrls || {}), focusedHtml:diagnosticShareEventUrl(bundle, token, focused.focusEventId, false), focusedJson:diagnosticShareEventUrl(bundle, token, focused.focusEventId, true) };
-        res.json({ ok:true, ...focused, reportText:diagnosticShareText(focused, token, focused.focusEventId) });
-    } catch (e) {
-        res.status(503).json({ ok:false, error:"diagnostic_share_unavailable", code:"DIAGNOSTIC_SHARE_UNAVAILABLE" });
-    }
-});
-
-app.get("/diagnostics/share/:token/event/:eventId", async (req, res) => {
-    try {
-        const bundle = await readDiagnosticShare(String(req.params.token || ""));
-        res.setHeader("Cache-Control", "no-store, private");
-        res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
-        res.setHeader("Referrer-Policy", "no-referrer");
-        if (!bundle) return res.status(404).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic not found</title><p>Diagnostic report ไม่พบหรือหมดอายุแล้ว</p>");
-        const focused = diagnosticShareFocusedBundle(bundle, String(req.params.eventId || ""));
-        if (!focused) return res.status(404).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic event not found</title><p>Event นี้ไม่มีอยู่ใน incident snapshot</p>");
-        res.type("html").send(diagnosticShareHtml(focused, String(req.params.token || ""), focused.focusEventId));
-    } catch (e) {
-        res.status(503).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic unavailable</title><p>ยังอ่านรายงานวินิจฉัยไม่ได้ชั่วคราว</p>");
-    }
-});
-app.get("/diagnostics/share/:token", async (req, res) => {
-    try {
-        const bundle = await readDiagnosticShare(String(req.params.token || ""));
-        res.setHeader("Cache-Control", "no-store, private");
-        res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
-        res.setHeader("Referrer-Policy", "no-referrer");
-        if (!bundle) return res.status(404).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic not found</title><p>Diagnostic report ไม่พบหรือหมดอายุแล้ว</p>");
-        res.type("html").send(bundle.reportKind === "BUG_REPLAY_RUN" ? bugReplayShareHtml(bundle, String(req.params.token || "")) : (bundle.reportKind === "BUG_REPLAY_FIRST_FAILURE" ? bugReplayFirstFailureShareHtml(bundle, String(req.params.token || "")) : diagnosticShareHtml(bundle, String(req.params.token || ""))));
-    } catch (e) {
-        res.status(503).type("html").send("<!doctype html><meta charset=\"utf-8\"><title>Diagnostic unavailable</title><p>ยังอ่านรายงานวินิจฉัยไม่ได้ชั่วคราว</p>");
-    }
-});
-
-app.post("/api/admin/diagnostics/clear", (req, res) => {
-    diagnosticEvents.length = 0;
-    diagnosticPermissionCounts.clear();
-    res.json({ ok: true });
+app.delete("/api/admin/bug-reports/:id", async (req,res) => {
+    await refreshBugReportInbox();
+    const id=String(req.params.id || "").trim();
+    const index=bugReports.findIndex((item)=>item.id===id);
+    if (index<0) return res.status(404).json({ok:false,error:"report_not_found",code:"BUG_REPORT_NOT_FOUND"});
+    try { await bugReportStore.remove(bugReports[index]); } catch (_) { return res.status(503).json({ok:false,error:"report_storage_unavailable"}); }
+    pendingBugReportIds.delete(id);
+    bugReports.splice(index,1);
+    res.json({ok:true});
 });
 
 // CloudFront-safe Admin release probe:
@@ -7671,140 +1384,44 @@ app.get("/api/server-state", async (req, res) => {
         closingInMs: !shielded && closingPlan ? Math.max(1, closingPlan.closeAt - Date.now()) : 0,
         noticeMessage: shielded ? "" : (closingPlan ? closingPlan.message : closedMessage),
         reopenAt: shielded ? 0 : (closingPlan ? closingPlan.reopenAt : closedReopenAt),
-        imageBase: IMAGE_BASE_URL,
+        imageBase: LOCAL_IMAGE_BASE,
         imageVersion: imageEpoch || "",
         serverIconUrl: imgUrl(SERVER_CLOSED_ICON_PATH),
     });
 });
 
 app.get("/api/config", async (req, res) => {
-    const startedAt = Date.now();
-    const clientRequestId = String(req.headers["x-ww-client-request-id"] || req.__wwDiagnostic?.clientRequestId || "").slice(0, 120);
-    // Reuse the request ID allocated by the generic HTTP tracing middleware.
-    // Creating another ID here was the main correlation bug: request.start/request.end
-    // and the ID returned to the browser could refer to the same HTTP request under
-    // different IDs.
-    const requestId = String(req.__wwDiagnostic?.requestId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(12).toString("hex"))).slice(0, 120);
-    const configLogicalId = String(req.headers["x-ww-config-logical-id"] || "").slice(0, 120);
-    const configAttempt = Math.max(1, Number(req.headers["x-ww-config-attempt"] || 1) || 1);
-    let responseFinished = false;
-
-    const traceId = String(req.headers["x-ww-diagnostic-trace-id"] || req.__wwDiagnostic?.traceId || makeDiagnosticId("tr")).slice(0, 120);
-    const sessionId = String(req.headers["x-ww-client-session-id"] || req.__wwDiagnostic?.sessionId || "").slice(0, 120);
-    res.setHeader("X-WW-Config-Request-Id", requestId);
-    res.setHeader("X-WW-Diagnostic-Trace-Id", traceId);
-    res.setHeader("X-WW-Server-Request-Id", requestId);
-    res.setHeader("X-WW-Config-Attempt", String(configAttempt));
-    if (configLogicalId) res.setHeader("X-WW-Config-Logical-Id", configLogicalId);
-    if (clientRequestId) res.setHeader("X-WW-Client-Request-Id", clientRequestId);
-    res.once("finish", () => {
-        responseFinished = true;
-        const durationMs = Date.now() - startedAt;
-        // A normal config request is very small. Only store slow responses in Admin Diagnostics.
-        if (durationMs >= 2000) {
-            recordDiagnostic({
-                source: "server",
-                kind: "config_slow_response",
-                page: "server",
-                endpoint: "/api/config",
-                message: `/api/config ใช้เวลา ${durationMs}ms`,
-                data: { requestId, clientRequestId, traceId, sessionId, configLogicalId, configAttempt, durationMs, statusCode: res.statusCode },
-                traceId, sessionId, requestId, clientRequestId, durationMs,
-            });
-        }
-    });
-    res.once("close", () => {
-        if (responseFinished) return;
-        const durationMs = Date.now() - startedAt;
-        // A fast /api/config close is commonly caused by page navigation/background lifecycle
-        // (for example leaving index and returning). Keep it out of Admin Incidents; only retain
-        // disconnects that stayed open long enough to indicate a potentially real upstream issue.
-        if (durationMs < 2000) return;
-        recordDiagnostic({
-            source: "server",
-            kind: "config_client_disconnect",
-            page: "server",
-            endpoint: "/api/config",
-            message: `เบราว์เซอร์ตัดการเชื่อมต่อก่อน /api/config ตอบกลับ (${durationMs}ms)`,
-            data: { requestId, clientRequestId, traceId, sessionId, configLogicalId, configAttempt, durationMs },
-            traceId, sessionId, requestId, clientRequestId, durationMs,
-        });
-    });
-
     try {
-        // ใช้ Running Version + Environment Status จาก Elastic Beanstalk source เดียวกัน
-        // แต่ยังมี short timeout เพื่อไม่ให้ /api/config ค้างเพราะ AWS control-plane
-        // `deploymentProbe=1` ใช้เฉพาะตอน client ตรวจพบ version mismatch เพื่อยืนยันสถานะ Updating/Ready แบบสดๆ
         const deploymentProbe = req.query.deploymentProbe === "1";
         const versionPromise = getAppEnvironmentState({ force: deploymentProbe }).then((state) => state.versionLabel);
-        const versionTimeout = new Promise((resolve) => {
-            setTimeout(() => resolve(getCachedAppVersion()), 1_200);
-        });
+        const versionTimeout = new Promise((resolve) => setTimeout(() => resolve(getCachedAppVersion()), 1200));
         const appVersion = await Promise.race([versionPromise, versionTimeout]);
-        // getAppEnvironmentState updates the same process-local snapshot used by diagnostics.
-        // If the AWS control-plane call times out, this intentionally stays last-known-good.
         const environmentState = getCachedAppEnvironmentState();
-        // resetEpoch: "รุ่นของการล้างข้อมูล" — เปลี่ยนทุกครั้งที่แอดมินกดล้างข้อมูลเกม (ดู /api/admin/reset)
         ensureResetEpochLoaded();
-        // serverOpen / reloadEpoch / reloadKind / imageEpoch: ดูหัวข้อ "เปิด/ปิดเซิร์ฟเวอร์ + บังคับรีโหลด" ด้านบนสุดของไฟล์
         const shielded = req.query.real !== "1" && isProtectedRequest(req);
         res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
         res.setHeader("Pragma", "no-cache");
         res.setHeader("Surrogate-Control", "no-store");
-        res.setHeader("Vary", "Cookie, X-WW-Room, X-WW-Token, X-WW-Client-Request-Id, X-WW-Config-Logical-Id, X-WW-Config-Attempt");
+        res.setHeader("Vary", "Cookie, X-WW-Room, X-WW-Token, X-WW-Config-Attempt");
         const versionParts = refreshVersionParts();
         res.json({
-            version: computeServerVersion(),
-            clientHash: versionParts.client,
-            assetsHash: versionParts.assets,
-            serverHash: versionParts.server,
-            adminHash: computeAdminHash(),
-            buildVersion: computeServerVersion(),
-            imageBase: IMAGE_BASE_URL,
-            serverIconUrl: imgUrl(SERVER_CLOSED_ICON_PATH),
-            appVersion,
-            environmentStatus: environmentState.status,
-            environmentVersionLabel: environmentState.versionLabel,
-            deploymentState: environmentState.deploymentState,
-            deploymentInProgress: environmentState.deploymentState === "updating",
+            version: computeServerVersion(), clientHash: versionParts.client, assetsHash: versionParts.assets,
+            serverHash: versionParts.server, adminHash: computeAdminHash(), buildVersion: computeServerVersion(),
+            imageBase: LOCAL_IMAGE_BASE, serverIconUrl: imgUrl(SERVER_CLOSED_ICON_PATH),
+            appVersion, environmentStatus: environmentState.status, environmentVersionLabel: environmentState.versionLabel,
+            deploymentState: environmentState.deploymentState, deploymentInProgress: environmentState.deploymentState === "updating",
             deploymentAbortable: !!environmentState.abortableOperationInProgress,
-            resetEpoch: resetEpoch || "",
-            resetInProgress: !!resetInProgress,
-            serverOpen: !serverClosed || shielded,
-            testerShielded: !!shielded,
-            reloadEpoch: shielded ? "" : reloadEpoch,
-            reloadKind: shielded ? "" : reloadKind,
-            testerReloadEpoch: shielded ? testerReloadEpoch : "",
-            imageEpoch: currentImageVersion(),
-            serverNow: Date.now(),
-            diagnostic: {
-                requestId,
-                clientRequestId,
-                traceId,
-                sessionId,
-                configLogicalId,
-                configAttempt,
-                durationMs: Date.now() - startedAt,
-                cacheControl: "no-store"
-            },
+            resetEpoch: resetEpoch || "", resetInProgress: !!resetInProgress,
+            serverOpen: !serverClosed || shielded, testerShielded: !!shielded,
+            reloadEpoch: shielded ? "" : reloadEpoch, reloadKind: shielded ? "" : reloadKind,
+            testerReloadEpoch: shielded ? testerReloadEpoch : "", imageEpoch: currentImageVersion(), serverNow: Date.now(),
             closingInMs: !shielded && closingPlan ? Math.max(1, closingPlan.closeAt - Date.now()) : 0,
             noticeMessage: shielded ? "" : (closingPlan ? closingPlan.message : closedMessage),
             reopenAt: shielded ? 0 : (closingPlan ? closingPlan.reopenAt : closedReopenAt),
         });
     } catch (e) {
-        recordDiagnostic({
-            source: "server",
-            kind: "config_handler_error",
-            page: "server",
-            endpoint: "/api/config",
-            message: e?.message || String(e),
-            stack: e?.stack || "",
-            data: { requestId, clientRequestId, traceId, sessionId, configLogicalId, configAttempt, durationMs: Date.now() - startedAt },
-            traceId, sessionId, requestId, clientRequestId, durationMs: Date.now() - startedAt,
-        });
-        if (!res.headersSent) {
-            res.status(500).json({ error: "config_unavailable", requestId });
-        }
+        console.error("[config] unavailable:", e?.message || e);
+        if (!res.headersSent) res.status(500).json({ error:"config_unavailable" });
     }
 });
 
@@ -7851,7 +1468,7 @@ function buildClientManifest() {
         serverHash: refreshVersionParts().server,
         version: computeServerVersion(),
         imageEpoch: currentImageVersion(),
-        imageBase: IMAGE_BASE_URL,
+        imageBase: LOCAL_IMAGE_BASE,
         generatedAt: Date.now(),
         pages: uniquePages.map((f) => ({ path: "/" + path.relative(PUBLIC_DIR, f).split(path.sep).join("/"), sha256: sha256File(f) })),
         clientFiles: code.map((f) => ({ path: "/" + path.relative(PUBLIC_DIR, f).split(path.sep).join("/"), sha256: sha256File(f) })),
@@ -7903,31 +1520,18 @@ function getAdminEmbeddedHtml(fileName, canonicalPath) {
 const _stampedCache = new Map(); // fileName -> { hash, mtime, html }
 const STAMP_REF_RE = /(\b(?:src|href)=")((?:js|css)\/[^"?#]+\.(?:js|css))(")/g;
 
-// SITE_ICON_REF_RE: favicon/apple-touch-icon/og:image (cover) ที่เป็น legacy path ใน source HTML
-// จะถูกเปลี่ยนเป็น URL เต็มของ S3/CDN ตอน server ส่ง HTML ออกไป
-// ใช้กับทุกหน้า (รวม admin.html/maintenance.html) และไม่มี local-file fallback
-// เวอร์ชัน js/css ที่ตั้งใจไม่ให้ admin.html/maintenance.html โดนแตะ (ดู VERSION_SKIP_FILES)
-const SITE_ICON_REF_RE = /(\b(?:href|content)=")__WW_IMAGE_BASE__(\/(?:favicon\.ico|favicon-32x32\.png|favicon-16x16\.png|apple-touch-icon\.png|cover-1200x630\.png))(")/g;
-function applySiteIconBase(html) {
-    return html.replace(SITE_ICON_REF_RE, (_m, pre, assetPath, post) => {
-        if (!IMAGE_BASE_URL) return `${pre}about:blank${post}`;
-        const v = currentImageVersion();
-        return `${pre}${IMAGE_BASE_URL}${assetPath}${v ? `?v=${encodeURIComponent(v)}` : ""}${post}`;
-    });
-}
-
 function getStampedHtml(fileName) {
     const file = path.join(PUBLIC_DIR, fileName);
     const hash = computeClientHash();
     let mtime = 0;
     try { mtime = Math.floor(fs.statSync(file).mtimeMs); } catch (e) { return null; }
     const cached = _stampedCache.get(fileName);
-    if (cached && cached.hash === hash && cached.mtime === mtime && cached.imageBase === IMAGE_BASE_URL) return cached.html;
+    if (cached && cached.hash === hash && cached.mtime === mtime) return cached.html;
     let raw;
     try { raw = fs.readFileSync(file, "utf8"); } catch (e) { return null; }
     let html = raw.replace(STAMP_REF_RE, (_m, pre, url, post) => `${pre}${url}?v=${hash}${post}`);
-    html = applySiteIconBase(html);
-    _stampedCache.set(fileName, { hash, mtime, html, imageBase: IMAGE_BASE_URL });
+    html = html.replace(/<head>/i, `<head><script src="/js/admin-frame-storage.js?v=${hash}"></script>`);
+    _stampedCache.set(fileName, { hash, mtime, html });
     return html;
 }
 app.get("/__ww_admin_embed__/:release/:page.html", (req, res, next) => {
@@ -7955,7 +1559,7 @@ app.get(Object.keys(STAMPED_PAGES), (req, res, next) => {
     res.type("html").send(html);
 });
 
-// admin.html / maintenance.html: ไม่เข้าระบบ hash เวอร์ชัน js/css แต่ site/profile icons ต้องเป็น S3/CDN เท่านั้น
+// admin.html / maintenance.html: ไม่เข้าระบบ hash เวอร์ชัน js/css แต่ site/profile icons ชี้ไปยัง public/images/
 const ICON_ONLY_PAGES = { "/admin.html": "admin.html", "/maintenance.html": "maintenance.html" };
 const _iconOnlyCache = new Map();
 function getIconStampedHtml(fileName) {
@@ -7964,13 +1568,13 @@ function getIconStampedHtml(fileName) {
     try { mtime = Math.floor(fs.statSync(file).mtimeMs); } catch (e) { return null; }
     const cached = _iconOnlyCache.get(fileName);
     const release = fileName === "admin.html" ? computeAdminHash() : "";
-    if (cached && cached.mtime === mtime && cached.imageBase === IMAGE_BASE_URL && cached.release === release) return cached.html;
+    if (cached && cached.mtime === mtime && cached.release === release) return cached.html;
     let raw;
     try { raw = fs.readFileSync(file, "utf8"); } catch (e) { return null; }
     let html = raw;
+    if (fileName === "admin.html") html = html.replace(/(\b(?:src|href)=")((?:\/)?(?:js|css)\/[^"?#]+\.(?:js|css))(?:\?[^"#]*)?(")/g, (_m, pre, url, post) => `${pre}${url}?v=${release}${post}`);
     if (fileName === "admin.html") html = html.replace(/(<meta\s+name="ww-admin-release"\s+content=")__WW_ADMIN_RELEASE__("\s*\/?\s*>)/i, `$1${release}$2`);
-    html = applySiteIconBase(html);
-    _iconOnlyCache.set(fileName, { mtime, html, imageBase: IMAGE_BASE_URL, release });
+    _iconOnlyCache.set(fileName, { mtime, html, release });
     return html;
 }
 // CloudFront-safe Admin reload endpoint. A unique pathname prevents a cached /admin.html
@@ -7997,12 +1601,20 @@ app.get(Object.keys(ICON_ONLY_PAGES), (req, res, next) => {
     res.type("html").send(html);
 });
 
-// S3/CDN is the only source of game images. Any accidental request to the old local
-// /images tree must never fall back to files bundled into the Elastic Beanstalk app.
-app.use("/images", (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    return res.status(404).json({ error: "image_assets_external_only" });
-});
+// Game images are bundled with the application under public/images/.
+// no-store is intentional: starting a new game page must request the asset again instead of
+// treating a browser-side cached copy as the source of truth.
+app.use("/images", express.static(path.join(PUBLIC_DIR, "images"), {
+    fallthrough: false,
+    etag: false,
+    lastModified: false,
+    maxAge: 0,
+    setHeaders: (res) => {
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Surrogate-Control", "no-store");
+    },
+}));
 
 // maxAge: ให้เบราว์เซอร์ cache ไฟล์ static (รูปไอคอนอาชีพ ฯลฯ) ไว้ ไม่ต้องโหลดซ้ำทุกครั้งที่เจอ
 // ยกเว้นไฟล์ .html/.js/.css — ห้าม cache ไฟล์พวกนี้นาน ๆ เด็ดขาด เพราะพอ deploy โค้ดใหม่
@@ -8023,11 +1635,17 @@ app.use("/images", (req, res) => {
 // (รูปไอคอนอาชีพที่อยู่บน S3 ต้องตั้ง Cache-Control: no-cache ที่ตัว object ใน S3 ด้วย — ดู how_to_deploy.md)
 
 // express.static ต้องมาหลังเส้นทางด้านบน (ไม่งั้น "/" จะได้ index.html ดิบที่ไม่มี ?v=)
-app.use(express.static("public", {
+app.use(express.static(PUBLIC_DIR, {
     maxAge: 0,
     etag: true,
     lastModified: true,
-    setHeaders: (res) => {
+    setHeaders: (res, filePath) => {
+        if (filePath && path.dirname(filePath) === path.join(PUBLIC_DIR, "images")) {
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+            res.setHeader("Pragma", "no-cache");
+            res.setHeader("Surrogate-Control", "no-store");
+            return;
+        }
         res.setHeader("Cache-Control", "no-cache");
     },
 }));
@@ -8050,7 +1668,7 @@ function trimHistoryArray(arr, max) {
 function compactRoomSnapshot(room, aggressive = false) {
     const cloned = JSON.parse(JSON.stringify(room));
     // Socket IDs are transient connection handles. Keep the legacy player.id inside the snapshot
-    // only because older game-state maps still reference it; membershipId/accountId are the
+    // only because older game-state maps still reference it; token + membershipId are the
     // durable room identity and are now the primary reconnect keys.
     // hostIds/host are only live socket bookkeeping and must never be restored as active sockets.
     cloned.host = "";
@@ -8296,11 +1914,25 @@ async function updatePersistedRoomIndex(roomId, { add = false, remove = false, c
     }
 }
 
-async function persistRoomSnapshot(room, { register = false } = {}) {
+// Serialize writes per room so a snapshot already in flight cannot resurrect a closed room.
+const roomSnapshotWrites = new Map();
+function persistRoomSnapshot(room, options = {}) {
+    if (!room || room.isClosing) return Promise.resolve(false);
+    const id = String(room.id || "").toUpperCase();
+    const previous = roomSnapshotWrites.get(id) || Promise.resolve();
+    const task = previous.catch(() => {}).then(() => writeRoomSnapshot(room, options));
+    roomSnapshotWrites.set(id, task);
+    task.finally(() => {
+        if (roomSnapshotWrites.get(id) === task) roomSnapshotWrites.delete(id);
+    }).catch(() => {});
+    return task;
+}
+async function writeRoomSnapshot(room, { register = false } = {}) {
     if (!beginGameDataWrite()) return false;
     try {
-    if (!ROOM_PERSISTENCE_ENABLED || !room || !room.id) return false;
+    if (!ROOM_PERSISTENCE_ENABLED || !room || !room.id || room.isClosing) return false;
     ensureRoomMemberships(room);
+    initializeRoomActivity(room);
     const { serialized, truncated } = makeRoomSnapshotPayload(room);
     const now = Date.now();
     const doc = await getDynamoDocClient();
@@ -8328,7 +1960,7 @@ async function persistRoomSnapshot(room, { register = false } = {}) {
                 leaseEpoch,
                 truncatedChat: truncated,
                 persistedAt: now,
-                expiresAt: now + ROOM_RECOVERY_TTL_MS,
+                expiresAt: room.roomIdleExpiresAt,
             },
             // Deployment handoff fencing: normal rooms may only be written by the instance
             // that currently owns the room lease epoch. Tester rooms intentionally keep the
@@ -8468,7 +2100,7 @@ async function scanAndPersistChangedRooms() {
     if (!ROOM_PERSISTENCE_ENABLED) return;
     for (const id of Object.keys(rooms)) {
         const room = rooms[id];
-        if (!room) continue;
+        if (!room || room.isClosing) continue;
         const sig = roomSignature(room);
         if (sig !== roomPersistenceSignatures.get(id)) schedulePersistRoom(id);
         else roomPersistenceKnownIds.add(id);
@@ -8568,6 +2200,8 @@ async function recoverPersistedRoomById(roomId, { reason = "on-demand", requireL
             return null;
         }
         if (!room || String(room.id || "").toUpperCase() !== id || !Array.isArray(room.players)) return null;
+        initializeRoomActivity(room);
+        if (roomIdleExpired(room, io.sockets.sockets)) return null;
         ensureRoomRuntimeState(room);
         ensureRoomMemberships(room);
         // `isTesterRoom` is duplicated at the top level of the durable record so recovery on a
@@ -8669,6 +2303,8 @@ async function recoverPersistedRooms({ requireLease = false } = {}) {
                 if (Number(item.expiresAt) > 0 && Number(item.expiresAt) <= Date.now()) { skipped++; continue; }
                 const room = JSON.parse(String(item.snapshot));
                 if (!room || room.id !== id || !Array.isArray(room.players)) { skipped++; continue; }
+                initializeRoomActivity(room);
+                if (roomIdleExpired(room, io.sockets.sockets)) { skipped++; continue; }
                 ensureRoomRuntimeState(room);
                 if (item.isTesterRoom === true) room.isTesterRoom = true;
                 // Normal rooms must never resurrect while the server is intentionally closed.
@@ -8885,15 +2521,18 @@ const ROOM_TIMELINE_MAX = Math.max(40, Math.min(300, Number(process.env.ROOM_TIM
 function ensureRoomMemberships(room) {
     if (!room || !Array.isArray(room.players)) return room;
     room.hostMembershipId = room.hostMembershipId || "";
+    // Guest mode has no account/ownership records. Remove legacy fields left by older
+    // persisted snapshots so they cannot leak through roomData or be used by stale logic.
+    delete room.ownerAccountId;
     room.players.forEach((p) => {
-        if (!p || p.isTester) return;
+        if (!p) return;
         if (!p.membershipId) p.membershipId = generateMembershipId();
         p.roomId = String(room.id || room.roomId || "").trim().toUpperCase();
+        delete p.accountId;
+        delete p.accountToken;
+        delete p.activeDeviceId;
+        delete p.activeTabId;
         if (p.isHost && !room.hostMembershipId) room.hostMembershipId = p.membershipId;
-        if (p.isHost && !room.ownerAccountId && !p.isBot && !p.isTester) {
-            const owner = normalizeAccountId(p.accountId || "");
-            if (owner) room.ownerAccountId = owner;
-        }
     });
     return room;
 }
@@ -8958,8 +2597,32 @@ function bumpRoomState(room, type = "state_changed", detail = {}) {
 function broadcastRoomUpdate(roomId, room, { timelineType = "state_changed", reason = "", source = "server" } = {}) {
     if (!room) return null;
     const stateVersion = bumpRoomState(room, timelineType, { reason, source });
-    broadcastRoomUpdate(roomId, room);
+    // One state mutation must result in exactly one room_update emission.
+    // Keep the state-version/timeline update in this wrapper, then emit the sanitized view
+    // directly; calling broadcastRoomUpdate() recursively here would overflow the stack.
+    emitRoomUpdateToRoom(roomId, room);
     return stateVersion;
+}
+
+// WW_REDACT_ROOM_VIEW=0 ปิดการซ่อนข้อมูลแยกตามผู้ดู (ใช้ย้อนกลับฉุกเฉินเท่านั้น)
+const REDACT_ROOM_VIEW = process.env.WW_REDACT_ROOM_VIEW !== "0";
+
+// มุมมองห้องของ socket หนึ่งตัว: โฮสต์เห็นครบ ผู้เล่นเห็นเฉพาะที่มีสิทธิ์รู้ (บท/token ของคนอื่นถูกซ่อน)
+function roomViewForSocket(room, socket, base = null) {
+    const view = base || publicRoomView(room);
+    if (!REDACT_ROOM_VIEW || !socket || isHostSocket(room, socket.id)) return view;
+    return redactRoomViewForPlayer(room, view, getRoomPlayerForSocket(room, socket), { wolfRoles: WOLF_ROLES });
+}
+
+// ส่ง room_update ให้ทุก socket ในห้อง โดยแต่ละ socket ได้มุมมองของตัวเอง
+function emitRoomUpdateToRoom(roomId, room) {
+    const base = publicRoomView(room);
+    const members = io.sockets.adapter.rooms.get(String(roomId));
+    if (!members) return;
+    for (const sid of members) {
+        const s = io.sockets.sockets.get(sid);
+        if (s) s.emit("room_update", roomViewForSocket(room, s, base));
+    }
 }
 
 function publicTimeline(room, limit = 24) {
@@ -8987,7 +2650,7 @@ function roomActionError(code, extra = {}) {
 // Generic server-side preflight. Existing role-specific handlers remain authoritative for
 // nuanced rules; this layer only covers identity, membership, lifecycle and stale-state checks.
 function validateRoomAction(socket, room, opts = {}) {
-    if (!room) return roomActionError("ROOM_NOT_FOUND");
+    if (!room || room.isClosing) return roomActionError("ROOM_NOT_FOUND");
     ensureRoomRuntimeState(room);
     if (opts.host && !isHostSocket(room, socket?.id)) return roomActionError("NOT_HOST");
     if (opts.member !== false && !isHostSocket(room, socket?.id)) {
@@ -9002,7 +2665,10 @@ function validateRoomAction(socket, room, opts = {}) {
         if (!opts.phases.includes(phase)) return roomActionError("INVALID_PHASE", { phase });
     }
     const expectedVersion = Number(opts.stateVersion);
-    if (Number.isSafeInteger(expectedVersion) && expectedVersion > 0 && expectedVersion !== room.stateVersion) {
+    // heartbeat ของ room idle เพิ่ม stateVersion ทีละ 1 โดยไม่เปลี่ยนสถานะเกม — ยอมรับ action ที่ส่งมาด้วยเวอร์ชันก่อน heartbeat นั้น
+    // (ใช้ได้เฉพาะเมื่อยังไม่มี state change อื่นตามมา เพราะ heartbeatStateVersion จะไม่เท่ากับ stateVersion อีกต่อไป)
+    const heartbeatOnlyGap = Number(room.heartbeatStateVersion) === room.stateVersion && expectedVersion === room.stateVersion - 1;
+    if (Number.isSafeInteger(expectedVersion) && expectedVersion > 0 && expectedVersion !== room.stateVersion && !heartbeatOnlyGap) {
         return roomActionError("STALE_STATE", {
             stateVersion: room.stateVersion,
             stateChangedAt: room.stateChangedAt,
@@ -9029,12 +2695,12 @@ function publicRoomView(room) {
     // ส่งสถานะการเปิดบทผู้ตายให้ client ใช้ควบคุม UI/การแสดงผลเท่านั้น; ถ้าห้องเก่าขาดฟิลด์นี้ให้ถือว่าเปิด
     // เพื่อคงพฤติกรรมเดิม และไม่แก้ข้อมูลห้องเก่าทันทีเพียงเพราะส่ง room_update
     publicRoom.revealDeadRole = room.revealDeadRole !== false;
-    // เฟส 0 (bot-autonomous-ai-phases.md): เพิ่ม field `connected` ต่อผู้เล่นแต่ละคน คำนวณสดทุกครั้ง
-    // ที่ส่งออก (ไม่บันทึกถาวรลง room.players กัน state ค้างเวลา socket หลุด-ต่อใหม่เร็วกว่ารอบ
-    // room_update ถัดไป) เตรียมไว้ให้ UI เฟส 4 ใช้แยกสถานะ "🎮 คนคุมอยู่" vs "🧠 AI คุมอยู่" ต่อบอท
-    // แต่ละตัว — ยังไม่มีผลอะไรกับเกมตอนนี้ แค่เพิ่ม field เข้าไปเฉย ๆ
+    publicRoom.hostConnected = (room.hostIds || []).some((id) => io.sockets.sockets.get(id)?.connected === true);
+    // เพิ่มสถานะ connected ต่อผู้เล่นแบบคำนวณสด เพื่อให้ Host เห็นว่าบอท/ผู้เล่นกำลังถูกควบคุมอยู่หรือไม่
     publicRoom.players = (room.players || []).map((p) => {
-        const { accountId, testerSessionId, testerPlayerSlot, ...safePlayer } = p;
+        const { testerSessionId, testerPlayerSlot, ...safePlayer } = p;
+        // Host reconnect token is a credential; never broadcast it to room players.
+        if (p.isHost) delete safePlayer.token;
         return {
             ...safePlayer,
             connected: p.leftGameRoundId && p.leftGameRoundId === getRoomGameRoundId(room)
@@ -9080,7 +2746,6 @@ const pendingIndicators = {};
 // pagehide จะส่งสัญญาณ exit แบบ keepalive/beacon มาที่ server. Server จึงค่อยเริ่มออกจริง
 // ไม่ใช้ disconnect เป็นหลัก เพราะ disconnect เดียวกันเกิดจากเน็ตหลุด/สลับเครือข่ายได้
 // และไม่ควรทำให้คนที่แค่สลับแอปถูกนับว่าออกเกมทันที.
-const BROWSER_EXIT_HOST_GRACE_MS = 4_000;
 const BROWSER_EXIT_PLAYER_GRACE_MS = 3_000;
 const pendingBrowserExits = new Map();
 // Socket disconnect and pagehide can arrive in either order. Keep a very short-lived
@@ -9152,7 +2817,7 @@ function armPendingBrowserExit(kind, roomId, token, apply, meta = {}, graceMs) {
     const pending = {
         key, kind, roomId: id, token: tok, page: meta.page || kind,
         traceId: String(meta.traceId || ''), sessionId: String(meta.sessionId || ''),
-        startedAt, socketId: String(meta.socketId || ''), accountId: normalizeAccountId(meta.accountId || ''), membershipId: String(meta.membershipId || '').slice(0,160), sessionHash: String(meta.sessionHash || '').slice(0,128), deviceId: normalizeDeviceId(meta.deviceId || ''), source: String(meta.source || 'pagehide'),
+        startedAt, socketId: String(meta.socketId || ''), membershipId: String(meta.membershipId || '').slice(0,160), deviceId: normalizeDeviceId(meta.deviceId || ''), source: String(meta.source || 'pagehide'),
         timer: null, armDiagnosticId: "", signalDiagnosticId: String(meta.signalDiagnosticId || ""),
     };
     const armEvent = recordDiagnostic({
@@ -9196,21 +2861,6 @@ async function closeRoomNow(roomId, reason) {
     room.isClosing = true;
     bumpRoomState(room, "room_closed", { reason, source: "room" });
 
-    // Room close is an authoritative activity transition. Release every real account tied to this
-    // room before deleting the in-memory/persisted room, otherwise index.html could immediately
-    // route the account back into a room that no longer exists.
-    const closingAccountIds = new Set(
-        (room.players || [])
-            .filter((p) => p && !p.isTester && !p.isBot && p.accountId)
-            .map((p) => normalizeAccountId(p.accountId || ""))
-            .filter(Boolean)
-    );
-    await Promise.all([...closingAccountIds].map((accountId) =>
-        clearAccountActivity(accountId, { roomId }).catch((e) => {
-            console.error(`[account-activity] ล้าง activity ${accountId}/${roomId} ตอนปิดห้องไม่สำเร็จ:`, e?.name || "Error", e?.message || e);
-        })
-    ));
-
     io.to(roomId).emit('room_closed', { reason, stateVersion: room.stateVersion });
 
     room.players.forEach((p) => {
@@ -9220,7 +2870,7 @@ async function closeRoomNow(roomId, reason) {
             delete pendingRemovals[p.token];
         }
         if (pendingIndicators[p.token]) {
-            clearTimeout(pendingIndicators[p.token].timer);
+            clearTimeout(pendingIndicators[p.token]);
             delete pendingIndicators[p.token];
         }
     });
@@ -9237,6 +2887,8 @@ async function closeRoomNow(roomId, reason) {
         }
     }
 
+    // Reject new snapshots once closing, then drain old ones before deleting the durable copy.
+    await roomSnapshotWrites.get(String(roomId).toUpperCase())?.catch(() => {});
     if (ROOM_PERSISTENCE_ENABLED) {
         return deletePersistedRoom(roomId)
             .catch((e) => {
@@ -9314,96 +2966,39 @@ function clearFailedLoginAttempts(key) {
 // ใหม่ทันทีที่ reconnect สำเร็จ (ดู join_room / host_login) ทำให้เช็คจาก socket จริงแม่นกว่า
 function getRoomPlayerForSocket(room, socket, { includeHost = false } = {}) {
     if (!room || !socket) return null;
-    const socketRoomId = String(socket.data?.roomId || "").trim().toUpperCase();
-    const socketMembershipId = String(socket.data?.membershipId || "").trim();
-    const accountId = normalizeAccountId(socket.data?.accountId || "");
-    if (accountId && socketRoomId === String(room.id || "").trim().toUpperCase() && socketMembershipId) {
+    const socketRoomId = String(socket.data?.roomId || '').trim().toUpperCase();
+    const socketMembershipId = String(socket.data?.membershipId || '').trim();
+    if (socketRoomId === String(room.id || '').trim().toUpperCase() && socketMembershipId) {
         const member = (room.players || []).find((p) => {
-            if (!p || p.isBot || p.isTester) return false;
-            if (!includeHost && p.isHost) return false;
-            if (includeHost && p.isHost && normalizeAccountId(p.accountId || "") !== accountId) return false;
-            if (normalizeAccountId(p.accountId || "") !== accountId) return false;
-            return String(p.membershipId || "").trim() === socketMembershipId;
+            if (!p || (!includeHost && p.isHost)) return false;
+            return String(p.membershipId || '').trim() === socketMembershipId;
         });
         if (member) return member;
     }
-    // Legacy/stale sockets from before membership metadata existed can still be resolved by
-    // their canonical socket id, but an account id by itself is never enough to authorize an
-    // action in an unrelated room.
     return (room.players || []).find((p) => p && p.id === socket.id && (includeHost || !p.isHost)) || null;
 }
 
 function getRoomPlayerIdForSocket(room, socket) {
     const player = getRoomPlayerForSocket(room, socket);
-    return player?.id || socket?.id || "";
-}
-
-function getConnectedSocketsForAccount(accountId) {
-    const id = normalizeAccountId(accountId);
-    if (!id || !io?.sockets?.sockets) return [];
-    const out = [];
-    for (const sock of io.sockets.sockets.values()) {
-        if (!sock?.connected) continue;
-        // A full reset invalidates every pre-reset game socket immediately.
-        // The browser can take a short moment to process force_reset, so the stale socket
-        // must not be counted as a live Admin session during that transition.
-        if (sock.data?.resetInvalidated) continue;
-        if (normalizeAccountId(sock.data?.accountId || "") !== id) continue;
-        out.push(sock);
-    }
-    return out;
+    return player?.id || socket?.id || '';
 }
 
 function isPlayerCurrentlyConnected(player) {
     if (!player) return false;
-    const accountId = normalizeAccountId(player.accountId || "");
-    const membershipId = String(player.membershipId || "").trim();
-    if (accountId && membershipId) {
-        return getConnectedSocketsForAccount(accountId).some((sock) => String(sock.data?.membershipId || "").trim() === membershipId);
-    }
-    if (accountId) return getConnectedSocketsForAccount(accountId).some((sock) => String(sock.data?.roomId || "").trim().toUpperCase() === String(player.roomId || "").trim().toUpperCase());
-    const sock = io.sockets.sockets.get(player.id);
-    return !!sock && sock.connected;
-}
-
-// ============================================================
-// OFFLINE-TIME TRACKING ต่อผู้เล่นระหว่างเกม (ใช้ตัดสิน "ออกเกม" ตอนจบเกม — ดู didLeaveGame /
-// recordGameStats ด้านบน) — เก็บสะสมเป็น ms บนตัว player เอง (gameOfflineMs) + จุดเริ่มออฟไลน์
-// ล่าสุดที่ "ยังไม่ flush" (gameOfflineSince) แยกจากสถานะ disconnected/offline ที่ใช้โชว์ผล UI
-// (จุดดำ/จุดเหลือง) เพราะจุดนั้นมีดีเลย์รอ (DISCONNECT_INDICATOR_DELAY_MS/RECONNECT_GRACE_MS) ก่อน
-// จะขึ้นสถานะ ในขณะที่เวลาที่ใช้ตัดสิน "ออกเกม" ต้องนับจากวินาทีที่ socket หลุดจริง ๆ ไม่มีดีเลย์
-// (เดิมพันผลแพ้/ชนะ ต้องแม่นกว่าแค่โชว์ไอคอนสถานะ)
-// เริ่มนับออฟไลน์ — เรียกตอน socket "disconnect" จริงขณะเกมกำลังเล่นอยู่เท่านั้น (ดู handler ด้านล่าง)
-function markPlayerOfflineStart(player) {
-    if (!player) return;
-    if (player.gameOfflineSince == null) {
-        player.gameOfflineSince = Date.now();
-    }
-}
-
-// ปิดช่วงออฟไลน์ที่ค้างอยู่ บวกเวลาที่หลุดไปจริงเข้ากับยอดสะสม — เรียกตอน reconnect สำเร็จ
-function flushPlayerOfflineTime(player) {
-    if (!player) return;
-    if (player.gameOfflineSince != null) {
-        player.gameOfflineMs = (player.gameOfflineMs || 0) + (Date.now() - player.gameOfflineSince);
-        player.gameOfflineSince = null;
-    }
-}
-
-// เหมือน isPlayerCurrentlyConnected แต่ใช้กับ "บัญชี" ในความหมายกว้างกว่า (หน้า admin.html) —
-// โฮสต์คุมห้องได้พร้อมกันหลายจอ (room.hostIds) แต่ hostPlayer.id เก็บแค่ id ของจอล่าสุดที่
-// login เท่านั้น (ดู host_login) ถ้าเช็คแค่ player.id เดี่ยวๆ เหมือน isPlayerCurrentlyConnected
-// จอล่าสุดปิดไปแต่จอโฮสต์จออื่นยังคุมอยู่จริง จะโดนตัดสินผิดว่า "หลุดแล้ว" ทั้งที่ยังมีคนคุมห้องอยู่
-// จึงต้องเช็คทุกจอใน hostIds แทนสำหรับผู้เล่นที่เป็นโฮสต์โดยเฉพาะ
-function isAccountConnected(room, player) {
-    if (!player) return false;
     if (player.isHost) {
-        return (room?.hostIds || []).some((id) => {
-            const sock = io.sockets.sockets.get(id);
-            return !!sock && sock.connected;
-        });
+        return false;
     }
-    return isPlayerCurrentlyConnected(player);
+    const roomId = String(player.roomId || '').trim().toUpperCase();
+    const membershipId = String(player.membershipId || '').trim();
+    if (membershipId && roomId && io?.sockets?.sockets) {
+        for (const sock of io.sockets.sockets.values()) {
+            if (!sock?.connected || sock.data?.resetInvalidated) continue;
+            if (String(sock.data?.roomId || '').trim().toUpperCase() !== roomId) continue;
+            if (String(sock.data?.membershipId || '').trim() === membershipId) return true;
+        }
+    }
+    const sock = io.sockets.sockets.get(player.id);
+    return !!sock && sock.connected && !sock.data?.resetInvalidated;
 }
 
 // ============================================================
@@ -9558,12 +3153,12 @@ function scheduleRecoveredRoomTimers(room) {
     }
 }
 
-function resumeRecoveredRoomRuntimeTransitions(room, roomId, deps) {
-    if (!room || !room.id || room.gameOver || !deps) return false;
+function resumeRecoveredRoomRuntimeTransitions(room, roomId) {
+    if (!room || !room.id || room.gameOver) return false;
     const id = String(roomId || room.id).toUpperCase();
     if (!room.__recoveredVoteResolutionPending || !room.voteMode) return false;
     room.__recoveredVoteResolutionPending = false;
-    closeVoteRound(room, id, deps);
+    closeVoteRound(room, id);
     schedulePersistRoom(id, true);
     return true;
 }
@@ -9587,14 +3182,6 @@ const WOLF_ROLES = new Set([
 // หมาป่าผู้พิทักษ์ (ทีมหมาป่า) และหนูน้อยผู้ใสซื่อ (ทีมชาวบ้าน) ใช้กลไกเดียวกันทุกประการ
 // ต่างกันแค่ทีม/ไอคอน/ข้อความ — เพิ่มบทใหม่ที่ใช้กลไกนี้ที่นี่ที่เดียว
 const GUARDIAN_ROLES = new Set(["หมาป่าผู้พิทักษ์", "หนูน้อยผู้ใสซื่อ"]);
-
-// เฟส 5 (bot-autonomous-ai-phases.md): พาร์สแชทกลางวันแบบหยาบๆ เพื่อจับ "การเปิดเผยตัวตน/ความสงสัย"
-// ของบทบาทฝั่งหยั่งรู้จริง (ผู้หยั่งรู้/ผู้มีลาง เท่านั้น — ไม่รวมหมาป่าหยั่งรู้ซึ่งเป็นทีมหมาป่า) แล้วเก็บ
-// ชื่อคนที่ถูกพาดพิงไว้ให้บอทชาวบ้านใช้ประกอบการโหวต (ดู runVotePhase ใน botEngine.js)
-// คำเตือน: เป็นการจับคำแบบหยาบ (substring match ชื่อ + คำต้องสงสัย) ไม่ใช่ NLP จริง จับพลาด/จับเกินได้
-// ยอมรับความเสี่ยงนี้ตามที่ผู้ใช้ขอให้ทำ (ทางเลือกที่ซับซ้อนกว่าที่เคยแจ้งไว้ว่าเสี่ยงบั๊ก)
-const SCOUT_CHAT_ROLES = new Set(["ผู้หยั่งรู้", "ผู้มีลาง"]);
-const SUSPICION_KEYWORDS = ["หมาป่า", "ฆาตกรต่อเนื่อง", "น่าสงสัย", "ชั่ว", "ไม่ใช่ชาวบ้าน"];
 
 // บทบาททีมเดี่ยว (solo) ที่มี "ความสามารถฆ่า" จริงๆ เท่านั้น — ใช้กรองตอนผู้ยุยงจับคู่อัตโนมัติ
 // (ดู start_game: wolfOrSoloPool) ทีมเดี่ยวทั้งหมดมี 3 บท: คนบ้า/นักล่าหัว/ฆาตกรต่อเนื่อง แต่มีแค่
@@ -9678,17 +3265,8 @@ function aliveBanditAccomplicesOf(room, leaderId) {
     return room.players.filter((p) => p.alive && !p.isHost && p.role === "ผู้สมรู้ร่วมคิด" && p.banditLeaderId === leaderId);
 }
 
-// แกะข้อความแชทกลางวันหาชื่อผู้เล่นที่ยังไม่ตาย (ไม่ใช่ผู้พูดเอง) ที่ถูกพาดพิงด้วยคำต้องสงสัยข้างบน
-// คืนเป็น array ของ player.id (อาจว่างถ้าไม่เข้าเงื่อนไข/ไม่ใช่บทบาทที่เกี่ยวข้อง/ไม่มีคำต้องสงสัย)
-function detectPubliclySuspectedIds(room, speaker, msg) {
-    if (!SCOUT_CHAT_ROLES.has(speaker.role)) return [];
-    if (!SUSPICION_KEYWORDS.some((kw) => msg.includes(kw))) return [];
-    return room.players
-        .filter((p) => p.alive && p.id !== speaker.id && p.name && msg.includes(p.name))
-        .map((p) => p.id);
-}
-
 // ============================================================
+// ลำดับชั้นหมาป่าสำหรับเลือก "คนกัด" ตอนต้องเปิดเผยตัวตนแบบส่วนตัว// ============================================================
 // ลำดับชั้นหมาป่าสำหรับเลือก "คนกัด" ตอนต้องเปิดเผยตัวตนแบบส่วนตัว
 // (เช่น โจมตีอันธพาลแล้วโดนป้องกันตัวเอง) — ยศต่ำสุดถูกเปิดเผยก่อน ไล่ขึ้นไปเรื่อยๆ:
 // ลูกหมาป่า → หมาป่าปกติที่มาจากผู้ถูกสาป → หมาป่าปกติ → หมามีสกิลต่างๆ → หมาป่าหยั่งรู้ (ยศสูงสุด)
@@ -9791,22 +3369,22 @@ const roleDescription = {
         desc: "ร่วมกันเลือกเหยื่อในกลุ่มหมาป่า และล่าในตอนกลางคืน<br><br>ทีม:หมาป่า    ลาง:ร้าย",
     },
     "ลูกหมาป่า": {
-        icon: "/images/juniorwerewolf.jpg",
+        icon: "/images/junior_werewolf.jpg",
         title: "🐺 ลูกหมาป่า",
         desc: "คุณคือลูกหมาป่า เพราะคุณน่ารักมาก คุณ สามารถเลือกผู้เล่นอีกคนให้ตายตามคุณได้เมื่อคุณตาย<br><br>ทีม:หมาป่า    ลาง:ร้าย",
     },
     "หมาป่าผู้พิทักษ์": {
-        icon: "/images/guardianwolf.jpg",
+        icon: "/images/guardian_wolf.jpg",
         title: "🐺 หมาป่าผู้พิทักษ์",
         desc: "คุณเป็นมนุษย์หมาป่าที่สามารถปกป้องผู้เล่นจาก การถูกประหารได้หนึ่งคน คุณสามารถปกป้องได้ เพียงครั้งเดียวต่อเกมเท่านั้น<br><br>ทีม:หมาป่า    ลาง:ร้าย",
     },
     "หมาป่าดื้อรั้น": {
-        icon: "/images/stubbornwolf.jpg",
+        icon: "/images/stubborn_werewolf.jpg",
         title: "🐺 หมาป่าดื้อรั้น",
         desc: "คุณเป็นมนุษย์หมาป่าธรรมดา แต่คุณแข็งแกร่ง กว่าปกติ เมื่อคุณถูกโจมตี คุณจะได้รับบาดเจ็บ และยังมีชีวิตอยู่ต่อได้ แต่การโจมตีครั้งต่อไปจะ ฆ่าคุณ<br><br>ทีม:หมาป่า    ลาง:ไม่ทราบ",
     },
     "หมาป่านักเวท": {
-        icon: "/images/wizardwolf.jpg",
+        icon: "/images/wolf_shaman.jpg",
         title: "🐺 หมาป่านักเวทย์",
         desc: "ในตอนกลางวัน คุณสามารถร่ายเวทย์ใส่ผู้เล่นคน หนึ่งได้ เมื่อผู้หยั่งรู้, ผู้มีลาง, ฯลฯ ตรวจสอบเขา จะ เห็นบทบาทของผู้เล่นคนนั้นเป็นหมาป่านักเวทย์ใน คืนหลังที่ร่าย<br><br>ทีม:หมาป่า    ลาง:ร้าย",
     },
@@ -9837,12 +3415,12 @@ const roleDescription = {
         desc: "ในแต่ละคืนคุณสามารถเลือกปกป้องผู้เล่นคนอื่นได้ ผู้เล่นที่ถูกป้องกันจะไม่ถูกฆ่าในคืนนั้น แต่คุณ จะถูกโจมตีแทนผู้เล่นคนนั้น เพราะร่างกายของ คุณแข็งแรงมาก คุณจะสามารถรอดชีวิตมาได้ในการโจมตีครั้งแรก แต่คุณจะตายเมื่อโดนโจมตีอีก ครั้ง และในทุกคืนคุณจะปกป้องตัวเองอัตโนมัติ<br><br>ทีม:ชาวบ้าน    ลาง:ดี",
     },
     "อันธพาล": {
-        icon: "/images/muscleman.jpg",
+        icon: "/images/tough_guy.jpg",
         title: "💪 อันธพาล",
         desc: "คุณสามารถเลือกที่จะปกป้องผู้เล่นหนึ่งคนในแต่ละคืนได้ ถ้าคุณหรือผู้เล่นที่คุณปกป้องถูกโจมตีคุณจะยังไม่ตาย คุณและผู้เล่นที่โจมตีสามารถมองเห็นบทบาทของกันและกันได้ คุณจะตายหลังจากจบวันนั้นเพราะทนพิษจากบาดแผลไม่ไหว<br><br>ทีม:ชาวบ้าน    ลาง:ดี",
     },
     "ผู้มีลาง": {
-        icon: "/images/auraseer.jpg",
+        icon: "/images/aura_seer.jpg",
         title: "🔮 ผู้มีลาง",
         desc: "ในแต่ละคืนคุณสามารถเลือกผู้เล่นเพื่อดูฝ่ายของ เขาได้: ดี, ร้าย หรือ ไม่ทราบฝ่าย ผู้เล่นฝ่ายร้าย คือทีมมนุษย์หมาป่า และผู้เล่นฝ่ายดีคือทีมชาว บ้าน<br><br>ทีม:ชาวบ้าน    ลาง:ดี",
     },
@@ -9862,7 +3440,7 @@ const roleDescription = {
         desc: "ในแต่ละคืน คุณสามารถเลือกผู้เล่นสองคนเพื่อตรวจสอบว่าบทบาทของพวกเขาอยู่ในทีมเดียวกัน หรือไม่ ทีมที่เป็นไปได้คือ: ชาวบ้าน, มนุษย์หมาป่า, คนบ้า, นักล่าหัว, ฆาตกรต่อเนื่อง, ฯลฯ<br><br>ทีม:ชาวบ้าน    ลาง:ดี",
     },
     "ยายขี้โมโห": {
-        icon: "/images/oldlady.jpg",
+        icon: "/images/grumpy_grandma.jpg",
         title: "👵 ยายขี้โมโห",
         desc: "ในแต่ละคืนหลังจากคืนแรก คุณสามารถเลือกผู้ เล่นเพื่อปิดเสียงพวกเขาได้ และเขาจะไม่สามารถ พูดคุยหรือโหวตได้ในวันถัดไป คุณไม่สามารถปิด เสียงผู้เล่นคนเดิมสองครั้งติดต่อกันได้<br><br>ทีม:ชาวบ้าน    ลาง:ดี",
     },
@@ -9872,7 +3450,7 @@ const roleDescription = {
         desc: "คุณมีน้ำยาสองขวด: ขวดแรกใช้ฆ่าผู้เล่นคน อื่น และอีกขวดหนึ่งใช้ป้องกันผู้เล่นคนอื่น น้ำยา ป้องกันจะถูกใช้งานก็ต่อเมื่อผู้เล่นคนนั้นถูกโจมตี คุณไม่สามารถใช้น้ำยาฆ่าผู้เล่นคนอื่นได้ในคืน แรก<br><br>ทีม:ชาวบ้าน    ลาง:ไม่ทราบ",
     },
     "ศาลเตี้ย": {
-        icon: "/images/sheriff.jpg",
+        icon: "/images/detective.jpg",
         title: "🔫 ศาลเตี้ย",
         desc: "ในระหว่างวัน คุณสามารถเลือกที่จะยิงหรือเลือก ที่จะเปิดเผยบทบาทของผู้เล่นคนอื่นซึ่งจะมีเพียง แค่คุณเท่านั้นที่จะเห็นบทบาทของเขา หากผู้เล่นที่ คุณเปิดเผยบทบาทเป็นฝ่ายร้ายเขาจะเห็นบทบาท ของคุณ การกระทำทั้งสองสามารถทำได้เพียง ครั้งเดียวต่อเกมเท่านั้นและไม่สามารถทำในวัน เดียวกันได้ บทบาทของคุณจะถูกเปิดเผยให้แก่ ทุกคนเมื่อคุณยิงผู้เล่นคนอื่น<br><br>ทีม:ชาวบ้าน    ลาง:ไม่ทราบ",
     },
@@ -9903,12 +3481,12 @@ const roleDescription = {
         desc: "เป้าหมายของคุณคือการโดนโหวตประหาร ถ้าทุก คนโหวตประหารคุณ คุณจะชนะทันที<br><br>ทีม:เดี่ยว    ลาง:ไม่ทราบ",
     },
     "ฆาตกรต่อเนื่อง": {
-        icon: "/images/murderer.jpg",
+        icon: "/images/serial_killer.jpg",
         title: "🗡️ ฆาตกรต่อเนื่อง",
         desc: "ในแต่ละคืนคุณสามารถฆ่าผู้เล่นได้หนึ่งคน<br><br>ทีม:เดี่ยว    ลาง:ไม่ทราบ",
     },
     "นักเล่นกล": {
-        icon: "/images/illusionist.jpg",
+        icon: "/images/Illusionist.jpg",
         title: "🎭 นักเล่นกล",
         desc: "ในแต่ละคืน คุณสามารถปลอมบทบาทของผู้เล่นคนหนึ่งได้ โดยผู้เล่นที่ถูกปลอมตัวจะถูกเหล่าผู้หยั่งรู้มองเห็นเป็นนักเล่นกล คุณสามารถฆ่าผู้เล่นทุกคนที่โดนปลอมตัวได้ในช่วงประชุม ผู้เล่นที่ถูกฆ่าจะปรากฏเป็นนักเล่นกลให้ทุกคนเห็น<br><br>ทีม:เดี่ยว    ลาง:ไม่ทราบ",
     },
@@ -9986,8 +3564,8 @@ function getAuraResult(player) {
     return AURA_RESULT[player.role] || "ไม่ทราบ";
 }
 
-// role icon paths ในรายการด้านล่างเก็บเป็น logical path เท่านั้น และ getter จะเปลี่ยนเป็น URL S3/CDN สดทุกครั้งที่อ่าน
-// ไม่อนุญาตให้ logical /images/... ถูกส่งไปเป็น URL ของ origin เพราะ imgUrl() fail-closed เมื่อไม่มี IMAGE_BASE_URL
+// role icon paths ในรายการด้านล่างเป็น same-origin logical paths ใต้ public/images/
+// getter ใช้ imgUrl() เพื่อเติม asset version สำหรับ force-reload โดยไม่ใช้ external origin
 // จึงไม่ต้องแก้ path ทีละบรรทัดในรายการ roleDescription ด้านบน
 // เพื่อให้ ?v=<imageEpoch> ตามทันเมื่อแอดมินกดรีโหลดรูป — spread ({ ...roleDescription[k] }) ใน buildRolesData
 // และ JSON ที่ส่งผ่าน socket อ่านค่าผ่าน getter (enumerable) ได้ตามปกติ ผลลัพธ์หน้าตาเหมือนเดิมทุกประการ
@@ -10098,14 +3676,13 @@ function sanitizeRoomSettings(raw) {
     const revealDeadRole = s.revealDeadRole !== false;
 
     return {
-        hostPassword: code(s.hostPassword),
+        hostPassword: "", // legacy field retained; host access uses owner tokens only
         joinCode: code(s.joinCode),
         maxPlayers,
         config,
         revealDeadRole,
         testerConditions,
         voteTimerEnabled: s.voteTimerEnabled !== false,
-        botAIEnabled: s.botAIEnabled === true,
     };
 }
 
@@ -10156,8 +3733,12 @@ function broadcastSuggestedRoom() {
 }
 
 // รายชื่อห้องที่ยังเปิดอยู่ทั้งหมด ให้หน้าโฮสต์เอาไปแสดงเป็นกริดให้เลือก
+function isRoomListable(room) {
+    return !!room && !room.isClosing && !roomIdleExpired(room, io.sockets.sockets);
+}
+
 function getOpenRoomsList() {
-    return Object.keys(rooms).map((id) => {
+    return Object.keys(rooms).filter((id) => isRoomListable(rooms[id])).map((id) => {
         const room = rooms[id];
         const hostPlayer = room.players.find((p) => p.isHost);
         return {
@@ -10177,7 +3758,7 @@ function getOpenRoomsList() {
 // พร้อมกัน (คู่กับ getOpenRoomsList ด้านบนที่ใช้ฝั่งโฮสต์) — ตัด hasPassword (รหัสผ่านกันแอดมิน
 // แย่งคุม ไม่เกี่ยวกับผู้เล่น) และ hostConnected ออก เหลือแค่ข้อมูลที่ผู้เล่นต้องใช้ตัดสินใจเลือกห้องจริงๆ
 function getOpenRoomsListForPlayers() {
-    return Object.keys(rooms).map((id) => {
+    return Object.keys(rooms).filter((id) => isRoomListable(rooms[id])).map((id) => {
         const room = rooms[id];
         const hostPlayer = room.players.find((p) => p.isHost);
         return {
@@ -10898,10 +4479,6 @@ function endGame(room, roomId, resultTeam) {
 
     const winners = room.players.filter((p) => isWinner(p, resultTeam, room));
 
-    // บันทึกสถิติ ชนะ/แพ้ ต่อผู้เล่นแบบถาวร (ดู recordGameStats ด้านบน) — ทำตรงนี้เพราะเป็นจุดเดียว
-    // ที่ยืนยันแน่นอนแล้วว่าเกมจบจริง ๆ (ผ่านเงื่อนไข conditionEnabled ด้านบนมาแล้ว ไม่ใช่แค่ทดสอบ)
-    recordGameStats(room, resultTeam);
-
     // ถ้านักล่าหัว "เป้าหมายตายแล้ว" ชนะร่วมไปกับฝ่ายชั่วร้ายที่ชนะเกมจริง (หมาป่า/ฆาตกรต่อเนื่อง)
     // ให้ขึ้นชื่อนักล่าหัวต่อท้ายชื่อทีมที่ชนะด้วย
     const joinedByHeadhunter =
@@ -11083,15 +4660,10 @@ function resetPlayerRoundState(p) {
                             // (null = ยังไม่ได้เข้าลัทธิใดเลย) — เปลี่ยน "ทีมที่มีผลจริง" เท่านั้น (ดู effectiveTeam) ไม่แตะ p.role เลย
     p.banditLeaderId = null; // โจร: id ของหัวโจรที่เปลี่ยนบทบาทผู้เล่นคนนี้ให้เป็น "ผู้สมรู้ร่วมคิด" (null = ยังไม่ถูกเปลี่ยน)
                               // ต่างจาก cultLeaderId ตรงที่ p.role ของผู้เล่นคนนี้ถูกเปลี่ยนเป็น "ผู้สมรู้ร่วมคิด" จริงๆ ไปแล้ว (ดู BANDIT_ROLES)
-    // ตัวนับเวลาออฟไลน์สะสมระหว่างเกม (ดู didLeaveGame/markPlayerOfflineStart ด้านบน) — รีเซ็ตทุก
-    // ครั้งที่เริ่มเกมใหม่ในห้องเดิม (rematch) กันเวลาออฟไลน์ของรอบก่อนติดค้างมานับซ้ำกับตาใหม่
-    p.gameOfflineMs = 0;
-    p.gameOfflineSince = null;
     // Explicitly leaving to choose a new room is recorded immediately and locked to this round.
     p.leftGameRoundId = null;
     p.leaveReason = null;
     p.leaveRecordedAt = null;
-    p.leaveStatsRecordedRoundId = null;
 }
 
 // ตรวจเงื่อนไขจบเกมที่อิงจากจำนวนคนที่เหลือ
@@ -11255,15 +4827,13 @@ function checkGameEndGeneral(room, roomId) {
 // เรียกจากทั้ง 2 ทาง: โฮสต์กดปิดโหวตเอง และ timer หมดเวลา 15 วิอัตโนมัติ
 //
 // แก้บั๊ก (พบภายหลัง): เดิมฟังก์ชันนี้เรียก beginNight() ตรงๆ แล้ว "ไม่ได้" ตามด้วย
-// runBotsFor("wolfKill"/"nightSkill", ...) เหมือนที่ทำไว้ใน socket.on("start_night") handler
 // เพราะ closeVoteRound() เป็นฟังก์ชันระดับบนสุดของไฟล์ (ประกาศก่อน io.on("connection", ...))
 // จึงไม่เห็น performWolfKill/performSelectTarget/ฯลฯ ที่ถูกประกาศไว้ข้างในนั้น (คนละ scope กัน)
 // ผลคือ: ทุกคืนที่เริ่มจากการปิดโหวต (คือแทบทุกคืนในเกมจริง ยกเว้นคืนที่โฮสต์กด "เริ่มคืน" เองตรงๆ
 // ซึ่งไม่ค่อยเกิดในโฟลว์ปกติ) บอทหมาป่า/บอทบทบาทพิเศษจะไม่ทำ action ให้เลย ดูเหมือนบอท "ค้าง"
 // ตั้งแต่คืนที่ 1-2 เป็นต้นไป — แก้โดยรับ deps เข้ามาเป็นพารามิเตอร์ที่ 3 (ตัวเรียกฝั่ง
 // io.on("connection", ...) ส่งเข้ามาได้เพราะอยู่ scope เดียวกับ performWolfKill ฯลฯ) แล้วยิง
-// runBotsFor เองท้ายฟังก์ชันนี้ ให้เหมือนกับที่ start_night handler ทำทุกประการ
-function closeVoteRound(room, roomId, deps) {
+function closeVoteRound(room, roomId) {
     clearVoteTimer(roomId);
     room.voteMode = false;
     room.voteDeadline = null;
@@ -11369,12 +4939,9 @@ function closeVoteRound(room, roomId, deps) {
         broadcastRoomUpdate(roomId, room, { timelineType: "vote_resolved", source: "game", reason: executed ? "executed" : "no_execution" });
         beginNight(room, roomId); // เรียก room_update ให้เองในตัว
 
-        // แก้บั๊กบอทไม่ทำงานคืน 1-2 เป็นต้นไป (ดูคอมเมนต์ด้านบนหัวฟังก์ชัน): ยิง runBotsFor เอง
         // ที่นี่เหมือนที่ start_night handler ทำ — ต้องเช็ค deps ก่อนเพราะบางจุดเรียกไม่ได้ส่งมา
         // (กันเหนียว ไม่ควรเกิดถ้าแก้ครบทุก call site แล้ว)
         if (deps) {
-            runBotsFor(room, roomId, "wolfKill", deps);
-            runBotsFor(room, roomId, "nightSkill", deps);
         }
     } else {
         broadcastRoomUpdate(roomId, room);
@@ -11501,7 +5068,7 @@ function beginNight(room, roomId) {
 // ============================================================
 // ADMIN — ล้างข้อมูลเกมทั้งหมด (RESET EVERYTHING) — ปุ่มในหน้า admin.html
 // ============================================================
-// ทำอะไรบ้าง (ทำให้ "ทุกคนกลับเป็นผู้เล่นใหม่ ลงทะเบียนครั้งแรก"):
+// ทำอะไรบ้าง (ล้างห้องและข้อมูลเกมที่เก็บไว้ ให้ผู้เล่นเริ่มเล่นแบบ Guest ใหม่):
 //   1) ลบทุกแถวในตาราง DynamoDB (สถิติแพ้/ชนะ, รายชื่อผู้เล่นทั้งหมด, ประวัติเข้าเล่น) — เว้นแถวระบบ __SYSTEM__
 //   2) เปลี่ยน "resetEpoch" (เก็บใน DynamoDB แถว __SYSTEM__ เพื่อให้ไม่หายตอน server รีสตาร์ท)
 //   3) ลบทุกห้อง/ตัวจับเวลา/รหัสล็อกอินที่ค้างในหน่วยความจำของ server
@@ -11512,7 +5079,7 @@ function beginNight(room, roomId) {
 // ป้องกัน: ถ้าตั้ง env var ADMIN_RESET_PASSWORD ไว้ ต้องส่งรหัสนี้มาด้วย (แนะนำให้ตั้ง เพราะหน้า admin ไม่มี login)
 const SYSTEM_PLAYER_KEY = "__SYSTEM__";
 const RESET_EPOCH_STAT_KEY = "RESET_EPOCH";
-// ล็อกส่วน reset ทั้งชุด: กัน account/presence/room persistence เขียนข้อมูลกลับระหว่างกำลังล้าง
+// ล็อกส่วน reset ทั้งชุด: กัน room persistence เขียนข้อมูลกลับระหว่างกำลังล้าง
 let resetInProgress = false;
 // นับงานเขียนข้อมูลเกมที่ "เริ่มก่อน" reset เพื่อให้ reset รอจนงานเหล่านั้นจบก่อนล้างฐานข้อมูล
 // ป้องกัน race แบบ: write เริ่มก่อน reset -> reset ล้าง -> write เดิมกลับมาเขียนหลังล้างอีกครั้ง
@@ -11544,7 +5111,7 @@ let resetEpochLastTryAt = 0;
 async function loadResetEpoch() {
     const doc = await getDynamoDocClient();
     const out = await doc.send(new GetCommand({
-        TableName: STATS_TABLE_NAME,
+        TableName: ROOM_PERSISTENCE_TABLE,
         Key: { playerName: SYSTEM_PLAYER_KEY, statKey: RESET_EPOCH_STAT_KEY },
     }));
     // ไม่เคยกดล้างเลย = "0" (เครื่องที่ยังไม่เคยจำค่าไหนไว้ก็ถือเป็น "0" เหมือนกัน จึงไม่โดนล้างโดยไม่จำเป็น)
@@ -11585,14 +5152,13 @@ async function withTimeout(promise, timeoutMs, code, message) {
 }
 
 // ลบทุกแถวในตาราง (ยกเว้นแถวระบบ) — Scan เฉพาะคีย์ แล้ว BatchWrite ลบทีละ 25 แถว (ขีดจำกัดของ DynamoDB)
-async function wipeStatsTable() {
+async function wipeRoomPersistenceTable() {
     const doc = await getDynamoDocClient();
-    accountProfileCache.clear();
     let deleted = 0;
     let lastKey;
     do {
         const page = await doc.send(new ScanCommand({
-            TableName: STATS_TABLE_NAME,
+            TableName: ROOM_PERSISTENCE_TABLE,
             ProjectionExpression: "playerName, statKey",
             ExclusiveStartKey: lastKey,
         }));
@@ -11603,7 +5169,7 @@ async function wipeStatsTable() {
             }));
             const size = batch.length;
             try {
-                await deleteItemsWithFallback(doc, batch.map((x) => x.DeleteRequest.Key));
+                await deleteTableItemsWithFallback(doc, batch.map((x) => x.DeleteRequest.Key));
             } catch (e) {
                 throw e;
             }
@@ -11681,24 +5247,13 @@ function countTesterRooms() {
 // ห้องผู้ทดสอบ (room.isTesterRoom — server ตัดสินจากบัตรผ่านตอนสร้างห้อง ไม่ใช่ค่าที่ client ส่งมา) "ไม่ถูกปิด" ห้อง/บอท/โทเค็นสิง/ผู้เล่นอยู่ครบ
 // (ต่างจาก /api/admin/reset ด้านบน: ไม่แตะข้อมูลผู้เล่น/สถิติ/ประวัติ — แต่ลบ snapshot ของห้องปกติจาก room persistence เพื่อไม่ให้ฟื้นกลับมา)
 //  ลบห้อง/ตัวจับเวลาที่ค้างในหน่วยความจำ และลบ snapshot ของห้องปกติจาก persistence เพื่อไม่ให้ฟื้นกลับมา
-// ห้ามเรียก endGame/recordGameStats ตรงนี้ → เกมที่ค้างอยู่ "ไม่นับเป็นเกมเลย" ไม่มีแพ้/ชนะ/ออกเกมเข้าประวัติของใคร
+// ห้ามเรียก endGame/game result persistence ตรงนี้ → เกมที่ค้างอยู่ "ไม่นับเป็นเกมเลย" ไม่มีแพ้/ชนะ/ออกเกมเข้าประวัติของใคร
 // ต้องเรียก "ก่อน" ที่ socket ถูกตัดเสมอ (ดู closeServerNow / force-reload) ไม่งั้น handler "disconnect" จะเห็นว่าห้องยังอยู่
-// แล้วเริ่มนับเวลาออฟไลน์ (markPlayerOfflineStart) ให้ผู้เล่นทุกคน — ตัวที่ทำให้ถูกตัดสินว่า "ออกเกม" ตอนจบเกม
-// ไม่ยิง room_closed ตั้งใจ: หน้าเกมจะขึ้นข้อความ "ห้องถูกปิด เนื่องจากผู้สร้างห้องออกจากเกม" ซึ่งไม่ตรงความจริง
+// // ไม่ยิง room_closed ตั้งใจ: หน้าเกมจะขึ้นข้อความ "ห้องถูกปิด เนื่องจากผู้สร้างห้องออกจากเกม" ซึ่งไม่ตรงความจริง
 // และหน้าโฮสต์จะดีดกลับ index เองทีละจอ — ให้ทุกเครื่องไปทางเดียวกันคือถูกพากลับหน้าแรกจาก event/epoch ของแอดมินแทน
 // คืนจำนวน "ห้องที่ถูกปิดจริง" (ไม่นับห้องผู้ทดสอบที่รอด — ดู countTesterRooms)
 async function closeAllRoomsSilently({ fast = false } = {}) {
     const ids = Object.keys(rooms).filter((id) => !isTesterRoom(rooms[id]));
-    const activeAccountIds = new Set();
-    ids.forEach((id) => {
-        (rooms[id]?.players || []).forEach((p) => {
-            const accountId = normalizeAccountId(p?.accountId || "");
-            if (accountId && !p?.isTester && !p?.isBot) activeAccountIds.add(accountId);
-        });
-    });
-    const releaseActivities = () => Promise.all([...activeAccountIds].map((accountId) => clearAccountActivity(accountId, { force: true }).catch((e) => {
-        console.error(`[account-activity] ล้าง activity ของ ${accountId} ตอนปิดห้องไม่สำเร็จ:`, e?.name || "Error", e?.message || e);
-    })));
     ids.forEach((id) => {
         // ให้ socket ที่ยังต่ออยู่ออกจากห้อง socket.io ของห้องนี้ด้วย — กัน socket เก่าค้างในห้องแล้วไปรับ broadcast
         // ของห้องใหม่ที่บังเอิญได้รหัสเดิมทีหลัง (เฉพาะห้องที่ถูกปิดจริง ห้องผู้ทดสอบไม่ถูกแตะ)
@@ -11712,7 +5267,6 @@ async function closeAllRoomsSilently({ fast = false } = {}) {
     // startNewSessionEpoch() เปลี่ยน roomResetAt ก่อนหน้านี้แล้ว จึงกัน snapshot รุ่นเก่าฟื้นกลับได้
     // แม้การลบ DynamoDB จะกำลังทำงานอยู่เบื้องหลัง.
     if (fast) {
-        releaseActivities().catch(() => {});
         wipeAllRoomsInMemory({ keepTesterRooms: true });
         if (ROOM_PERSISTENCE_ENABLED && ids.length) {
             Promise.all(ids.map((id) => deletePersistedRoom(id).catch((e) => {
@@ -11724,7 +5278,6 @@ async function closeAllRoomsSilently({ fast = false } = {}) {
 
     // เส้นทางปกติยังรอ cleanup ให้เสร็จจริง เพื่อคง semantics เดิมของ server shutdown
     // และ call site อื่นที่ต้องการรอการลบ snapshot ก่อนดำเนินการต่อ.
-    await releaseActivities();
     if (ROOM_PERSISTENCE_ENABLED) {
         await Promise.all(ids.map((id) => deletePersistedRoom(id).catch((e) => {
             console.error(`[room-persist] ลบ snapshot ห้อง ${id} ตอนปิดเซิร์ฟเวอร์ไม่สำเร็จ:`, e.name, e.message);
@@ -11786,51 +5339,6 @@ function clearAdminLoginFailures(req) {
     adminLoginRate.delete(adminLoginClientKey(req));
 }
 
-async function consumeAdminTabHandoff(ticket, tabId) {
-    const payload = verifySignedState(String(ticket || ""), ADMIN_SESSION_SECRET);
-    const safeTabId = sanitizeAdminTabId(tabId);
-    if (!payload || payload.type !== "admin_tab_handoff" || payload.admin !== true || payload.provider !== "google" || !payload.googleSub || !payload.email || !safeTabId || payload.tabId !== safeTabId) {
-        return { ok:false, code:"ADMIN_TAB_TICKET_INVALID" };
-    }
-    const nonce = String(payload.n || "");
-    const now = Date.now();
-    for (const [key, exp] of adminTabHandoffMemory) {
-        if (Number(exp || 0) <= now) adminTabHandoffMemory.delete(key);
-    }
-    if (adminTabHandoffMemory.has(nonce)) return { ok:false, code:"ADMIN_TAB_TICKET_USED" };
-    try {
-        const doc = await getDynamoDocClient();
-        await doc.send(new PutCommand({
-            TableName: STATS_TABLE_NAME,
-            Item: { playerName: ADMIN_TAB_HANDOFF_PARTITION_KEY, statKey: `TICKET#${nonce}`, expiresAtEpoch: Math.floor(Number(payload.exp || 0) / 1000), createdAt: new Date().toISOString(), type:"admin_tab_handoff" },
-            ConditionExpression: "attribute_not_exists(playerName) AND attribute_not_exists(statKey)",
-        }));
-    } catch (e) {
-        // Local/dev environments may have no DynamoDB. Keep a bounded per-process replay guard there.
-        const code = String(e?.name || e?.code || "");
-        if (!/ConditionalCheckFailed/i.test(code)) {
-            adminTabHandoffMemory.set(nonce, Number(payload.exp || now + ADMIN_TAB_HANDOFF_TTL_MS));
-        } else {
-            return { ok:false, code:"ADMIN_TAB_TICKET_USED" };
-        }
-    }
-    adminTabHandoffMemory.set(nonce, Number(payload.exp || now + ADMIN_TAB_HANDOFF_TTL_MS));
-    const token = createAdminSessionToken({ provider:"google", googleSub:payload.googleSub, email:payload.email, tabId:safeTabId });
-    return { ok:!!token, code:token ? "" : "ADMIN_SESSION_CREATE_FAILED", token, expiresAt:Date.now() + ADMIN_TAB_SESSION_TTL_MS, email:payload.email, provider:"google", tabId:safeTabId };
-}
-
-app.post("/api/admin/session/exchange", express.json({ limit: "8kb" }), async (req, res) => {
-    res.setHeader("Cache-Control", "no-store, private");
-    try {
-        const result = await consumeAdminTabHandoff(req.body?.ticket, req.body?.tabId);
-        if (!result.ok) return res.status(401).json({ ok:false, error:"admin_tab_ticket_invalid", code:result.code });
-        return res.json(result);
-    } catch (e) {
-        recordDiagnostic({ source:"server", kind:"admin_tab_session_exchange_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "" });
-        return res.status(503).json({ ok:false, error:"admin_session_exchange_failed", code:"ADMIN_TAB_SESSION_EXCHANGE_FAILED" });
-    }
-});
-
 app.get("/api/admin/session", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     // ระหว่าง instance ใหม่กำลัง warm-up หรือกำลัง drain อย่าแปลงสถานะเป็น
@@ -11841,7 +5349,6 @@ app.get("/api/admin/session", async (req, res) => {
             required: true,
             authenticated: false,
             passwordEnabled: !!ADMIN_PANEL_PASSWORD,
-            googleEnabled: ADMIN_GOOGLE_EMAILS.length > 0,
             code: appDraining ? "ADMIN_SERVER_DRAINING" : "ADMIN_SERVER_WARMING",
         });
     }
@@ -11855,15 +5362,13 @@ app.get("/api/admin/session", async (req, res) => {
         email: principal?.email || "",
         expiresAt: Number(principal?.exp || 0),
         passwordEnabled: !!ADMIN_PANEL_PASSWORD,
-        googleEnabled: ADMIN_GOOGLE_EMAILS.length > 0,
         deploymentReady: adminAuthReadyForDeployment(),
     });
 });
 
 app.post("/api/admin/login", express.json({ limit: "2kb" }), (req, res) => {
     if (!ADMIN_AUTH_CONFIGURED) return res.status(503).json({ ok: false, error: "admin_auth_not_configured", code: "ADMIN_AUTH_NOT_CONFIGURED" });
-    if (!ADMIN_PANEL_PASSWORD) return res.status(403).json({ ok: false, error: "google_login_required", code: "ADMIN_GOOGLE_LOGIN_REQUIRED" });
-    const limit = adminLoginAllowed(req);
+        const limit = adminLoginAllowed(req);
     if (!limit.ok) {
         res.setHeader("Retry-After", String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
         return res.status(429).json({ ok: false, error: "too_many_attempts", code: "ADMIN_LOGIN_RATE_LIMITED" });
@@ -11915,9 +5420,9 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
     }
     await serverStateReady;
     resetInProgress = true;
-    // Admin must invalidate any live-account snapshot immediately. A reset can run while
+    // Admin must invalidate any live room/presence snapshot immediately. A reset can run while
     // background polling/room screens are still open, so waiting for the final epoch event
-    // would leave a short window where old names can reappear.
+    // would leave a short window where stale room data can reappear.
     io.sockets.sockets.forEach((s) => {
         if (s.data && s.data.isAdmin) {
             try { s.emit("admin_reset_started", { resetEpoch: resetEpoch || "" }); } catch (_) {}
@@ -11928,9 +5433,7 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
         console.error(`[reset] ยังมีงานเขียนข้อมูลเกมค้าง ${activeGameDataWrites} งานเกินเวลารอ — ยกเลิก reset เพื่อไม่ให้ล้างครึ่งเดียว`);
         return res.status(503).json({ error: "game_data_write_drain_timeout", activeWrites: activeGameDataWrites });
     }
-    // ตัด presence ทิ้งตั้งแต่ต้น เพื่อให้ Dashboard ไม่แสดงผู้เล่นจาก session รุ่นเก่าในระหว่าง reset
-    accountPresence.clear();
-    // ยกเลิก snapshot debounce ของทุกห้องตั้งแต่ต้น ไม่ให้ timer เก่ามีสิทธิ์เขียนกลับเข้าฐานข้อมูล
+        // ยกเลิก snapshot debounce ของทุกห้องตั้งแต่ต้น ไม่ให้ timer เก่ามีสิทธิ์เขียนกลับเข้าฐานข้อมูล
     for (const timer of roomPersistenceTimers.values()) clearTimeout(timer);
     roomPersistenceTimers.clear();
     roomPersistenceKnownIds.clear();
@@ -11939,7 +5442,7 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
         // 1) DynamoDB — ถ้าพังตรงนี้ หยุดทันที (ยังไม่แตะห้อง/เครื่องผู้เล่น) แก้สิทธิ์แล้วกดใหม่ได้
         let deletedRows;
         try {
-            deletedRows = await wipeStatsTable();
+            deletedRows = await wipeRoomPersistenceTable();
         } catch (e) {
             console.error("[reset] ลบข้อมูลใน DynamoDB ล้มเหลว:", e.name, e.message);
             return res.status(500).json({ error: "db_wipe_failed", detail: `${e.name}: ${e.message}` });
@@ -11957,10 +5460,8 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
             }
         }
 
-        // 2.5) ล้าง Stats ซ้ำอีกครั้งหลัง room cleanup เพื่อจับ write ที่เริ่มก่อน lock แล้วกลับมาเสร็จระหว่างการล้างชุดแรก
-        // เมื่อ resetInProgress=true แล้ว call site ใหม่จะไม่เริ่ม write เพิ่มอีก
         try {
-            const deletedRowsFinal = await wipeStatsTable();
+            const deletedRowsFinal = await wipeRoomPersistenceTable();
             deletedRows += deletedRowsFinal;
         } catch (e) {
             console.error("[reset] ล้างฐานข้อมูลรอบยืนยันผลล้มเหลว:", e.name, e.message);
@@ -11972,7 +5473,7 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
         try {
             const doc = await getDynamoDocClient();
             await doc.send(new PutCommand({
-                TableName: STATS_TABLE_NAME,
+                TableName: ROOM_PERSISTENCE_TABLE,
                 Item: { playerName: SYSTEM_PLAYER_KEY, statKey: RESET_EPOCH_STAT_KEY, value: newEpoch, at: new Date().toISOString() },
             }));
         } catch (e) {
@@ -11987,8 +5488,7 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
         reloadEpoch = "";
         reloadKind = "";
         reloadEpochTouchedByAdmin = true;
-        accountPresence.clear();
-        wipeAllRoomsInMemory();
+            wipeAllRoomsInMemory();
         let statePersisted = true;
         try { await saveServerState(); } catch (e) {
             statePersisted = false;
@@ -12019,8 +5519,8 @@ app.post("/api/admin/reset", express.json({ limit: "2kb" }), async (req, res) =>
 // ============================================================
 // ตัวแปรสถานะ + ด่านกัน (HTTP + socket) อยู่ด้านบนสุดของไฟล์ (หัวข้อเดียวกัน) ตรงนี้คือ
 //   1) บันทึก/โหลดสถานะจาก DynamoDB แถว __SYSTEM__ / SERVER_STATE (ปิดอยู่หรือไม่ + imageEpoch)
-//      ใช้ตารางเดิม + สิทธิ์ GetItem/PutItem เดิมที่ resetEpoch ใช้อยู่แล้ว — ไม่ต้องเพิ่ม IAM
-//      /api/admin/reset ไม่ลบแถว __SYSTEM__ (ดู wipeStatsTable) และหน้ารายชื่อผู้เล่นกรองแค่ statKey = REG จึงไม่ปนกัน
+//      ใช้ตารางห้อง/สถานะเดียวกับ resetEpoch — ไม่ต้องเพิ่ม IAM
+//      /api/admin/reset ไม่ลบแถว __SYSTEM__ (ดู wipeRoomPersistenceTable) และไม่มีตารางประวัติผู้เล่นแล้ว จึงไม่ปนข้อมูลผู้เล่น
 //   2) POST /api/admin/server-open  { open: true|false, closeAt?, message?, reopenAt? }
 //        - closeAt / reopenAt เป็น epoch ms (หรือสตริงวันที่ที่ Date.parse อ่านได้) ของ "เวลาจริง" ที่จะปิด/คาดว่าจะเปิด ไม่ใช่ตัวเลขนับถอยหลังอีกต่อไป
 //        - open:false + closeAt ในอนาคต (เกิน ~1.5 วิจากตอนนี้) → "ตั้งเวลาปิดล่วงหน้า" (ดู closingPlan/armClosingPlan) ยังไม่ปิดจริงจนกว่าจะถึงเวลา
@@ -12130,7 +5630,7 @@ async function syncServerStateFromAuthority(options = {}) {
 async function loadServerState() {
     const doc = await getDynamoDocClient();
     const out = await doc.send(new GetCommand({
-        TableName: STATS_TABLE_NAME,
+        TableName: ROOM_PERSISTENCE_TABLE,
         Key: { playerName: SYSTEM_PLAYER_KEY, statKey: SERVER_STATE_STAT_KEY },
     }));
     const it = out.Item || {};
@@ -12159,8 +5659,8 @@ let testerPassSecretPersistent = false;
 // โดยให้ DynamoDB เป็น source of truth และใช้ conditional write แบบ atomic ตอนที่ยังไม่มีค่า
 // ห้ามใช้ PutCommand เขียน SERVER_STATE ทับ testerPassSecret จากค่าที่แต่ละ instance สุ่มเอง
 // เพราะช่วง Immutable/rolling deploy อาจมีหลาย instance เริ่มพร้อมกันและแต่ละตัวสุ่มคนละ secret
-// ผลคือบัตร ?tp ที่ออกจาก instance A ใช้กับ instance B ไม่ได้ → tester join_room ไหลไป account auth
-// และเกิด ACCOUNT_TOKEN_REQUIRED แบบใน Diagnostic v16.
+// ผลคือบัตร ?tp ที่ออกจาก instance A ใช้กับ instance B ไม่ได้ → tester join_room ถูกปฏิเสธ
+// จึงต้องใช้ secret ที่แชร์ร่วมกันทั้ง deployment
 async function ensureTesterPassSecretPersistent(knownSecret = "") {
     if (TESTER_PASS_SECRET_ENV) {
         testerPassSecret = TESTER_PASS_SECRET_ENV;
@@ -12182,7 +5682,7 @@ async function ensureTesterPassSecretPersistent(knownSecret = "") {
 
         const readCurrent = async () => {
             const out = await doc.send(new GetCommand({
-                TableName: STATS_TABLE_NAME,
+                TableName: ROOM_PERSISTENCE_TABLE,
                 Key: key,
                 ConsistentRead: true,
             }));
@@ -12200,7 +5700,7 @@ async function ensureTesterPassSecretPersistent(knownSecret = "") {
         const candidate = crypto.randomBytes(32).toString("hex");
         try {
             await doc.send(new UpdateCommand({
-                TableName: STATS_TABLE_NAME,
+                TableName: ROOM_PERSISTENCE_TABLE,
                 Key: key,
                 UpdateExpression: "SET #secret = :secret, #at = :at",
                 ExpressionAttributeNames: { "#secret": "testerPassSecret", "#at": "at" },
@@ -12236,7 +5736,7 @@ async function saveServerState() {
     // ทุก field ด้านล่างเป็น mutable server-control state; testerPassSecret จงใจไม่อยู่ในชุดนี้
     // เพราะมันเป็น credential ระดับ environment/process ที่ต้องคงค่าเดิมข้าม deploy ทุก instance
     await doc.send(new UpdateCommand({
-        TableName: STATS_TABLE_NAME,
+        TableName: ROOM_PERSISTENCE_TABLE,
         Key: { playerName: SYSTEM_PLAYER_KEY, statKey: SERVER_STATE_STAT_KEY },
         UpdateExpression: [
             "SET #closed = :closed",
@@ -12608,7 +6108,7 @@ app.post("/api/admin/tester-pass", express.json({ limit: "2kb" }), async (req, r
 // ประกาศ "มีรุ่นใหม่" โดยไม่แตะห้อง/ผู้เล่นเลย (publish update ≠ force reload/terminate rooms)
 // - ไม่เรียก closeAllRoomsSilently / ไม่เปลี่ยน reloadEpoch / ไม่ยิง force_reload / ไม่ตัด socket ใคร
 // - แค่เปลี่ยนเลขรุ่นรูป (imageEpoch) → version ที่ /api/config เปลี่ยน → หน้า index ของทุกเครื่องเห็นโอเวอร์เลย "มีอัปเดตเกมใหม่" ตอนที่ผู้เล่น "กลับมาหน้า index เอง"
-//   (ใช้กับรูปที่อยู่บน S3/CDN ที่ server มองไม่เห็นว่าเปลี่ยน — ไฟล์ใน public/ และโค้ด server ตรวจจับ version เองอยู่แล้วตอน deploy)
+//   (ใช้เป็น server-side asset version signal สำหรับ force-reload; ไฟล์ใน public/images/ ถูกตรวจ hash ได้เองตอน deploy)
 app.post("/api/admin/publish-update", express.json({ limit: "2kb" }), async (req, res) => {
     if (!checkAdminPassword(req, res)) return;
     await serverStateReady;
@@ -12726,7 +6226,7 @@ function browserExitOriginAllowed(req) {
     const forwardedProto = String(req.headers['x-forwarded-proto'] || req.protocol || '').split(',')[0].trim().toLowerCase();
     const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
     const requestHost = String(req.get('host') || '').trim();
-    const configuredBase = String(process.env.PUBLIC_WEB_ORIGIN || process.env.DIAGNOSTIC_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+    const configuredBase = String(process.env.PUBLIC_WEB_ORIGIN || '').trim().replace(/\/+$/, '');
     const expected = new Set();
     if (/^https?$/i.test(forwardedProto)) {
         if (requestHost) expected.add(`${forwardedProto}://${requestHost}`);
@@ -12762,27 +6262,20 @@ function stripBrowserExitPlayerMaps(room, playerId) {
 async function applyVoluntaryPlayerExit(roomId, tok, reason, pendingMeta = {}) {
     const room = rooms[roomId];
     if (!room) return { ok:true, code:'ROOM_NOT_FOUND' };
-    const pendingAccountId = normalizeAccountId(pendingMeta.accountId || "");
-    const pendingMembershipId = String(pendingMeta.membershipId || "").trim();
-    const player = (pendingAccountId && pendingMembershipId
-        ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === pendingAccountId && String(p.membershipId || "").trim() === pendingMembershipId)
+    const pendingMembershipId = String(pendingMeta.membershipId || '').trim();
+    const player = (pendingMembershipId
+        ? room.players.find((p) => p && !p.isHost && String(p.membershipId || '').trim() === pendingMembershipId)
         : null)
-        || (pendingAccountId ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === pendingAccountId) : null)
         || room.players.find((p) => p && !p.isHost && p.token === tok);
     if (!player) return { ok:true, code:'PLAYER_NOT_FOUND' };
-    const pendingSocketId = String(pendingMeta.socketId || "");
-    if (pendingAccountId && player.membershipId && getConnectedSocketsForAccount(pendingAccountId).some((sock) => sock.id !== pendingSocketId && String(sock.data?.membershipId || "") === String(player.membershipId || ""))) {
-        return { ok:true, code:'SECONDARY_TAB_RETAINED', retained:true };
-    }
 
     if (!room.started || room.gameOver) {
         if (!room.started && !room.gameOver) {
             if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
-            if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token].timer); delete pendingIndicators[player.token]; }
+            if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
             stripBrowserExitPlayerMaps(room, player.id);
-            if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: pendingMeta.sessionHash || "", deviceId: pendingMeta.deviceId || "" }).catch(() => {});
-            room.players = room.players.filter((p) => p.token !== tok);
-            io.to(roomId).emit('room_update', publicRoomView(room));
+            room.players = room.players.filter((p) => p !== player && p.token !== tok);
+            emitRoomUpdateToRoom(roomId, room);
             schedulePersistRoom(roomId, true);
             broadcastSuggestedRoom();
         }
@@ -12790,18 +6283,12 @@ async function applyVoluntaryPlayerExit(roomId, tok, reason, pendingMeta = {}) {
     }
 
     const roundId = getRoomGameRoundId(room);
-    if (player.leaveStatsRecordedRoundId !== roundId) {
-        const result = await recordImmediateGameLeaveStats(room, player, reason || 'browser_tab_closed');
-        if (!result.ok) return { ok:false, code:result.code || 'SERVER_ERROR' };
-    } else {
-        player.leftGameRoundId = roundId;
-        player.leaveReason = String(reason || player.leaveReason || 'browser_tab_closed').slice(0,64);
-        player.leaveRecordedAt = player.leaveRecordedAt || Date.now();
-    }
-
+    player.leftGameRoundId = roundId;
+    player.leaveReason = String(reason || player.leaveReason || 'browser_tab_closed').slice(0,64);
+    player.leaveRecordedAt = player.leaveRecordedAt || Date.now();
     player.disconnected = true;
     player.offline = true;
-    if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: pendingMeta.sessionHash || "", deviceId: pendingMeta.deviceId || "" }).catch(() => {});
+
     let announced = false;
     if (player.alive) {
         player.alive = false;
@@ -12816,191 +6303,76 @@ async function applyVoluntaryPlayerExit(roomId, tok, reason, pendingMeta = {}) {
     }
 
     if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
-    if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token].timer); delete pendingIndicators[player.token]; }
-    io.sockets.sockets.get(player.id)?.leave(roomId);
+    if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
     checkGameEndGeneral(room, roomId);
-    io.to(roomId).emit('room_update', publicRoomView(room));
     schedulePersistRoom(roomId, true);
+    broadcastRoomUpdate(roomId, room);
     broadcastSuggestedRoom();
-    addDiagnosticBreadcrumb({ source:'server', type:'browser_exit', label:'browser_exit.player_applied', traceId:pendingMeta.traceId || '', sessionId:pendingMeta.sessionId || '', page:'player', detail:{ roomId, tokenSuffix:tok.slice(-6), reason:reason || 'browser_tab_closed', announced, aliveAfter:!!player.alive } });
-    return { ok:true, code:'PLAYER_LEFT_GAME', recorded:true, markedDead:true };
+    return { ok:true, code:'LEFT_GAME', recorded:true, announced };
 }
 
-app.post('/api/room/browser-exit-host', express.json({ limit:'4kb', type:['application/json','text/plain'] }), async (req, res) => {
-    const ctx = req.__wwDiagnostic || {};
-    if (!browserExitOriginAllowed(req)) return res.status(403).json({ ok:false, code:'BROWSER_EXIT_ORIGIN_REJECTED' });
-    const bodyTraceId = String(req.body?.clientTraceId || '').slice(0, 120);
-    const bodySessionId = String(req.body?.clientSessionId || '').slice(0, 120);
-    const traceId = bodyTraceId || String(ctx.traceId || '');
-    const sessionId = bodySessionId || String(ctx.sessionId || '');
+app.post('/api/room/browser-exit-player', express.json({limit:'32kb'}), async (req, res) => {
+    const ctx = currentDiagnosticContext();
+    const traceId = String(req.body?.traceId || ctx.traceId || '');
+    const sessionId = String(req.body?.sessionId || ctx.sessionId || '');
     const id = String(req.body?.roomId || '').trim().toUpperCase();
     const tok = String(req.body?.token || '');
-    const socketId = String(req.body?.socketId || '');
-    const signalEvent = recordDiagnostic({
-        source:'client', kind:'browser_exit_signal', page:'host', message:'Host pagehide exit signal reached the server',
-        traceId, sessionId, requestId:String(ctx.requestId || ''), roomId:id, endpoint:'/api/room/browser-exit-host',
-        context:{ source:String(req.body?.source || 'pagehide'), socketConnectedHint:!!socketId, userAgentPresent:!!String(req.body?.userAgent || ''), viewport:req.body?.viewport || null, clientPendingOperations:req.body?.pendingOperations || [] },
-        causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_SIGNAL', confidence:'high' },
-    });
-    if (!id || !tok) return res.status(400).json({ ok:false, code:'BROWSER_EXIT_INVALID_PAYLOAD' });
-    const room = rooms[id];
-    if (!room) return res.json({ ok:true, code:'ROOM_NOT_FOUND' });
-    const hostPlayer = room.players.find((p) => p && p.isHost && p.token === tok);
-    if (!hostPlayer) return res.status(403).json({ ok:false, code:'HOST_TOKEN_INVALID' });
-
-    const priorDisconnect = recentSocketDisconnect('host', id, tok, socketId);
-    if (priorDisconnect) {
-        const duplicateEvent = recordDiagnostic({
-            source:'server', kind:'browser_exit_duplicate_ignored', page:'host',
-            message:'Late host pagehide signal ignored because the same socket already disconnected',
-            traceId, sessionId, requestId:String(ctx.requestId || ''), roomId:id,
-            context:{ source:String(req.body?.source || 'pagehide'), socketId,
-                priorDisconnectAt:new Date(priorDisconnect.time).toISOString() },
-            causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_DUPLICATE_IGNORED', confidence:'high' },
-        });
-        return res.json({ ok:true, code:'BROWSER_EXIT_DUPLICATE_IGNORED', recorded:true, diagnosticId:duplicateEvent?.id || '' });
-    }
-
-    armPendingBrowserExit('host', id, tok, async (pending) => {
-        const liveRoom = rooms[id];
-        if (!liveRoom) return;
-        const liveHost = liveRoom.players.find((p) => p && p.isHost && p.token === tok);
-        if (!liveHost) return;
-        // pagehide ไม่ได้แปลว่า socket หลุดเสมอไป (โดยเฉพาะ iPad/Safari, BFCache,
-        // app switch และ navigation ที่ browser ยังรักษา Socket.IO connection ไว้ได้ชั่วคราว)
-        // ห้ามลบ host socket จาก registry ก่อนตรวจสถานะจริง เพราะถ้าลบก่อน จะทำให้
-        // activeHostIds กลายเป็น 0 และปิดห้องทั้งที่ Host ยังเชื่อมต่ออยู่จริง
-        const pendingHostSocket = pending.socketId ? io.sockets.sockets.get(pending.socketId) : null;
-        const pendingHostSocketConnected = !!pendingHostSocket?.connected;
-        if (pendingHostSocketConnected) {
-            clearPendingBrowserExit('host', id, tok, {
-                source: 'host_socket_still_connected',
-                traceId: pending.traceId,
-                sessionId: pending.sessionId,
-            });
-            liveHost.disconnected = false;
-            io.to(id).emit('room_update', publicRoomView(liveRoom));
-            schedulePersistRoom(id);
-            return;
-        }
-        if (pending.socketId && Array.isArray(liveRoom.hostIds) && liveRoom.hostIds.includes(pending.socketId)) {
-            removeHostSocket(liveRoom, pending.socketId);
-        }
-        const activeHostIds = (liveRoom.hostIds || []).filter((hid) => io.sockets.sockets.get(hid)?.connected);
-        if (activeHostIds.length > 0) {
-            liveHost.disconnected = false;
-            io.to(id).emit('room_update', publicRoomView(liveRoom));
-            schedulePersistRoom(id);
-            const keptEvent = recordDiagnostic({ source:'server', kind:'browser_exit_applied', page:'host', message:'Host browser exit resolved without closing the room because another host screen remains active', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ outcome:'kept_open', activeHostScreens:activeHostIds.length, source:pending.source }, causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_KEPT_ROOM_OPEN', confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] } });
-            if (pending.armDiagnosticId && keptEvent?.id) linkDiagnosticEvents(pending.armDiagnosticId, keptEvent.id, 'causes');
-            addDiagnosticBreadcrumb({ source:'server', type:'browser_exit', label:'browser_exit.host_kept_open', traceId:pending.traceId, sessionId:pending.sessionId, page:'host', detail:{ roomId:id, activeHostScreens:activeHostIds.length, diagnosticId:keptEvent?.id || '' } });
-            return;
-        }
-        liveHost.disconnected = true;
-        io.to(id).emit('room_update', publicRoomView(liveRoom));
-        schedulePersistRoom(id, true);
-        const closingEvent = recordDiagnostic({ source:'server', kind:'browser_exit_applied', page:'host', message:'All host screens disappeared after browser exit grace; room closure started', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ outcome:'closing_room', source:pending.source }, causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_CLOSE_ROOM', confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] } });
-        if (pending.armDiagnosticId && closingEvent?.id) linkDiagnosticEvents(pending.armDiagnosticId, closingEvent.id, 'causes');
-        addDiagnosticBreadcrumb({ source:'server', type:'browser_exit', label:'browser_exit.host_closing_room', traceId:pending.traceId, sessionId:pending.sessionId, page:'host', detail:{ roomId:id, source:pending.source, diagnosticId:closingEvent?.id || '' } });
-        await closeRoomNow(id, 'host_browser_exit');
-        const closedEvent = recordDiagnostic({ source:'server', kind:'room_closed_after_browser_exit', page:'host', message:'Room closed because the last host screen exited the browser', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ reason:'host_browser_exit' }, causalHint:{ failureStage:'room.lifecycle', causeCode:'ROOM_CLOSED', confidence:'high', upstreamEventIds:closingEvent?.id ? [closingEvent.id] : [] } });
-        if (closingEvent?.id && closedEvent?.id) linkDiagnosticEvents(closingEvent.id, closedEvent.id, 'causes');
-    }, { page:'host', traceId, sessionId, socketId, source:String(req.body?.source || 'pagehide'), signalDiagnosticId:String(signalEvent?.id || '') }, BROWSER_EXIT_HOST_GRACE_MS);
-
-    res.setHeader('Cache-Control','no-store');
-    return res.json({ ok:true, code:'BROWSER_EXIT_ARMED' });
-});
-
-app.post('/api/room/browser-exit-player', express.json({ limit:'4kb', type:['application/json','text/plain'] }), async (req, res) => {
-    const ctx = req.__wwDiagnostic || {};
-    if (!browserExitOriginAllowed(req)) return res.status(403).json({ ok:false, code:'BROWSER_EXIT_ORIGIN_REJECTED' });
-    const bodyTraceId = String(req.body?.clientTraceId || '').slice(0, 120);
-    const bodySessionId = String(req.body?.clientSessionId || '').slice(0, 120);
-    const traceId = bodyTraceId || String(ctx.traceId || '');
-    const sessionId = bodySessionId || String(ctx.sessionId || '');
-    const id = String(req.body?.roomId || '').trim().toUpperCase();
-    const tok = String(req.body?.token || '');
-    const requestAccountId = normalizeAccountId(req.body?.accountId || '');
     const requestMembershipId = String(req.body?.membershipId || '').trim();
     const requestSocketId = String(req.body?.socketId || '');
     const requestDeviceId = normalizeDeviceId(req.body?.deviceId || '');
-    const requestSocket = requestSocketId ? io.sockets.sockets.get(requestSocketId) : null;
-    const requestSessionHash = String(requestSocket?.data?.accountSessionHash || '');
     const signalEvent = recordDiagnostic({
         source:'client', kind:'browser_exit_signal', page:'player', message:'Player pagehide exit signal reached the server',
         traceId, sessionId, requestId:String(ctx.requestId || ''), roomId:id, endpoint:'/api/room/browser-exit-player',
-        context:{ source:String(req.body?.source || 'pagehide'), socketIdPresent:!!String(req.body?.socketId || ''), viewport:req.body?.viewport || null, pendingOperations:req.body?.pendingOperations || [], started:!!req.body?.started },
+        context:{ source:String(req.body?.source || 'pagehide'), socketIdPresent:!!requestSocketId, viewport:req.body?.viewport || null, pendingOperations:req.body?.pendingOperations || [], started:!!req.body?.started },
         causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_SIGNAL', confidence:'high' },
     });
-    if (!id || (!tok && !requestAccountId)) return res.status(400).json({ ok:false, code:'BROWSER_EXIT_INVALID_PAYLOAD' });
+    if (!id || !tok) return res.status(400).json({ ok:false, code:'BROWSER_EXIT_INVALID_PAYLOAD' });
     let room = rooms[id];
     if (!room) {
         try { room = await recoverPersistedRoomById(id, { reason: 'browser_exit_player' }); } catch (_) { return res.json({ ok:false, code:'SERVER_ERROR' }); }
     }
     if (!room) return res.json({ ok:true, code:'ROOM_NOT_FOUND' });
-    const player = (requestAccountId && requestMembershipId
-        ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === requestAccountId && String(p.membershipId || '').trim() === requestMembershipId)
+    const player = (requestMembershipId
+        ? room.players.find((p) => p && !p.isHost && String(p.membershipId || '').trim() === requestMembershipId && p.token === tok)
         : null)
-        || (requestAccountId ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === requestAccountId) : null)
         || room.players.find((p) => p && !p.isHost && p.token === tok);
     if (!player) return res.json({ ok:true, code:'PLAYER_NOT_FOUND' });
 
-    if (requestAccountId && player.membershipId) {
-        const otherSocket = getConnectedSocketsForAccount(requestAccountId).some((sock) =>
-            sock.id !== requestSocketId && String(sock.data?.membershipId || "") === String(player.membershipId || "")
-        );
-        if (otherSocket) return res.json({ ok:true, code:'BROWSER_EXIT_SECONDARY_TAB_IGNORED', retained:true });
-    }
-
-    // If Socket.IO has already reported this exact socket as disconnected, the pagehide
-    // beacon is a late duplicate lifecycle signal. The normal disconnect/reconnect-grace
-    // path is already responsible for the player state; arming a second browser-exit
-    // transaction here only creates duplicate LEFT_LOBBY/diagnostic events.
-    const priorDisconnect = recentSocketDisconnect('player', id, tok, String(req.body?.socketId || ''));
+    const priorDisconnect = recentSocketDisconnect('player', id, tok, requestSocketId);
     if (priorDisconnect) {
         const duplicateEvent = recordDiagnostic({
             source:'server', kind:'browser_exit_duplicate_ignored', page:'player',
             message:'Late player pagehide signal ignored because the same socket already disconnected',
             traceId, sessionId, requestId:String(ctx.requestId || ''), roomId:id,
-            context:{ source:String(req.body?.source || 'pagehide'), socketId:String(req.body?.socketId || ''),
-                priorDisconnectAt:new Date(priorDisconnect.time).toISOString() },
+            context:{ source:String(req.body?.source || 'pagehide'), socketId:requestSocketId, priorDisconnectAt:new Date(priorDisconnect.time).toISOString() },
             causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_DUPLICATE_IGNORED', confidence:'high' },
         });
         return res.json({ ok:true, code:'BROWSER_EXIT_DUPLICATE_IGNORED', recorded:true, diagnosticId:duplicateEvent?.id || '' });
     }
 
-    armPendingBrowserExit('player', id, tok || player.token, async (pending) => {
-        // A delayed pagehide from an older session must never clear the activity acquired by a newer
-        // login on the same account. Re-read the durable active session before applying the exit.
-        if (pending.accountId && pending.sessionHash) {
-            try {
-                const profile = await getAccountProfile(pending.accountId, { forceFresh: true });
-                const activeHash = String(profile?.[ACCOUNT_ACTIVE_SESSION_HASH_FIELD] || '');
-                if (activeHash && activeHash !== pending.sessionHash) {
-                    return;
-                }
-            } catch (_) {}
-        }
+    armPendingBrowserExit('player', id, tok, async (pending) => {
         const liveRoom = rooms[id];
         if (!liveRoom) return;
-        const livePlayer = (pending.accountId && pending.membershipId
-            ? liveRoom.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === pending.accountId && String(p.membershipId || '').trim() === pending.membershipId)
+        const livePlayer = (pending.membershipId
+            ? liveRoom.players.find((p) => p && !p.isHost && String(p.membershipId || '').trim() === pending.membershipId && p.token === pending.token)
             : null)
-            || (pending.accountId ? liveRoom.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || '') === pending.accountId) : null)
             || liveRoom.players.find((p) => p && !p.isHost && p.token === pending.token);
         if (!livePlayer) return;
         if (isPlayerCurrentlyConnected(livePlayer)) {
-            const reconnectedEvent = recordDiagnostic({ source:'server', kind:'browser_exit_cancelled', page:'player', message:'Player reconnected during browser-exit grace; no leave/death was applied', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ outcome:'reconnected', source:pending.source }, causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_RECONNECTED', confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] } });
+            const reconnectedEvent = recordDiagnostic({
+                source:'server', kind:'browser_exit_cancelled', page:'player',
+                message:'Player reconnected during browser-exit grace; no leave/death was applied', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id,
+                context:{ outcome:'reconnected', source:pending.source },
+                causalHint:{ failureStage:'browser.lifecycle', causeCode:'BROWSER_EXIT_RECONNECTED', confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] }
+            });
             if (pending.armDiagnosticId && reconnectedEvent?.id) linkDiagnosticEvents(pending.armDiagnosticId, reconnectedEvent.id, 'causes');
-            addDiagnosticBreadcrumb({ source:'server', type:'browser_exit', label:'browser_exit.player_reconnected', traceId:pending.traceId, sessionId:pending.sessionId, page:'player', detail:{ roomId:id, diagnosticId:reconnectedEvent?.id || '' } });
             return;
         }
-        pending.accountId = pending.accountId || requestAccountId || normalizeAccountId(livePlayer.accountId || '');
-        pending.membershipId = pending.membershipId || requestMembershipId || String(livePlayer.membershipId || '');
+        pending.membershipId = pending.membershipId || String(livePlayer.membershipId || '');
         const result = await applyVoluntaryPlayerExit(id, pending.token, 'browser_tab_closed', pending);
         const appliedEvent = recordDiagnostic({ source:'server', kind:'browser_exit_applied', page:'player', message:'Player browser exit passed reconnect grace and was applied to room/game state', traceId:pending.traceId, sessionId:pending.sessionId, roomId:id, context:{ result:result || {}, source:pending.source }, causalHint:{ failureStage:'room.lifecycle', causeCode:String(result?.code || 'BROWSER_EXIT_APPLIED'), confidence:'high', upstreamEventIds:pending.armDiagnosticId ? [pending.armDiagnosticId] : [] } });
         if (pending.armDiagnosticId && appliedEvent?.id) linkDiagnosticEvents(pending.armDiagnosticId, appliedEvent.id, 'causes');
-    }, { page:'player', traceId, sessionId, source:String(req.body?.source || 'pagehide'), socketId:requestSocketId, accountId:requestAccountId || normalizeAccountId(player.accountId || ''), membershipId:requestMembershipId || String(player.membershipId || ''), sessionHash:requestSessionHash, deviceId:requestDeviceId, signalDiagnosticId:String(signalEvent?.id || '') }, BROWSER_EXIT_PLAYER_GRACE_MS);
+    }, { page:'player', traceId, sessionId, source:String(req.body?.source || 'pagehide'), socketId:requestSocketId, membershipId:requestMembershipId || String(player.membershipId || ''), deviceId:requestDeviceId, signalDiagnosticId:String(signalEvent?.id || '') }, BROWSER_EXIT_PLAYER_GRACE_MS);
 
     res.setHeader('Cache-Control','no-store');
     return res.json({ ok:true, code:'BROWSER_EXIT_ARMED' });
@@ -13009,7 +6381,6 @@ app.post('/api/room/browser-exit-player', express.json({ limit:'4kb', type:['app
 // ============================================================
 // SOCKET EVENTS
 // ============================================================
-ensureAccountSessionWatchdog();
 
 io.on("connection", (socket) => {
 
@@ -13029,125 +6400,49 @@ io.on("connection", (socket) => {
     // ที่ reject จาก handler async) ถูกจับไว้ที่นี่: log ไว้ debug + เรียก cb({error}) ให้ client
     // ได้รับคำตอบแน่ๆ แทนที่จะค้างเงียบ — ไม่เปลี่ยนพฤติกรรมตอนไม่มี error เลยแม้แต่นิดเดียว
     const _rawSocketOn = socket.on.bind(socket);
-    // แอดมิน (หน้า admin.html) ผ่านด่านตอนปิดเซิร์ฟเวอร์ได้ — ที่เหลือถูกบล็อกซ้ำตรงนี้ด้วย (ดู "เปิด/ปิดเซิร์ฟเวอร์" ด้านบนสุดของไฟล์)
-    socket.data.isAdmin = isAdminSocket(socket);
-    socket.data.diagnosticSessionId = String(socket.handshake?.auth?.wwDiagSessionId || "").slice(0, 120);
-    socket.use((packet, next) => {
-        try {
-            const event = String(packet?.[0] || "event");
-            const args = packet?.slice(1) || [];
-            const roomCandidate = args.map((x) => x && typeof x === "object" ? (x.roomId || x.room || "") : "").find(Boolean);
-            socket.data.diagnosticTraceId = makeDiagnosticId("sock");
-            socket.data.diagnosticAction = `socket:${event}`.slice(0, 120);
-            socket.data.diagnosticRoomId = String(roomCandidate || "").toUpperCase().slice(0, 12);
-            addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`receive:${event}`, traceId:socket.data.diagnosticTraceId, sessionId:socket.data.diagnosticSessionId, page:"server", detail:{ socketId:socket.id, roomId:socket.data.diagnosticRoomId, args:args.map(safeDiagnosticValue) } });
-        } catch (_) {}
-        next();
-    });
-    const SOCKET_INTERNAL_EVENTS = new Set(["disconnect", "disconnecting", "error"]);
     socket.on = (event, handler) => {
         return _rawSocketOn(event, (...args) => {
             const maybeCb = args[args.length - 1];
             const hasCb = typeof maybeCb === "function";
-            // ตอนปิดเซิร์ฟเวอร์: ทิ้ง event เกมทุกตัวจาก socket ที่ไม่ใช่แอดมิน (ครอบคลุมช่วง 0.8 วิก่อนถูกตัดการเชื่อมต่อ)
-            // "ไม่ตอบ callback" ตั้งใจ — ถ้าตอบ {error} หน้าเกมจะเข้าใจว่าห้องหาย แล้วลบ ww_joinedRoom ที่จำห้องเดิมไว้ทิ้ง
-            // ("disconnect" ต้องปล่อยผ่านเสมอ ไม่งั้นระบบนับผู้เล่นออฟไลน์/ล้างตัวจับเวลาหลุดไปด้วย)
-            // ตอนปิดเซิร์ฟเวอร์ อนุญาตเฉพาะ: (1) socket แอดมิน → เฉพาะ event admin_* เท่านั้น (auth.admin เป็นค่าที่ client ส่งมาเอง — เดิมถือว่า
-            // ผ่านทุก event ซึ่งเปิดช่องให้ใครก็ได้ต่อ socket ด้วย {auth:{admin:true}} แล้วเล่นเกมต่อตอนปิด), (2) ผู้ถือบัตรผ่านที่ server ออกให้,
-            // (3) สมาชิกห้องผู้ทดสอบ (สถานะห้องบน server) — นอกนั้นทิ้งเงียบๆ
-            if (String(event).startsWith("admin_") && !socket.data.isAdmin) {
-                addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`blocked:${event}`, traceId:String(socket.data.diagnosticTraceId||""), sessionId:String(socket.data.diagnosticSessionId||""), page:"server", detail:{ socketId:socket.id, reason:"admin_auth_required", code:"ADMIN_AUTH_REQUIRED" } });
-                if (hasCb) { try { maybeCb({ error: "admin_auth_required", code: "ADMIN_AUTH_REQUIRED" }); } catch (_) {} }
+            if (String(event).startsWith("admin_") && (!socket.data.isAdmin || !isAdminSocket(socket))) {
+                if (hasCb) { try { maybeCb({ error:"admin_auth_required", code:"ADMIN_AUTH_REQUIRED" }); } catch (_) {} }
                 return;
             }
             if (serverClosed && !SOCKET_INTERNAL_EVENTS.has(event)) {
                 if (socket.data.isAdmin) {
-                    if (!String(event).startsWith("admin_")) {
-                        addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`blocked:${event}`, traceId:String(socket.data.diagnosticTraceId||""), sessionId:String(socket.data.diagnosticSessionId||""), page:"server", detail:{ socketId:socket.id, reason:"server_closed_admin_non_admin_event", code:"SERVER_CLOSED" } });
-                        return;
-                    }
+                    if (!String(event).startsWith("admin_")) return;
                 } else if (!isTesterPassValid(socket.data.testerToken) && !socket.data.roomTesterAuth && socketRoomKind(socket) !== "tester") {
-                    addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`blocked:${event}`, traceId:String(socket.data.diagnosticTraceId||""), sessionId:String(socket.data.diagnosticSessionId||""), page:"server", detail:{ socketId:socket.id, reason:"server_closed", code:"SERVER_CLOSED" } });
                     return;
                 }
             }
             if (resetInProgress && !SOCKET_INTERNAL_EVENTS.has(event)) {
-                addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`blocked:${event}`, traceId:String(socket.data.diagnosticTraceId||""), sessionId:String(socket.data.diagnosticSessionId||""), page:"server", detail:{ socketId:socket.id, reason:"reset_in_progress", code:"RESET_IN_PROGRESS" } });
-                if (hasCb) {
-                    try { maybeCb({ error: "reset_in_progress", code: "RESET_IN_PROGRESS" }); } catch (_) {}
-                }
+                if (hasCb) { try { maybeCb({ error:"reset_in_progress", code:"RESET_IN_PROGRESS" }); } catch (_) {} }
                 return;
             }
-            const operationId = makeDiagnosticId("sockop");
-            const startedAt = Date.now();
-            const diagContext = {
-                traceId: String(socket.data.diagnosticTraceId || makeDiagnosticId("sock")).slice(0, 120),
-                sessionId: String(socket.data.diagnosticSessionId || "").slice(0, 120),
-                action: String(socket.data.diagnosticAction || `socket:${event}`).slice(0, 120),
-                roomId: String(socket.data.diagnosticRoomId || "").toUpperCase().slice(0, 12),
-                operationId,
-            };
-            addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`handler.start:${event}`, traceId:diagContext.traceId, sessionId:diagContext.sessionId, page:"server", detail:{ socketId:socket.id, operationId, roomId:diagContext.roomId, hasAck:hasCb, args:safeDiagnosticValue(args.slice(0, Math.min(2, args.length)).map((x) => typeof x === "function" ? "[ack]" : x)), authObservation:{ requestedTester:args[0]?.isTester === true, testerPassPresented:!!socket.data.testerPassPresented, testerPassValid:!!socket.data.testerPassValid, testerGranted:!!socket.data.testerToken, testerPassBootstrapError:String(socket.data.testerPassBootstrapError || ""), hasAccountToken:!!args[0]?.accountToken, hasAccountId:!!args[0]?.accountId, isAdmin:!!socket.data.isAdmin } } });
             let ackSent = false;
             if (hasCb) {
                 args[args.length - 1] = (...ackArgs) => {
-                    const first = ackArgs[0];
-                    if (ackSent) {
-                        addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`ack.duplicate:${event}`, traceId:diagContext.traceId, sessionId:diagContext.sessionId, page:"server", detail:{ socketId:socket.id, operationId, elapsedMs:Date.now()-startedAt, ack:first } });
-                        try { return maybeCb(...ackArgs); } catch (_) { return undefined; }
-                    }
+                    if (ackSent) return maybeCb(...ackArgs);
                     ackSent = true;
-                    const ackOk = isSuccessfulDiagnosticAck(event, first);
-                    addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`ack:${event}`, traceId:diagContext.traceId, sessionId:diagContext.sessionId, page:"server", detail:{ socketId:socket.id, operationId, eventName:event, elapsedMs:Date.now()-startedAt, ok:ackOk, code:ackOk ? "" : (first?.code || first?.errorCode || ""), error:ackOk ? "" : (first?.error || ""), ack:safeDiagnosticValue(first), ackType:Array.isArray(first) ? "array" : typeof first } });
                     try { return maybeCb(...ackArgs); } catch (err) { console.error(`[socket:${event}] ack callback error`, err); }
                 };
             }
             try {
-                const result = diagnosticAsyncContext.run(diagContext, () => handler(...args));
+                const result = handler(...args);
                 if (result && typeof result.then === "function") {
-                    result.then(() => {
-                        addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`handler.resolve:${event}`, traceId:diagContext.traceId, sessionId:diagContext.sessionId, page:"server", detail:{ socketId:socket.id, operationId, elapsedMs:Date.now()-startedAt, ackSent } });
-                    }).catch((err) => {
-                        diagnosticAsyncContext.run(diagContext, () => {
-                            console.error(`[socket:${event}] unhandled async error`, err);
-                            recordDiagnostic({ source:"server", kind:"socket_handler_error", page:"server", message:err?.message || String(err), stack:err?.stack || "", context:{ eventName:event, operationId, code:"SERVER_ERROR", ackSent }, operationId });
-                        });
-                        if (hasCb && !ackSent) {
-                            try { args[args.length - 1]({ error: "internal_error", code: "SERVER_ERROR" }); } catch (_) {}
-                        }
+                    result.catch((err) => {
+                        console.error(`[socket:${event}] unhandled async error`, err);
+                        recordDiagnostic({kind:"socket_handler_failed",page:"server",message:String(event)+": "+err.message,stack:err.stack,roomId:socket.data.roomId});
+                        if (hasCb && !ackSent) { try { args[args.length - 1]({ error:"internal_error", code:"SERVER_ERROR" }); } catch (_) {} }
                     });
-                } else {
-                    addDiagnosticBreadcrumb({ source:"server", type:"socket", label:`handler.return:${event}`, traceId:diagContext.traceId, sessionId:diagContext.sessionId, page:"server", detail:{ socketId:socket.id, operationId, elapsedMs:Date.now()-startedAt, ackSent } });
                 }
             } catch (err) {
-                diagnosticAsyncContext.run(diagContext, () => {
-                    console.error(`[socket:${event}] error`, err);
-                    recordDiagnostic({ source:"server", kind:"socket_handler_error", page:"server", message:err?.message || String(err), stack:err?.stack || "", context:{ eventName:event, operationId, code:"SERVER_ERROR", ackSent }, operationId });
-                });
-                if (hasCb && !ackSent) {
-                    try { args[args.length - 1]({ error: "internal_error", code: "SERVER_ERROR" }); } catch (_) {}
-                }
+                console.error(`[socket:${event}] error`, err);
+                recordDiagnostic({kind:"socket_handler_failed",page:"server",message:String(event)+": "+err.message,stack:err.stack,roomId:socket.data.roomId});
+                if (hasCb && !ackSent) { try { args[args.length - 1]({ error:"internal_error", code:"SERVER_ERROR" }); } catch (_) {} }
             }
         });
     };
-
-    // เฟส 3-5 (bot-autonomous-ai-phases.md) + แก้บั๊กบอทไม่ทำงานคืน 1-2: deps ชุดเดียวกันที่ใช้ทุกจุด
-    // ที่ต้องยิง runBotsFor("wolfKill"/"nightSkill", ...) ตอนเข้าคืนใหม่ — ฟังก์ชัน performX ทุกตัว
-    // ที่อ้างในนี้เป็น function declaration ที่ hoisted อยู่ใน scope เดียวกัน (io.on("connection", ...))
-    // จึงเรียกจากตรงนี้ได้แม้จะประกาศจริงอยู่หลังบรรทัดนี้ในไฟล์ — รวมไว้ที่เดียวกันเผื่อเรียกซ้ำ
-    // จากหลายจุด (start_game / closeVoteRound / start_night) ไม่ต้องพิมพ์ object ซ้ำทุกที่แล้วเสี่ยงพิมพ์ตก
-    function nightBotDeps() {
-        return {
-            rooms,
-            performWolfKill,
-            performSelectTarget,
-            performScoutTarget,
-            performDetectiveScout,
-            performWitchPoison,
-            isPlayerCurrentlyConnected,
-            WOLF_ROLES,
-        };
-    }
 
     // ส่ง Running version จริงของ Elastic Beanstalk ให้ client ทันทีหลังเชื่อมต่อ
     // client ใช้ค่าจาก event นี้เป็นแหล่งแสดงผลหลัก; ถ้า AWS ยังตอบไม่ทันจะได้ fallback จาก /api/config
@@ -13196,7 +6491,7 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     // CREATE ROOM
     // ----------------------------------------------------------------
-    socket.on("create_room", async ({ name, token, accountId, accountToken, isTester, testerSessionId, settings } = {}, cb) => {
+    socket.on("create_room", async ({ name, token, isTester, testerSessionId, settings } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         // isTester จาก client เป็นแค่ "คำขอ" — server ตัดสินเองจากบัตรผ่านที่ผูกกับ socket นี้
         // ไม่มีบัตรที่ใช้ได้ = ไม่อนุญาตให้ปลอมสร้างห้องผู้ทดสอบ
@@ -13212,17 +6507,6 @@ io.on("connection", (socket) => {
         }
         // settings = ค่าที่โฮสต์ตั้งไว้ในหน้า "ตั้งค่าห้องก่อนสร้าง" (ดู sanitizeRoomSettings) — ไม่ส่งมา = ค่าเริ่มต้นเดิมทุกอย่าง
         const st = sanitizeRoomSettings(settings);
-        // บัญชีจริงใช้ accountId + accountToken; token ของห้องยังแยกเป็น room reconnect credential
-        const requestedAccountId = testerGranted ? "" : normalizeAccountId(accountId || "");
-        const accountIdentity = testerGranted
-            ? { ok: true, accountId: "", name: sanitizeName(name, "โฮสต์"), profile: null }
-            : await ensureNormalAccountIdentity(requestedAccountId, name, { accountToken, roomId: "", isHost: true, join: true, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
-        if (!accountIdentity.ok) return cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code });
-        name = accountIdentity.name;
-        if (!testerGranted) {
-            const activityCheck = getAccountActiveActivity(accountIdentity.profile);
-            if (activityCheck && activityCheck.type !== "HOST_ROOM") return cb({ error: "account activity already active", code: "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activityCheck });
-        }
         // บั๊ก: เดิม genId() เรียกครั้งเดียวแล้วใช้เลย ไม่เช็คว่าห้องรหัสนี้มีอยู่แล้วหรือไม่
         // genId() สุ่ม 5 ตัวอักษรจาก [0-9a-z] มีค่าที่เป็นไปได้ ~36^5 ≈ 60 ล้านแบบ แต่ถ้าเกิดชนกัน
         // พอดี (แม้โอกาสต่ำ) โค้ดเดิมจะ "rooms[id] = {...}" ทับห้องเดิมที่มีคนเล่นอยู่ทันที
@@ -13233,7 +6517,7 @@ io.on("connection", (socket) => {
         // ผูกห้องใหม่เข้ากับ diagnostic context ตั้งแต่ได้รหัส เพื่อให้ snapshot/index ที่ทำต่อด้วย timer
         // ยังระบุสถานที่เกิดเหตุได้ แม้ create_room payload จาก client จะยังไม่มี roomId ก่อนสร้าง
         socket.data.diagnosticRoomId = String(id).toUpperCase().slice(0, 12);
-        const hostToken = normalizeAccountId(token || "") || (genId() + genId());
+        const hostToken = normalizeRoomToken(token) || (genId() + genId());
         const testerHostSlot = testerGranted ? nextTesterHostSlot() : 0;
         const hostMembershipId = generateMembershipId();
         if (testerGranted) name = `โฮสต์${testerHostSlot}`;
@@ -13251,8 +6535,7 @@ io.on("connection", (socket) => {
             testerSessionId: testerGranted ? String(testerSessionId || "").slice(0, 128) : "",
             host: socket.id,
             hostIds: [socket.id],
-            ownerAccountId: testerGranted ? "" : (accountIdentity.accountId || ""),
-            hostMembershipId,
+                        hostMembershipId,
             roomLeaseEpoch: 0,
             // รหัสผ่านห้อง (แยกจาก HOST_PASSWORD ทั่วไปฝั่ง index.html ที่กันแค่คนเข้าโหมดโฮสต์ได้)
             // ค่าว่าง "" = ไม่ได้ตั้งรหัส ใครมีสิทธิ์เข้าโหมดโฮสต์อยู่แล้วก็เลือกคุมห้องนี้ได้เลย
@@ -13288,24 +6571,11 @@ io.on("connection", (socket) => {
             gameOver: false,
             gameResult: null,
             continueReady: {},
-            // เฟส 0 (bot-autonomous-ai-phases.md): flag คุม AI บอทต่อห้อง — enabled คุมทั้งห้อง,
-            // perBot คุมรายตัว ({ [botId]: false } = ปิดเฉพาะตัวนั้น) ตอนนี้ยังไม่มีอะไรอ่านค่านี้จริง
-            // (เฟส 2 จะเริ่มเช็คก่อนให้ runBotsFor ทำงาน, เฟส 4 จะมี UI ให้โฮสต์สลับ toggle นี้)
-            // llmBots: เฟส 5 / "แนวทาง B" — perBot[id] === true คือให้บอทตัวนั้นใช้ Claude ตัดสินใจ
-            // แทนสุ่ม (ดู bot-autonomous-ai-approach-b-technical.md) ปิดเป็นค่าเริ่มต้นเสมอ
-            //
-            // แก้ตามคำขอ: สวิตช์ "บอทเล่นเองอัตโนมัติ (ทั้งห้อง)" เปลี่ยนจากเริ่มต้น "เปิด" เป็น
-            // "ปิด" เสมอสำหรับห้องใหม่ทุกห้อง — โฮสต์ต้องกดเปิดเองถึงจะให้บอทเล่นเองอัตโนมัติได้
-            // (ปิด default ไว้กันบอทสุ่ม action โดยไม่ตั้งใจก่อนโฮสต์พร้อม)
-            botAI: { enabled: st.botAIEnabled, perBot: {}, llmBots: {} },
             players: [{
                 id: socket.id,
                 roomId: id,
                 token: hostToken,
-                accountId: testerGranted ? "" : (accountIdentity.accountId || ""),
                 membershipId: hostMembershipId,
-                activeDeviceId: testerGranted ? "" : normalizeDeviceId(socket.data?.deviceId || ""),
-                activeTabId: testerGranted ? "" : normalizeTabId(socket.data?.tabId || ""),
                 name,
                 isHost: true,
                 role: null,
@@ -13335,32 +6605,21 @@ io.on("connection", (socket) => {
             }
         }
 
-        if (!testerGranted) {
-            const activity = await acquireAccountActivity(accountIdentity.accountId, { type: "HOST_ROOM", roomId: id, membershipId: hostMembershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: true });
-            if (!activity.ok) { await releaseRoomLease(id).catch(() => {}); delete rooms[id]; return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null }); }
-        }
-        socket.data.accountId = testerGranted ? "" : accountIdentity.accountId;
-        socket.data.accountSessionHash = testerGranted ? "" : hashAccountToken(accountToken);
-        socket.data.deviceId = testerGranted ? "" : normalizeDeviceId(socket.data.deviceId || "");
-        socket.data.tabId = testerGranted ? "" : normalizeTabId(socket.data.tabId || "");
+        socket.data.deviceId = normalizeDeviceId(socket.data.deviceId || "");
+        socket.data.tabId = normalizeTabId(socket.data.tabId || "");
         socket.data.roomId = id;
-        socket.data.membershipId = testerGranted ? "" : hostMembershipId;
+        socket.data.membershipId = hostMembershipId;
         socket.data.isHost = true;
         socket.join(id);
         socket.join(hostRoomName(id));
         hostSocketRooms[socket.id] = id;
         // บันทึก snapshot + register index ก่อนส่ง room_update/ack เพื่อให้ "สร้างห้องสำเร็จ"
         // หมายถึงห้องมีสำเนาถาวรอยู่แล้ว (ถ้า DynamoDB ชั่วคราวล่มยัง fail-open ต่อเกมได้)
+        touchRoomActivity(rooms[id]);
         try { await persistRoomSnapshot(rooms[id], { register: true }); }
         catch (e) { console.error(`[room-persist] สร้าง snapshot ห้อง ${id} ไม่สำเร็จ:`, e.name, e.message); }
         broadcastRoomUpdate(id, rooms[id], { timelineType: "room_created", source: "room" });
         broadcastSuggestedRoom();
-        // ลงทะเบียนชื่อ legacy เฉพาะผู้เล่นจริง; tester ไม่มีบัญชีจริงเด็ดขาด
-        if (!testerGranted) {
-            touchAccountPresence(accountIdentity.accountId || hostToken, { roomId: id, name, isHost: true });
-        } else {
-            // tester ไม่เขียน registry/account แต่ snapshot ยังเก็บ room สำหรับการทดสอบตามเดิม
-        }
         // ส่งรหัสที่ตั้งไว้กลับไปด้วย (เฉพาะ ack ให้โฮสต์ที่สร้างห้อง ไม่ผ่าน room_update ที่ broadcast ให้ทุกคน) —
         // client จำไว้ในเครื่องเหมือนตอนตั้งผ่าน "⚙️ ตั้งค่าห้อง" จะได้ host_login ซ้ำ/โชว์ในช่องตั้งค่าได้
         cb({ ok: true, roomId: id, token: hostToken, hostPassword: st.hostPassword, joinCode: st.joinCode, testerHostSlot, membershipId: hostMembershipId });
@@ -13369,8 +6628,17 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     // LIST OPEN ROOMS
     // ----------------------------------------------------------------
-    socket.on("list_open_rooms", (cb) => {
-        cb(getOpenRoomsList());
+    socket.on("list_open_rooms", (request, cb) => {
+        // Preserve the callback-only contract for existing clients.
+        if (typeof request === "function") { cb = request; request = {}; }
+        if (typeof cb !== "function") return;
+        const ownerToken = normalizeRoomToken(request?.token);
+        cb(getOpenRoomsList().map((entry) => ({
+            ...entry,
+            canResumeHost: !!ownerToken && ownerToken === normalizeRoomToken(
+                rooms[entry.roomId]?.players.find((p) => p.isHost)?.token
+            ),
+        })));
     });
 
     // ----------------------------------------------------------------
@@ -13382,9 +6650,9 @@ io.on("connection", (socket) => {
     });
 
     // ----------------------------------------------------------------
-    // HOST LOGIN — เข้าคุมห้องที่เลือกจากกริด (ไม่ต้องมี token เดิมตรงกัน)
+    // HOST LOGIN — เจ้าของกลับเข้าห้องด้วย token เดิม
     // ----------------------------------------------------------------
-    socket.on("host_login", async ({ roomId, token, password, accountId, accountToken } = {}, cb) => {
+    socket.on("host_login", async ({ roomId, token, password } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         if (!roomId || (typeof roomId !== "string" && typeof roomId !== "number")) {
             return cb({ error: "room not found", code: "ROOM_NOT_FOUND" });
@@ -13407,58 +6675,39 @@ io.on("connection", (socket) => {
                 return cb({ error: "room recovery temporarily unavailable", code: "SERVER_ERROR" });
             }
         }
-        if (!room) return cb({ error: "room not found", code: "ROOM_NOT_FOUND" });
+        if (!room || room.isClosing || roomIdleExpired(room, io.sockets.sockets)) {
+            if (room && !room.isClosing) closeRoomNow(roomId, "idle_timeout").catch(console.error);
+            return cb({ error: "room not found", code: "ROOM_NOT_FOUND" });
+        }
 
-        // กันแอดมิน/จอคนอื่นแย่งคุมห้องที่ตั้งรหัสไว้ (ดูคอมเมนต์ตอนสร้างห้อง) — ต้องส่งรหัสห้อง
-        // ที่ตรงกันมาด้วยถึงจะ login เข้าคุมห้องนี้ได้ ถ้าห้องนี้ไม่ได้ตั้งรหัสไว้ (hostPassword ว่าง)
-        // ก็ข้ามการเช็คนี้ไปเหมือนเดิม (พฤติกรรมเดิมของห้องที่ไม่ได้ตั้งรหัส)
-        if (room.hostPassword) {
-            const attemptKey = `host:${roomId}`;
-            if (!isLoginAttemptAllowed(attemptKey)) {
-                return cb({ error: "too_many_attempts", code: "TOO_MANY_ATTEMPTS" });
-            }
-            if (password !== room.hostPassword) {
-                recordFailedLoginAttempt(attemptKey);
-                return cb({ error: "wrong_password", code: "AUTH_FAILED" });
-            }
-            clearFailedLoginAttempts(attemptKey);
+        // Room ownership survives socket changes and disconnections. A public room
+        // code or player join code must never grant the host's permissions.
+        const returningHost = room.players.find((p) => p.isHost);
+        const ownerToken = normalizeRoomToken(returningHost?.token);
+        if (!ownerToken || normalizeRoomToken(token) !== ownerToken) {
+            return cb({ error: "host_owner_required", code: "HOST_OWNER_REQUIRED" });
         }
 
         const hostPlayer = room.players.find((p) => p.isHost);
         if (!hostPlayer) return cb({ error: "host slot missing", code: "ROOM_NOT_FOUND" });
-        if (!isTesterRoom(room)) {
-            const ownerId = normalizeAccountId(room.ownerAccountId || hostPlayer.accountId || "");
-            const requestedId = normalizeAccountId(accountId || socket.data?.accountId || "");
-            if (ownerId && requestedId && ownerId !== requestedId) return cb({ error: "host ownership required", code: "HOST_OWNERSHIP_REQUIRED" });
-        }
-
-        if (isTesterRoom(room) && token) hostPlayer.token = token;
+        if (isTesterRoom(room) && token) hostPlayer.token = String(token).trim().slice(0, 256);
         if (isTesterRoom(room)) {
             hostPlayer.isTester = true;
-            hostPlayer.accountId = "";
             if (!room.testerHostSlot) room.testerHostSlot = nextTesterHostSlot();
             hostPlayer.name = `โฮสต์${room.testerHostSlot}`;
         } else {
-            const accountIdentity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || hostPlayer.accountId || ""), hostPlayer.name, { accountToken, roomId, isHost: true, join: false, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
-            if (!accountIdentity.ok) return cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code });
-            hostPlayer.accountId = accountIdentity.accountId;
-            hostPlayer.name = accountIdentity.name;
-            if (!hostPlayer.membershipId) hostPlayer.membershipId = room.hostMembershipId || generateMembershipId();
-            room.ownerAccountId = accountIdentity.accountId;
-            room.hostMembershipId = hostPlayer.membershipId;
-            const activity = await acquireAccountActivity(accountIdentity.accountId, { type: "HOST_ROOM", roomId, membershipId: hostPlayer.membershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: true });
-            if (!activity.ok) return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null });
-            socket.data.accountId = accountIdentity.accountId;
-            socket.data.accountSessionHash = hashAccountToken(accountToken);
-            touchAccountPresence(hostPlayer.accountId, { roomId, name: hostPlayer.name, isHost: true });
+            hostPlayer.isTester = false;
+            hostPlayer.name = sanitizeName(hostPlayer.name, "โฮสต์");
         }
+        if (!hostPlayer.membershipId) hostPlayer.membershipId = room.hostMembershipId || generateMembershipId();
+        room.hostMembershipId = hostPlayer.membershipId;
+        delete room.ownerAccountId;
+        touchRoomActivity(room);
         hostPlayer.disconnected = false;
-        hostPlayer.id = socket.id; // transient connection handle; membershipId/accountId remain stable
+        hostPlayer.id = socket.id; // transient connection handle; membershipId remains stable
         socket.data.roomId = roomId;
         socket.data.membershipId = hostPlayer.membershipId || room.hostMembershipId || "";
         socket.data.isHost = true;
-        hostPlayer.activeDeviceId = normalizeDeviceId(socket.data?.deviceId || hostPlayer.activeDeviceId || "");
-        hostPlayer.activeTabId = normalizeTabId(socket.data?.tabId || hostPlayer.activeTabId || "");
         clearPendingBrowserExit('host', roomId, hostPlayer.token, { source:'host_login', traceId:socket.data?.diagnosticTraceId || '', sessionId:socket.data?.diagnosticSessionId || '' });
 
         // เคลียร์ timer รอลบ + timer รอโชว์สถานะหลุดของ token นี้
@@ -13478,7 +6727,7 @@ io.on("connection", (socket) => {
         addHostSocket(room, roomId, socket);
 
         broadcastRoomUpdate(roomId, room);
-        if (!hostPlayer.isTester) socket.emit("name_updated_by_host", { name: hostPlayer.name, accountId: hostPlayer.accountId || "" });
+        if (!hostPlayer.isTester) socket.emit("name_updated_by_host", { name: hostPlayer.name });
         broadcastSuggestedRoom();
 
         if (room.wolfChatHistory?.length)   socket.emit("wolf_chat_history",   room.wolfChatHistory);
@@ -13515,9 +6764,6 @@ io.on("connection", (socket) => {
             room.revealDeadRole = revealDeadRole;
         }
 
-        if (typeof hostPassword === "string") {
-            room.hostPassword = hostPassword.trim().slice(0, 20);
-        }
 
         // joinCode: รหัสห้องฝั่งผู้เล่น (แยกจาก hostPassword ด้านบน) — ไม่ส่งมา = ไม่แก้,
         // ส่งมาเป็น "" = ลบรหัส (ใครรู้โค้ดห้องก็เข้าร่วมได้เลย), ส่งค่าอื่น = ตั้งรหัสใหม่
@@ -13540,197 +6786,89 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     // PREVIOUS ROOM STATUS — ตรวจห้องเดิมของผู้เล่นก่อน auto-join ตอนเปิดหน้าใหม่
     // ----------------------------------------------------------------
-    socket.on("player_resume_status", async ({ roomId, token, accountId, accountToken, deviceId } = {}, cb) => {
+    socket.on("player_resume_status", async ({ roomId, token, membershipId } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         const id = String(roomId || "").trim().toUpperCase();
         const tok = String(token || "");
-        const requestedAccountId = normalizeAccountId(accountId || socket.data?.accountId || "");
-        const requestedDeviceId = normalizeDeviceId(deviceId || socket.data?.deviceId || "");
-        if (!id || (!tok && !accountToken && !requestedAccountId)) return cb({ ok: true, roomExists: false, playerFound: false });
+        const requestedMembershipId = String(membershipId || socket.data?.membershipId || "").trim();
+        if (!id || !tok) return cb({ ok: true, roomExists: false, playerFound: false });
         let room = rooms[id];
         if (!room) {
             try { room = await recoverPersistedRoomById(id, { reason: "player_resume_status" }); }
-            catch (e) {
-                console.error(`[room-recovery] ตรวจห้องเดิม ${id} ไม่สำเร็จ:`, e.name || "Error", e.message || e);
-                return cb({ error: "server error", code: "SERVER_ERROR" });
-            }
+            catch (e) { return cb({ error: "server error", code: "SERVER_ERROR" }); }
         }
         if (!room) return cb({ ok: true, roomExists: false, playerFound: false });
-        let resolvedAccountId = requestedAccountId;
-        if (accountToken) {
-            const verified = await verifyAccountLogin(requestedAccountId, accountToken, { deviceId: requestedDeviceId });
-            if (verified.ok === false) return cb({ ok: false, code: verified.code, error: verified.code.toLowerCase() });
-            if (!verified.profile) return cb({ ok: true, roomExists: true, playerFound: false, roomId: id });
-            resolvedAccountId = normalizeAccountId(verified.accountId || requestedAccountId);
-            socket.data.accountId = resolvedAccountId;
-            socket.data.accountSessionHash = hashAccountToken(accountToken);
-        }
-        const player = resolvedAccountId
-            ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId
-                && (!socket.data?.membershipId || String(p.membershipId || "").trim() === String(socket.data.membershipId || "").trim()))
-                || room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId)
-            : room.players.find((p) => p && !p.isHost && p.token === tok);
+        const player = (requestedMembershipId
+            ? room.players.find((p) => p && !p.isHost && p.token === tok && String(p.membershipId || "").trim() === requestedMembershipId)
+            : null)
+            || room.players.find((p) => p && !p.isHost && p.token === tok);
         if (!player) return cb({ ok: true, roomExists: true, playerFound: false, roomId: id });
         const hostPlayer = room.players.find((p) => p.isHost);
         const roundId = getRoomGameRoundId(room);
         const alreadyLeft = !!(room.started && !room.gameOver && player.leftGameRoundId === roundId);
-        return cb({
-            ok: true,
-            roomExists: true,
-            playerFound: true,
-            roomId: id,
-            hostName: hostPlayer?.name || "",
-            playerCount: room.players.filter((p) => !p.isHost).length,
-            maxPlayers: room.maxPlayers || 0,
-            started: !!room.started,
-            gameOver: !!room.gameOver,
-            isTesterRoom: !!room.isTesterRoom,
-            isNight: !!room.isNight,
-            alreadyLeft,
-        });
+        return cb({ ok:true, roomExists:true, playerFound:true, roomId:id, hostName:hostPlayer?.name || "", playerCount:room.players.filter((p) => !p.isHost).length, maxPlayers:room.maxPlayers || 0, started:!!room.started, gameOver:!!room.gameOver, isTesterRoom:!!room.isTesterRoom, isNight:!!room.isNight, alreadyLeft });
     });
 
     // ----------------------------------------------------------------
     // ABANDON GAME — ผู้เล่นเลือก "หาห้องใหม่" ระหว่างเกมที่ยังไม่จบ
     // บันทึก leave ทันที และล็อก token ไม่ให้ join กลับเข้ารอบเดิมอีก
     // ----------------------------------------------------------------
-    socket.on("abandon_game", async ({ roomId, token, accountId, accountToken, reason } = {}, cb) => {
+    socket.on("abandon_game", async ({ roomId, token, membershipId, reason } = {}, cb) => {
         if (typeof cb !== "function") cb = () => {};
         const id = String(roomId || "").trim().toUpperCase();
         const tok = String(token || "");
-        const requestedAccountId = normalizeAccountId(accountId || socket.data?.accountId || "");
-        if (!id || (!tok && !accountToken && !requestedAccountId)) return cb({ ok: false, code: "ROOM_NOT_FOUND" });
+        const requestedMembershipId = String(membershipId || socket.data?.membershipId || "").trim();
+        if (!id || !tok) return cb({ ok:false, code:"ROOM_NOT_FOUND" });
         let room = rooms[id];
         if (!room) {
-            try { room = await recoverPersistedRoomById(id, { reason: "abandon_game" }); }
-            catch (e) {
-                console.error(`[room-recovery] abandon_game กู้ห้อง ${id} ไม่สำเร็จ:`, e.name || "Error", e.message || e);
-                return cb({ ok: false, code: "SERVER_ERROR" });
-            }
+            try { room = await recoverPersistedRoomById(id, { reason:"abandon_game" }); }
+            catch (e) { return cb({ ok:false, code:"SERVER_ERROR" }); }
         }
-        if (!room) return cb({ ok: true, code: "ROOM_NOT_FOUND" });
-        let resolvedAccountId = requestedAccountId;
-        if (accountToken) {
-            const verified = await verifyAccountLogin(requestedAccountId, accountToken, { deviceId: socket.data?.deviceId || "" });
-            if (verified.ok === false) return cb({ ok: false, code: verified.code });
-            if (!verified.profile) return cb({ ok: true, code: "ROOM_NOT_FOUND" });
-            resolvedAccountId = normalizeAccountId(verified.accountId || requestedAccountId);
-            socket.data.accountId = resolvedAccountId;
-            socket.data.accountSessionHash = hashAccountToken(accountToken);
-        }
-        const player = resolvedAccountId
-            ? room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId
-                && (!socket.data?.membershipId || String(p.membershipId || "").trim() === String(socket.data.membershipId || "").trim()))
-                || room.players.find((p) => p && !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === resolvedAccountId)
-            : room.players.find((p) => p && !p.isHost && p.token === tok);
-        if (!player) return cb({ ok: true, code: "ROOM_NOT_FOUND" });
+        if (!room) return cb({ ok:true, code:"ROOM_NOT_FOUND" });
+        const player = (requestedMembershipId
+            ? room.players.find((p) => p && !p.isHost && p.token === tok && String(p.membershipId || "").trim() === requestedMembershipId)
+            : null)
+            || room.players.find((p) => p && !p.isHost && p.token === tok);
+        if (!player) return cb({ ok:true, code:"ROOM_NOT_FOUND" });
         clearPendingBrowserExit('player', id, player.token, { source:'abandon_game' });
         if (!room.started || room.gameOver) {
-            // หน้าใหม่อาจยังไม่ได้ join socket เข้าห้องเดิม จึงต้องลบสมาชิกด้วย token ได้ด้วย
-            // ไม่ใช่พึ่ง socket.id อย่างเดียวเหมือน leave_room ซึ่งตั้งใจใช้กับ back navigation
-            // ของ socket ที่อยู่ในห้องอยู่แล้ว
             if (!room.started && !room.gameOver) {
                 if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
-                if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token].timer); delete pendingIndicators[player.token]; }
-                const playerId = player.id;
-                const cleanMap = (map) => {
-                    if (!map) return;
-                    Object.keys(map).forEach((sid) => { if (map[sid] === playerId) delete map[sid]; });
-                    delete map[playerId];
-                };
-                cleanMap(room.selectedTargets);
-                cleanMap(room.shieldTargets);
-                cleanMap(room.curseTargets);
-                cleanMap(room.votes);
-                cleanMap(room.wolfKillVotes);
-                cleanMap(room.banditKillVotes);
-                if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: socket.data?.accountSessionHash || "", deviceId: socket.data?.deviceId || "" }).catch(() => {});
-                room.players = room.players.filter((p) => {
-                    if (!p) return false;
-                    if (player.accountId && normalizeAccountId(p.accountId || "") === normalizeAccountId(player.accountId || "") && String(p.membershipId || "") === String(player.membershipId || "")) return false;
-                    return p !== player && p.token !== tok;
-                });
+                if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
+                stripBrowserExitPlayerMaps(room, player.id);
+                room.players = room.players.filter((p) => p !== player && p.token !== tok);
                 broadcastRoomUpdate(id, room);
                 schedulePersistRoom(id, true);
                 broadcastSuggestedRoom();
             }
             socket.leave(id);
-            return cb({ ok: true, code: room.gameOver ? "ROOM_ALREADY_ENDED" : "LEFT_LOBBY", recorded: false });
+            return cb({ ok:true, code:room.gameOver ? "ROOM_ALREADY_ENDED" : "LEFT_LOBBY", recorded:false });
         }
-        const roundId = getRoomGameRoundId(room);
-        if (player.leaveStatsRecordedRoundId === roundId) {
-            player.leftGameRoundId = roundId;
-            player.disconnected = true;
-            player.offline = true;
-            // การเลือก "หาห้องใหม่" ระหว่างเกมถือเป็นการตายทันทีในรอบเดิม
-            // ถ้าสถิติถูกบันทึกไปแล้ว (เช่น client retry หลัง ACK หลุด) ต้องทำ game-state
-            // transition ให้ครบด้วยเช่นกัน แต่ห้ามประกาศซ้ำหลายครั้ง
-            if (player.alive) {
-                player.alive = false;
-                cleanupAfterVoluntaryLeaveDeath(room, player);
-                const leaveMsg = {
-                    name: "เกม",
-                    text: `🚪 ${player.name || "ผู้เล่น"} ออกจากเกม`,
-                    type: "global",
-                    isSystem: true,
-                    isDeath: true,
-                    isGameLeave: true,
-                };
-                pushGlobalChat(room, leaveMsg);
-                io.to(id).emit("chat_message", leaveMsg);
-                checkGameEndGeneral(room, id);
-            }
-            socket.leave(id);
-            broadcastRoomUpdate(id, room);
-            schedulePersistRoom(id, true);
-            return cb({ ok: true, alreadyRecorded: true, recorded: true });
-        }
-
-        try {
-            const result = await recordImmediateGameLeaveStats(room, player, reason || "new_room");
-            if (!result.ok) return cb({ ok: false, code: "SERVER_ERROR" });
-        } catch (e) {
-            console.error(`[leave] บันทึกผู้เล่นออกเกม ${id}/${tok.slice(0, 8)} ไม่สำเร็จ:`, e.name || "Error", e.message || e);
-            return cb({ ok: false, code: "SERVER_ERROR" });
-        }
-
+        player.leftGameRoundId = getRoomGameRoundId(room);
+        player.leaveReason = String(reason || "new_room").slice(0,64);
+        player.leaveRecordedAt = player.leaveRecordedAt || Date.now();
         player.disconnected = true;
         player.offline = true;
-
-        // การหนีด้วย "หาห้องใหม่" ระหว่างเกม = ตายทันทีในเกมเดิม
-        // ใช้ cleanupAfterDeath() เพื่อถอนเป้าหมาย/โหวต/การป้องกัน/ความสัมพันธ์ที่เกี่ยวข้อง
-        // และถอนเฉพาะเอฟเฟกต์ของผู้ที่หนี โดยไม่เรียกกฎตายตาม (คู่รัก, คู่ยุยง, ลูกหมาป่า, ลัทธิ)
-        // เพื่อให้การหนีไม่ส่งผลให้ผู้เล่นอื่นตาย/เปลี่ยนสถานะตาม
         if (player.alive) {
             player.alive = false;
             cleanupAfterVoluntaryLeaveDeath(room, player);
-
-            const leaveMsg = {
-                name: "เกม",
-                text: `🚪 ${player.name || "ผู้เล่น"} ออกจากเกม`,
-                type: "global",
-                isSystem: true,
-                isDeath: true,
-                isGameLeave: true,
-            };
+            const leaveMsg = { name:"เกม", text:`🚪 ${player.name || "ผู้เล่น"} ออกจากเกม`, type:"global", isSystem:true, isDeath:true, isGameLeave:true };
             pushGlobalChat(room, leaveMsg);
             io.to(id).emit("chat_message", leaveMsg);
         }
-
         if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
-        if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token].timer); delete pendingIndicators[player.token]; }
+        if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
+        checkGameEndGeneral(room, id);
         socket.leave(id);
         broadcastRoomUpdate(id, room);
-        checkGameEndGeneral(room, id);
         schedulePersistRoom(id, true);
-        broadcastSuggestedRoom();
-        cb({ ok: true, recorded: true, roomId: id, markedDead: true });
+        return cb({ ok:true, recorded:true, roomId:id, markedDead:true });
     });
 
     // ----------------------------------------------------------------
     // JOIN ROOM
     // ----------------------------------------------------------------
-    socket.on("join_room", async ({ roomId, name, token, code, accountId, accountToken, isTester, testerSessionId } = {}, cb) => {
+    socket.on("join_room", async ({ roomId, name, token, code, membershipId, isTester, testerSessionId } = {}, cb) => {
         // บั๊ก: เดิม roomId.toUpperCase() ไม่มีการเช็คชนิด/ค่าก่อนเรียก — ถ้า client ส่ง roomId
         // เป็น null/undefined/เลข มา (payload ผิดรูป, บั๊กฝั่ง client, หรือส่ง event ตรงๆ)
         // จะ throw TypeError ขึ้นมาใน handler นี้ทันที และเพราะไม่มี try/catch ห่อ socket
@@ -13757,37 +6895,23 @@ io.on("connection", (socket) => {
                 return cb({ error: "room recovery temporarily unavailable", code: "SERVER_ERROR" });
             }
         }
-        if (!room) return cb({ error: "room not found", code: "ROOM_NOT_FOUND" });
+        if (!room || room.isClosing || roomIdleExpired(room, io.sockets.sockets)) {
+            if (room && !room.isClosing) closeRoomNow(roomId, "idle_timeout").catch(console.error);
+            return cb({ error: "room not found", code: "ROOM_NOT_FOUND" });
+        }
         if (name !== undefined) name = sanitizeName(name);
-        const testerGranted = resolveTesterFlag(socket, isTester); // ดู create_room — client ขอได้แต่ server ตัดสิน
-        let accountIdentity = null;
-        if (!testerGranted && !room.isTesterRoom) {
-            accountIdentity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || socket.data?.accountId || ""), name, { accountToken, roomId, isHost: false, join: true, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
-            if (!accountIdentity.ok) return cb && cb({ error: accountIdentity.code.toLowerCase(), code: accountIdentity.code, activeActivity: getAccountActiveActivity(accountIdentity.profile) });
-            socket.data.accountId = accountIdentity.accountId;
-            socket.data.accountSessionHash = hashAccountToken(accountToken);
-            socket.data.deviceId = normalizeDeviceId(socket.data?.deviceId || "");
-            socket.data.tabId = normalizeTabId(socket.data?.tabId || "");
-        }
-        // Real players are re-identified by durable accountId. The room token remains only as a
-        // legacy fallback for snapshots created before membership/account identity was introduced.
-        let player = (!testerGranted && accountIdentity?.accountId)
-            ? room.players.find((p) => !p?.isHost && !p?.isBot && normalizeAccountId(p.accountId || "") === accountIdentity.accountId)
-            : null;
-        const legacyTokenPlayer = token ? room.players.find((p) => p.token === token) : null;
-        if (!player && legacyTokenPlayer && !legacyTokenPlayer.accountId && !legacyTokenPlayer.isBot && !legacyTokenPlayer.isTester) player = legacyTokenPlayer;
-        if (!player && legacyTokenPlayer && legacyTokenPlayer.accountId && accountIdentity?.accountId &&
-            normalizeAccountId(legacyTokenPlayer.accountId) !== normalizeAccountId(accountIdentity.accountId) &&
-            !legacyTokenPlayer.isBot && !legacyTokenPlayer.isTester) {
-            return cb({ error: "room identity mismatch", code: "ROOM_ACCOUNT_MISMATCH" });
-        }
-        if (!player && (testerGranted || room.isTesterRoom)) player = legacyTokenPlayer;
+        const testerGranted = resolveTesterFlag(socket, isTester);
+        socket.data.deviceId = normalizeDeviceId(socket.data?.deviceId || "");
+        socket.data.tabId = normalizeTabId(socket.data?.tabId || "");
+        const tokenPlayer = token ? room.players.find((p) => p.token === String(token)) : null;
+        // Room token is the primary guest reconnect identity. MembershipId remains available to
+        // status/recovery handlers as a secondary stable identifier, but token-only reconnect
+        // stays supported for older clients.
+        let player = tokenPlayer;
+        const existingPlayerIsBot = !!player?.isBot;
         const isReconnect = !!player;
-        const existingPlayerIsBot = !!(player && player.isBot);
-        // Bot possession is a tester-only reconnect path. A bot has no Game Account identity, so
-        // its stable room token must never fall through to ensureNormalAccountIdentity().
-        // This also covers older persisted bot snapshots that were created before `isTester` was
-        // stored on bot records; `isBot` is the authoritative discriminator for account auth.
+        // Bot possession is a tester-only reconnect path. Bots have no player profile identity;
+        // their room token + membershipId are the only durable identifiers.
         if (existingPlayerIsBot) {
             if (!room.isTesterRoom) {
                 return cb({ error: "tester room required", code: "TESTER_ROOM_REQUIRED" });
@@ -13806,26 +6930,10 @@ io.on("connection", (socket) => {
                 return cb({ error: "tester pass invalid or expired", code: "TESTER_PASS_INVALID" });
             }
         }
-        // ช่วยวินิจฉัยข้าม instance โดยตรง: ถ้า client ประกาศ tester และมีบัตรผ่าน/ตั้งใจเป็น tester
-        // แต่ bootstrap secret ใช้งานไม่ได้ ให้รหัสเฉพาะแทนการไหลไปถึง account auth ซึ่งทำให้เห็นเป็น
-        // ACCOUNT_TOKEN_REQUIRED แบบเก่า; ถ้ามีบัตรแต่ signature ไม่ตรง ให้ TESTER_PASS_INVALID
         if (isTester === true && !isReconnect && socket.data.testerPassBootstrapError) {
-            recordDiagnostic({
-                source: "server", kind: "tester_auth_rejected", page: "server",
-                message: "ยังโหลด shared tester pass secret ไม่สำเร็จก่อน join_room",
-                data: { roomId, requestedTester: true, testerPassPresented: !!socket.data.testerPassPresented,
-                    testerPassValid: false, bootstrapError: socket.data.testerPassBootstrapError },
-                traceId: String(socket.data.diagnosticTraceId || ""), sessionId: String(socket.data.diagnosticSessionId || ""),
-            });
             return cb({ error: "tester pass temporarily unavailable", code: "TESTER_PASS_UNAVAILABLE" });
         }
         if (isTester === true && !isReconnect && socket.data.testerPassPresented && !socket.data.testerPassValid) {
-            recordDiagnostic({
-                source: "server", kind: "tester_auth_rejected", page: "server",
-                message: "Tester pass ที่มากับ Socket.IO handshake ไม่ผ่านการตรวจ signature/expiry",
-                data: { roomId, requestedTester: true, testerPassPresented: true, testerPassValid: false },
-                traceId: String(socket.data.diagnosticTraceId || ""), sessionId: String(socket.data.diagnosticSessionId || ""),
-            });
             return cb({ error: "tester pass invalid or expired", code: "TESTER_PASS_INVALID" });
         }
         if (isTester === true && !isReconnect && !socket.data.testerPassPresented) {
@@ -13834,7 +6942,7 @@ io.on("connection", (socket) => {
         if (player && room.started && !room.gameOver && player.leftGameRoundId === getRoomGameRoundId(room)) {
             return cb({ error: "player already left game", code: "PLAYER_LEFT_GAME" });
         }
-        // บัญชีจริงใหม่ต้องมีชื่อที่ผู้ใช้ยืนยันจากหน้า index ก่อนสร้าง profile/ผู้เล่น
+        // ผู้เล่นใหม่ต้องมีชื่อที่ผู้ใช้ยืนยันจากหน้า index ก่อนสร้างผู้เล่น
         // ส่วน reconnect ใช้ชื่อที่เก็บอยู่ใน server ได้ จึงไม่บังคับ payload name ซ้ำ
         if (!testerGranted && !isReconnect && (!name || sanitizeName(name, "ผู้เล่น") === "ผู้เล่น")) {
             return cb({ error: "missing_display_name", code: "MISSING_DISPLAY_NAME" });
@@ -13844,143 +6952,55 @@ io.on("connection", (socket) => {
         }
         if (player) {
             if (!player.membershipId) player.membershipId = generateMembershipId();
-            // Same-account tabs/frames share this room membership; Account Activity prevents a second room/activity.
-            clearPendingBrowserExit('player', roomId, token || player.token, { source:'join_room_reconnect', traceId:socket.data?.diagnosticTraceId || '', sessionId:socket.data?.diagnosticSessionId || '' });
-            const oldId = player.id;
-            const sameAccountSockets = player.isBot || player.isTester
-                ? []
-                : getConnectedSocketsForAccount(player.accountId || "").filter((sock) => sock.id !== socket.id);
-            // Keep one canonical room-player id while multiple tabs of the same account are open.
-            // Only a true reconnect after all previous sockets are gone gets a fresh canonical id.
-            if (!sameAccountSockets.length || !oldId || !io.sockets.sockets.get(oldId)?.connected) {
-                remapPlayerId(room, oldId, socket.id);
-                player.id = socket.id;
-            }
-            player.activeDeviceId = socket.data?.deviceId || player.activeDeviceId || "";
-            player.activeTabId = player.activeTabId || socket.data?.tabId || "";
-            socket.data.roomId = roomId;
-            socket.data.membershipId = player.membershipId || "";
-            socket.data.isHost = false;
-            if (player.isBot || player.isTester) {
-                player.accountId = "";
-                // Bots are synthetic tester players; never mutate their bot identity into an account-backed player.
-                if (player.isBot) {
-                    player.isTester = true;
-                    player.testerSessionId = String(testerSessionId || player.testerSessionId || "").slice(0, 128);
-                } else {
-                    if (!player.isHost && !player.testerPlayerSlot) player.testerPlayerSlot = nextTesterPlayerSlot(player);
-                    if (!player.isHost && player.testerPlayerSlot) player.name = `ผู้เล่น${player.testerPlayerSlot}`;
-                }
-            } else {
-                const reconnectAccountId = normalizeAccountId(player.accountId || accountIdentity?.accountId || "");
-                const ensured = accountIdentity?.ok ? accountIdentity : await ensureNormalAccountIdentity(reconnectAccountId, player.name, { accountToken, roomId, isHost: !!player.isHost, join: false, deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "" });
-                if (!ensured.ok) return cb && cb({ error: ensured.code.toLowerCase(), code: ensured.code });
-                player.accountId = ensured.accountId;
-                player.name = ensured.name;
-                const activity = await acquireAccountActivity(player.accountId, { type: "PLAYER_ROOM", roomId, membershipId: player.membershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: false });
-                if (!activity.ok) return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null });
-                touchAccountPresence(player.accountId, { roomId, name: player.name, isHost: !!player.isHost });
-            }
-            // ชื่อตั้งได้ครั้งเดียวตอน "เข้าห้องครั้งแรก" เท่านั้น (ดู branch ผู้เล่นใหม่ด้านล่าง)
-            // ตอน reconnect ด้วย token เดิม ห้ามรับชื่อจาก client มาทับอีกเด็ดขาด แม้ client จะส่งมา
-            // ก็ตาม (เดิมมี `if (name) player.name = name;` ตรงนี้ ทำให้ผู้เล่นย้อนไปหน้าแรกแล้วแก้ชื่อ
-            // ในเครื่องตัวเอง กลับมา rejoin ห้องเดิมด้วย token เดิม ก็เปลี่ยนชื่อในห้องได้เองอยู่ดี
-            // ทั้งที่ตั้งใจให้แก้ได้ทางเดียวคือแอดมินเท่านั้น — ตัดออกเพื่อบังคับใช้จริงฝั่ง server)
+            clearPendingBrowserExit('player', roomId, player.token, { source:'join_room' });
+            if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
+            if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
             player.disconnected = false;
             player.offline = false;
-            // ปิดช่วงออฟไลน์ที่ค้างอยู่ (ถ้ามี) บวกเวลาที่หลุดไปจริงเข้ายอดสะสม — ใช้ตัดสิน
-            // "ออกเกม" ตอนจบเกม (ดู didLeaveGame/markPlayerOfflineStart ด้านบน)
-            flushPlayerOfflineTime(player);
-
-            if (pendingRemovals[token]) {
-                clearTimeout(pendingRemovals[token].timer);
-                delete pendingRemovals[token];
+            player.id = socket.id;
+            player.roomId = roomId;
+            delete player.accountId;
+            delete player.accountToken;
+            delete player.activeDeviceId;
+            delete player.activeTabId;
+            if (player.isTester) {
+                player.isTester = testerGranted || room.isTesterRoom;
+                if (!player.testerPlayerSlot) player.testerPlayerSlot = nextTesterPlayerSlot(player);
             }
-            if (pendingIndicators[token]) {
-                clearTimeout(pendingIndicators[token]);
-                delete pendingIndicators[token];
-            }
+            socket.data.roomId = roomId;
+            socket.data.membershipId = player.membershipId;
+            socket.data.isHost = false;
         } else {
-            player = room.players.find((p) => p.id === socket.id);
-            if (!player) {
-                // กันคนใหม่ (ไม่ใช่ reconnect เพราะ token ไม่ตรงกับใครในห้องเลย) เข้าห้องหลังเกม
-                // เริ่มไปแล้ว — เดิมไม่มีการเช็คนี้ ทำให้ผู้เล่นใหม่ที่เพิ่งเข้ามาได้ role: null
-                // ค้างตลอดเกม (ไม่ได้รับบทเพราะ start_game แจกบทไปครั้งเดียวตอนกดเริ่มเท่านั้น)
-                // กลายเป็นการ์ดค้างอยู่ในกริดที่ไม่มีบทบาท และ checkGameEndGeneral (teamOf(null))
-                // จะไม่นับคนนี้เป็นทั้งหมาป่า/ชาวบ้าน/โซโล่เลย ทำให้เงื่อนไขจบเกมคลาดเคลื่อนได้
-                // ผู้เล่นที่ token ตรงกับคนเดิมในห้อง (isReconnect) ยังกลับเข้าห้องระหว่างเกมได้ปกติ
-                if (room.started) {
-                    return cb && cb({ error: "started", code: "ROOM_STARTED" });
-                }
-
-                // รหัสห้องฝั่งผู้เล่น (ตั้งไว้ผ่าน "⚙️ ตั้งค่าห้อง" แยกจากรหัสควบคุมห้อง) — เช็คเฉพาะ
-                // ผู้เล่น "ใหม่จริงๆ" เท่านั้น (ไม่ใช่ reconnect ด้วย token เดิม ซึ่งอยู่ในห้องแล้ว
-                // ไม่ต้องกรอกซ้ำ) ถ้าห้องนี้ไม่ได้ตั้งรหัสไว้ (joinCode ว่าง) ก็ข้ามการเช็คนี้ไปเลย
-                if (room.joinCode) {
-                    const attemptKey = `join:${roomId}`;
-                    if (!isLoginAttemptAllowed(attemptKey)) {
-                        return cb && cb({ error: "too_many_attempts", code: "TOO_MANY_ATTEMPTS" });
-                    }
-                    if (code !== room.joinCode) {
-                        recordFailedLoginAttempt(attemptKey);
-                        return cb && cb({ error: "wrong_code", code: "AUTH_FAILED" });
-                    }
-                    clearFailedLoginAttempts(attemptKey);
-                }
-
-                // จำนวนผู้เล่นสูงสุด (ตั้งไว้ผ่าน "⚙️ ตั้งค่าห้อง") — 0 = ไม่จำกัด เช็คเฉพาะผู้เล่นใหม่
-                // เหมือนกัน (คนที่อยู่ในห้อง/reconnect ได้เสมอ ไม่โดนเตะเพราะห้องเต็มทีหลัง)
-                if (room.maxPlayers > 0) {
-                    const nonHostCount = room.players.filter((p) => !p.isHost).length;
-                    if (nonHostCount >= room.maxPlayers) {
-                        return cb && cb({ error: "room_full", code: "ROOM_FULL" });
-                    }
-                }
-
-                const finalToken = testerGranted ? (token || genId()) : genId();
-                const membershipId = generateMembershipId();
-                // reload/reconnect ภายใน browser-exit grace ต้องยกเลิก pending exit ก่อนผูก player กลับเข้าห้อง
-                clearPendingBrowserExit('player', roomId, finalToken, { source:'join_room' });
-                const testerPlayerSlot = (testerGranted && !room.isTesterRoom) || testerGranted ? nextTesterPlayerSlot() : 0;
-                const finalName = testerGranted ? `ผู้เล่น${testerPlayerSlot}` : (accountIdentity?.name || sanitizeName(name, "ผู้เล่น"));
-                player = {
-                    id: socket.id,
-                    roomId,
-                    token: finalToken,
-                    accountId: testerGranted ? "" : (accountIdentity?.accountId || ""),
-                    membershipId,
-                    activeDeviceId: testerGranted ? "" : normalizeDeviceId(socket.data?.deviceId || ""),
-                    activeTabId: testerGranted ? "" : normalizeTabId(socket.data?.tabId || ""),
-                    name: finalName,
-                    isHost: false,
-                    role: null,
-                    displayRole: null,
-                    alive: true,
-                    protected: false,
-                    killed: false,
-                    // เข้ามาผ่านโหมดผู้ทดสอบ (admin.html → ?tester=1) — ใช้โชว์ป้าย "ชั่วคราว" ในหน้า admin.html
-                    // (ค่ามาจากการตัดสินของ server ไม่ใช่ที่ client ส่ง; ห้องจะเป็นห้องผู้ทดสอบหรือไม่ดูที่ room.isTesterRoom ตอนสร้างห้องเท่านั้น)
-                    isTester: testerGranted,
-                    testerPlayerSlot: testerGranted ? testerPlayerSlot : 0,
-                    testerSessionId: testerGranted ? String(testerSessionId || "").slice(0, 128) : "",
-                };
-                if (!testerGranted) {
-                    const activity = await acquireAccountActivity(accountIdentity.accountId, { type: "PLAYER_ROOM", roomId, membershipId, sessionHash: hashAccountToken(accountToken), deviceId: socket.data?.deviceId || "", tabId: socket.data?.tabId || "", allowMultipleTabs: false });
-                    if (!activity.ok) return cb({ error: "account activity already active", code: activity.code || "ACCOUNT_ACTIVITY_CONFLICT", activeActivity: activity.activity || null });
-                    socket.data.roomId = roomId;
-                    socket.data.membershipId = membershipId;
-                    socket.data.isHost = false;
-                }
-                room.players.push(player);
-                // Tester ไม่บันทึกบัญชีจริง; ผู้เล่นจริงใช้ accountId/profile เป็นตัวตนเดียว
-                if (!testerGranted) {
-                    touchAccountPresence(player.accountId, { roomId, name: player.name, isHost: false });
-                }
+            if (room.joinCode && code !== room.joinCode) {
+                const attemptKey = `join:${roomId}`;
+                if (!isLoginAttemptAllowed(attemptKey)) return cb({ error:"too_many_attempts", code:"TOO_MANY_ATTEMPTS" });
+                recordFailedLoginAttempt(attemptKey);
+                return cb({ error:"wrong_room_code", code:"ROOM_CODE_REQUIRED" });
             }
+            if (!testerGranted && (!name || sanitizeName(name, "ผู้เล่น") === "ผู้เล่น")) {
+                return cb({ error:"missing_display_name", code:"MISSING_DISPLAY_NAME" });
+            }
+            if (testerGranted && !room.isTesterRoom) return cb({ error:"tester room required", code:"TESTER_ROOM_REQUIRED" });
+            if (room.maxPlayers > 0 && room.players.filter((p) => !p.isHost).length >= room.maxPlayers) return cb({ error:"room_full", code:"ROOM_FULL" });
+            const finalToken = testerGranted ? (String(token || '').trim().slice(0,256) || genId()) : (String(token || '').trim().slice(0,256) || genId());
+            const newMembershipId = generateMembershipId();
+            clearPendingBrowserExit('player', roomId, finalToken, { source:'join_room' });
+            const testerPlayerSlot = testerGranted ? nextTesterPlayerSlot() : 0;
+            const finalName = testerGranted ? `ผู้เล่น${testerPlayerSlot}` : sanitizeName(name, "ผู้เล่น");
+            player = {
+                id: socket.id, roomId, token: finalToken, membershipId:newMembershipId, name:finalName, isHost:false,
+                role:null, displayRole:null, alive:true, protected:false, killed:false,
+                isTester:testerGranted, testerPlayerSlot:testerGranted ? testerPlayerSlot : 0,
+                testerSessionId:testerGranted ? String(testerSessionId || "").slice(0,128) : "",
+            };
+            room.players.push(player);
+            socket.data.roomId = roomId;
+            socket.data.membershipId = newMembershipId;
+            socket.data.isHost = false;
         }
 
         socket.join(roomId);
-        resumeRecoveredRoomRuntimeTransitions(room, roomId, nightBotDeps());
+        resumeRecoveredRoomRuntimeTransitions(room, roomId);
         broadcastRoomUpdate(roomId, room, isReconnect
             ? { timelineType: "state_changed", source: "reconnect", reason: "player_reconnected" }
             : { timelineType: "player_joined", source: "player" });
@@ -14017,8 +7037,9 @@ io.on("connection", (socket) => {
             }
         }
 
+        if (!player.isBot) touchRoomActivity(room);
         schedulePersistRoom(roomId, true);
-        cb({ ok: true, roomData: room, token: player.token, accountId: player.accountId || "", membershipId: player.membershipId || "", testerPlayerSlot: player.testerPlayerSlot || 0 });
+        cb({ ok: true, roomData: roomViewForSocket(room, socket), token: player.token, membershipId: player.membershipId || "", testerPlayerSlot: player.testerPlayerSlot || 0 });
     });
 
     // ----------------------------------------------------------------
@@ -14035,7 +7056,7 @@ io.on("connection", (socket) => {
         roomId = String(roomId).toUpperCase();
         const room = rooms[roomId];
         if (!room) return;
-        resumeRecoveredRoomRuntimeTransitions(room, roomId, nightBotDeps());
+        resumeRecoveredRoomRuntimeTransitions(room, roomId);
 
         // หา player จาก socket.id ปัจจุบันก่อน (กรณีปกติ ไม่หลุดการเชื่อมต่อ) แล้วค่อย fallback
         // ไปหาโดย token (เผื่อ id เพิ่งเปลี่ยนจาก reconnect แต่ยังไม่ทัน sync กับ client ฝั่งนี้)
@@ -14050,18 +7071,15 @@ io.on("connection", (socket) => {
             return;
         }
 
-        let player = null;
-        const socketAccountId = normalizeAccountId(socket.data?.accountId || "");
         const socketMembershipId = String(socket.data?.membershipId || "").trim();
-        if (socketAccountId && socketMembershipId) {
-            player = room.players.find((p) => !p.isHost && !p.isBot && !p.isTester
-                && normalizeAccountId(p.accountId || "") === socketAccountId
-                && String(p.membershipId || "").trim() === socketMembershipId) || null;
-        }
-        if (!player && !socketAccountId) player = room.players.find((p) => p.id === socket.id) || null;
-        if (!player) return; // สมาชิกจริงต้องตรงกับ durable account + membership; token ไม่ใช่ตัวตนหลักอีกต่อไป
+        let player = socketMembershipId
+            ? room.players.find((p) => !p.isHost && String(p.membershipId || "").trim() === socketMembershipId) || null
+            : null;
+        if (!player) player = room.players.find((p) => p.id === socket.id && !p.isHost) || null;
+        if (!player && token) player = room.players.find((p) => !p.isHost && p.token === String(token)) || null;
+        if (!player) return;
 
-        socket.emit("room_update", publicRoomView(room));
+        socket.emit("room_update", roomViewForSocket(room, socket));
 
         // รวม "แชทรวม" + "private เฉพาะคนนี้" เรียงตาม seq จริง (ดู mergedGlobalAndPrivateHistory —
         // แก้บั๊กลำดับแชทสลับตอน sync ซ้ำ เช่น สลับแอป/ล็อกจอมือถือ)
@@ -14182,8 +7200,6 @@ io.on("connection", (socket) => {
             gameResult: null,
             continueReady: {},
             // เฟส 5: เคลียร์หน่วยความจำบอทของเกมเก่าทิ้งด้วย ไม่งั้นเกมใหม่จะเห็นข้อมูลเกมก่อนหน้าค้างอยู่
-            wolfMemory: {},
-            publiclySuspectedIds: [],
             publiclyProtectedIds: [], // เฟส 6: คนที่ถูกเปิดเผยว่าเป็น "คนบ้า" ในแชท — กันบอทชาวบ้านโหวตประหารเข้า
         });
 
@@ -14363,12 +7379,9 @@ io.on("connection", (socket) => {
         // เริ่มคืนแรกอัตโนมัติทันทีหลังแจกบทเสร็จ — โฮสต์ไม่ต้องกด "เริ่มคืน" เองอีกครั้ง
         beginNight(room, roomId);
 
-        // แก้บั๊ก: จุดนี้ขาด runBotsFor("wolfKill"/"nightSkill", ...) ไปเดิม (ต่างจาก
         // socket.on("start_night") ที่มี) ทำให้บอทไม่ทำ action เลยตั้งแต่ "คืนแรก" ของทุกเกม
         // เพราะคืนแรกเข้ามาทางนี้เสมอ (ไม่ได้ผ่าน start_night handler) — เพิ่มให้ตรงนี้เหมือนกัน
         if (!room.gameOver) {
-            runBotsFor(room, roomId, "wolfKill", nightBotDeps());
-            runBotsFor(room, roomId, "nightSkill", nightBotDeps());
         }
         cb({ ok: true, stateVersion: room.stateVersion, gameRoundId: room.gameRoundId || null });
     });
@@ -14464,7 +7477,7 @@ io.on("connection", (socket) => {
 
         if (room.voteMode) {
             // โฮสต์กดปิดโหวตเอง (ก่อนหมดเวลา) — ปิดแล้วนับคะแนน + เข้าคืนอัตโนมัติเหมือนหมดเวลาเป๊ะๆ
-            closeVoteRound(room, roomId, nightBotDeps());
+            closeVoteRound(room, roomId);
         } else {
             room.voteMode = true;
             // หมายเหตุ: ไม่เคลียร์ room.shieldTargets ตรงนี้อีกต่อไป — หมาป่าผู้พิทักษ์อาจวางโล่
@@ -14485,21 +7498,12 @@ io.on("connection", (socket) => {
                     const r = rooms[roomId];
                     if (!r || !r.voteMode) return; // ถูกปิดไปก่อนหน้านี้แล้ว (กันซ้ำซ้อน)
                     if (r.voteTimerEnabled === false) return; // ถูกปิดนับเวลาไปหลังจากตั้ง timer นี้ (กันบั๊ก race condition)
-                    closeVoteRound(r, roomId, nightBotDeps());
+                    closeVoteRound(r, roomId);
                 }, VOTE_ROUND_MS);
             }
 
             broadcastRoomUpdate(roomId, room, { timelineType: "vote_started", source: "host" });
 
-            // เฟส 2 (bot-autonomous-ai-phases.md): ให้บอทที่ไม่มีคนเข้าสิงโหวตเองอัตโนมัติ
-            // (deps ส่ง performCastVote/isPlayerCurrentlyConnected เข้าไปเพราะ botEngine.js
-            // เข้าถึงฟังก์ชันในไฟล์นี้ตรง ๆ ไม่ได้ — กัน circular require)
-            runBotsFor(room, roomId, "vote", {
-                rooms,
-                performCastVote,
-                isPlayerCurrentlyConnected,
-                WOLF_ROLES,
-            });
         }
     });
 
@@ -14526,7 +7530,7 @@ io.on("connection", (socket) => {
                     const r = rooms[roomId];
                     if (!r || !r.voteMode) return;
                     if (r.voteTimerEnabled === false) return;
-                    closeVoteRound(r, roomId, nightBotDeps());
+                    closeVoteRound(r, roomId);
                 }, VOTE_ROUND_MS);
             } else {
                 room.voteDeadline = null;
@@ -14539,9 +7543,7 @@ io.on("connection", (socket) => {
     // ----------------------------------------------------------------
     // CAST VOTE
     // ----------------------------------------------------------------
-    // เฟส 1 (bot-autonomous-ai-phases.md): แยก logic ออกจาก socket.id เป็น performCastVote(...,
-    // voterId, ...) เรียกจาก playerId ตรง ๆ ได้ (เตรียมให้ botEngine.js เรียกแทนบอทได้ตั้งแต่เฟส 2)
-    // handler ข้างล่างยังทำงานเหมือนเดิมทุกประการ แค่เป็น wrapper บาง ๆ ที่ห่อ performCastVote ไว้
+    // แยก logic การโหวตออกจาก socket.id เพื่อให้ใช้ซ้ำได้อย่างปลอดภัย
     function performCastVote(room, roomId, voterId, targetId) {
         if (!room.voteMode) return;
 
@@ -15137,11 +8139,6 @@ io.on("connection", (socket) => {
             }
         });
 
-        // เฟส 5 (bot-autonomous-ai-phases.md): เก็บรายชื่อคนที่ "ถูกป้องกันสำเร็จ" ในการสรุปผลรอบนี้
-        // ไว้ให้ botEngine.js ใช้ลดโอกาสเลือกเป้าซ้ำคืนถัดไป (ดู room.wolfMemory ด้านล่าง)
-        // เป็น array ใหม่ทุกครั้งที่ resolve_night ทำงาน → แทนที่ของคืนก่อนหน้าอัตโนมัติ (ไม่ต้องเคลียร์เอง)
-        const recentlyProtectedIdsThisResolve = [];
-
         const nightMessages = [];
         const wolfChatMessages = [];
         const privateProtectMessages = []; // { playerId, text }
@@ -15173,9 +8170,7 @@ io.on("connection", (socket) => {
         // (ดูคอมเมนต์ที่นิยามฟังก์ชันทั้งสอง) ไม่มีทางเช็คว่าคู่ที่เลือกไปทับซ้อนกับที่อีกฝ่าย (กามเทพ/
         // ผู้ยุยง) เลือกไว้หรือเปล่าอีกต่อไป (ตั้งใจไม่เช็ค ยอมให้ทับซ้อนกันได้ เพื่อความเรียบง่าย)
         //
-        // ใหม่: ถ้าคืนนี้ไม่มีใครเลือกไว้เลย (ไม่มี pendingLoverPair/pendingInstigatorPair ค้างอยู่)
-        // ให้ระบบสุ่มจับคู่ให้อัตโนมัติแทน — สำคัญมากตอนบอทได้รับบทกามเทพ/ผู้ยุยง เพราะบอทไม่มีตรรกะ
-        // เลือกจับคู่เอง (ดู botEngine.js/llmBotEngine.js) ถ้าไม่มี fallback นี้เกมจะค้าง ไม่มีคู่เกิดขึ้นเลย
+        // ถ้าคืนนี้ไม่มีใครเลือกไว้เลย ให้ใช้ fallback ที่กำหนดไว้เพื่อให้สถานะการจับคู่ไม่ค้าง
 
         function applyCupidPair(selector, targetA, targetB) {
             targetA.loverId = targetB.id;
@@ -15383,7 +8378,6 @@ io.on("connection", (socket) => {
 
             if (p.protected) {
                 // รอด
-                recentlyProtectedIdsThisResolve.push(p.id); // เฟส 5: จำไว้ให้บอทหมาป่าลดโอกาสเลือกเป้าเดิมซ้ำคืนหน้า
                 findProtectorsOf(p.id).forEach((protector) => {
                     // แม่มด: ยาป้องกันมีแค่ขวดเดียว เสียก็ต่อเมื่อมีการโจมตีคนที่ปกป้องไว้จริงๆ (ตรงนี้แหละ)
                     if (protector.role === "แม่มด") protector.witchProtectPotions = 0;
@@ -15406,7 +8400,6 @@ io.on("connection", (socket) => {
                 // ปกป้องตัวเองทุกประการ ดู branch "อันธพาล" ด้านล่าง) — ไม่บอกฝ่ายที่รอดว่าใคร
                 // ปกป้องไว้ และไม่ประกาศต่อสาธารณะ เพื่อรักษาความลับเหมือนกรณีปกป้องตัวเอง
                 const thug = findThugGuardOf(p.id)[0];
-                recentlyProtectedIdsThisResolve.push(p.id);
                 thug.musclemanExposed = true;
                 thug.musclemanPendingDeath = true;
                 const isPersonalAttack = PERSONAL_ATTACKER_KILL_TYPES.has(p.killedBy);
@@ -15783,28 +8776,8 @@ io.on("connection", (socket) => {
         announceCascadeDeaths(room, roomId, allCascadeDeaths);
         checkGameEndGeneral(room, roomId);
 
-        // เฟส 5 (bot-autonomous-ai-phases.md): บันทึกผลของ "คืนนี้" ไว้ให้ botEngine.js อ่านตอน
-        // เลือกเป้ากัดคืนถัดไป — เก็บแค่ 1 ชั้น (คืนล่าสุดเท่านั้น) เพราะแผนระบุแค่ "เมื่อคืนก่อน"
-        // ไม่ต้องจำสะสมหลายคืนย้อนหลัง
-        room.wolfMemory = room.wolfMemory || {};
-        room.wolfMemory.recentlyProtectedIds = recentlyProtectedIdsThisResolve;
-
         broadcastRoomUpdate(roomId, room);
 
-        // เฟส 3 (bot-autonomous-ai-phases.md): ให้บอทบทบาทพิเศษที่ใช้สกิล "ตอนกลางวัน"
-        // (หมาป่าผู้พิทักษ์วางโล่ / หมาป่านักเวทเลือกเป้าร่ายเวท) ทำงานเองอัตโนมัติทันทีที่เข้าสู่วันใหม่
-        // (ไม่รวมกับ trigger "vote" เพราะสองสกิลนี้ใช้ได้ตั้งแต่ต้นวัน ไม่ต้องรอโฮสต์เปิดโหมดโหวต)
-        if (!room.gameOver) {
-            runBotsFor(room, roomId, "daySkill", {
-                rooms,
-                performSelectShield,
-                performSelectCurseTarget,
-                performSheriffPeek,
-                performBotChatMessage,
-                isPlayerCurrentlyConnected,
-                WOLF_ROLES,
-            });
-        }
     });
 
     // ----------------------------------------------------------------
@@ -15824,12 +8797,7 @@ io.on("connection", (socket) => {
 
         beginNight(room, roomId);
 
-        // เฟส 2 (bot-autonomous-ai-phases.md): ให้บอทหมาป่าที่ไม่มีคนเข้าสิงเลือกเป้ากัดเองอัตโนมัติ
-        runBotsFor(room, roomId, "wolfKill", nightBotDeps());
-
-        // เฟส 3 (bot-autonomous-ai-phases.md): ให้บอทบทบาทพิเศษที่ใช้สกิล "ตอนกลางคืน"
-        // (หมอ/หมาป่าหยั่งรู้-ผู้มีลาง-ผู้หยั่งรู้/แม่มด/ยายขี้โมโห/ลูกหมาป่า) ทำงานเองอัตโนมัติด้วย
-        runBotsFor(room, roomId, "nightSkill", nightBotDeps());
+        // บอทไม่มีการตัดสินใจอัตโนมัติ — Host เป็นผู้ควบคุมผ่านแท็บทดสอบเท่านั้น
     });
 
     // ----------------------------------------------------------------
@@ -16621,9 +9589,7 @@ io.on("connection", (socket) => {
     // เป้าหมายจะได้รับแจ้งว่า "ศาลเตี้ยได้ทราบบทบาทของคุณแล้ว" แบบไม่ระบุตัวตนศาลเตี้ย
     // (ต่างจากปืนที่เปิดเผยตัวศาลเตี้ยต่อสาธารณะทันที — ดูบทไม่เปิดเผยตัวศาลเตี้ยเลย)
     //
-    // เฟส 5 (bot-autonomous-ai-phases.md): แยกเป็น performSheriffPeek(room, roomId, selectorId, targetId)
-    // เหมือน performCastVote/performWolfKill ด้านบน เพื่อให้ botEngine.js เรียกใช้ตอนบอทศาลเตี้ยตัดสินใจ
-    // ดูบทเองได้ (เดิมเป็น callback ตรงในนี้ ไม่มีบอทเรียกได้เลย)
+    // แยก logic การดูบทของศาลเตี้ยออกมาเป็นฟังก์ชันกลาง เพื่อให้ handler เรียกใช้ได้อย่างสม่ำเสมอ
     // ----------------------------------------------------------------
     function performSheriffPeek(room, roomId, selectorId, targetId) {
         if (room.isNight) return; // ใช้ได้เฉพาะตอนกลางวัน
@@ -16922,24 +9888,7 @@ io.on("connection", (socket) => {
     });
 
     // ----------------------------------------------------------------
-    // BOT CHAT ANNOUNCE — เฟส 5 (bot-autonomous-ai-phases.md): ให้บอทบทบาทที่มีข้อมูล (ผู้หยั่งรู้/
-    // ผู้มีลาง/ศาลเตี้ย) พิมพ์ข้อความในแชทรวมกลางวันได้เอง เพื่อ "บอกชาวบ้าน" ตามข้อมูลที่ตัวเองรู้
-    // ทำงานเหมือน GLOBAL CHAT ใน send_chat ทุกอย่าง (เช็คกลางวัน/ไม่โดนใบ้) แค่ผู้พูดเป็นบอทแทนผู้เล่นจริง
-    // ไม่ผ่าน detectPubliclySuspectedIds ซ้ำ (botEngine.js เป็นคนเติม room.publiclySuspectedIds เอง
-    // โดยตรงตอนเรียกฟังก์ชันนี้ เพราะรู้ผลลัพธ์ที่แน่นอนอยู่แล้ว ไม่ต้องเดาจากข้อความอีกที)
-    // ----------------------------------------------------------------
-    function performBotChatMessage(room, roomId, botId, text) {
-        const bot = room.players.find((p) => p.id === botId);
-        if (!bot || !bot.alive || bot.isHost) return;
-        if (room.isNight) return; // ประกาศได้เฉพาะกลางวันเท่านั้น เหมือนแชทรวมปกติ
-        if (bot.silenced) return; // โดนใบ้ ห้ามพูด เหมือนผู้เล่นจริง
-
-        const msg = { name: bot.name, text, type: "global" };
-        room.globalChatHistory = room.globalChatHistory || [];
-        pushGlobalChat(room, msg);
-        io.to(roomId).emit("chat_message", msg);
-    }
-
+    // SEND CHAT
     // ----------------------------------------------------------------
     // SEND CHAT
     // ----------------------------------------------------------------
@@ -17048,15 +9997,6 @@ io.on("connection", (socket) => {
         pushGlobalChat(room, globalMsg);
         io.to(roomId).emit("chat_message", globalMsg);
 
-        // เฟส 5: ถ้าคนพูดเป็นผู้หยั่งรู้/ผู้มีลาง และข้อความเข้าข่ายเปิดเผยความสงสัย → จำชื่อที่ถูก
-        // พาดพิงไว้ให้บอทชาวบ้านใช้โหวตตาม (ดู detectPubliclySuspectedIds ด้านบน + runVotePhase)
-        const newlySuspectedIds = detectPubliclySuspectedIds(room, player, msg);
-        if (newlySuspectedIds.length > 0) {
-            room.publiclySuspectedIds = room.publiclySuspectedIds || [];
-            newlySuspectedIds.forEach((id) => {
-                if (!room.publiclySuspectedIds.includes(id)) room.publiclySuspectedIds.push(id);
-            });
-        }
     });
 
     // ----------------------------------------------------------------
@@ -17135,129 +10075,6 @@ io.on("connection", (socket) => {
     });
 
     // ----------------------------------------------------------------
-    // ACCOUNT BOOTSTRAP — สร้าง/ตรวจ Game Account ตั้งแต่เปิดเกมครั้งแรก
-    // ----------------------------------------------------------------
-    socket.on("account_bootstrap", async ({ accountId, accountToken, name, page, deviceId, tabId } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
-        if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
-        try {
-            const identity = await ensureNormalAccountIdentity(normalizeAccountId(accountId || ""), sanitizeName(name, ""), {
-                accountToken,
-                roomId: "",
-                isHost: page === "host",
-                join: false,
-                deviceId,
-                tabId,
-            });
-            if (!identity.ok) return cb({ ok: false, code: identity.code, account: accountPublicProfile(identity.profile), activeActivity: getAccountActiveActivity(identity.profile), deviceId: normalizeDeviceId(identity.profile?.[ACCOUNT_ACTIVE_DEVICE_ID_FIELD] || "") });
-            socket.data.accountId = identity.accountId;
-            socket.data.accountSessionHash = hashAccountToken(accountToken);
-            socket.data.deviceId = normalizeDeviceId(deviceId || socket.data.deviceId || "");
-            socket.data.tabId = normalizeTabId(tabId || socket.data.tabId || "");
-            socket.data.accountSessionRevoked = false;
-            socket.data.page = String(page || "unknown").slice(0, 24);
-            socket.data.isHost = page === "host";
-            cb({ ok: true, account: accountPublicProfile(identity.profile), accountId: identity.accountId, name: identity.name, activeActivity: getAccountActiveActivity(identity.profile) });
-        } catch (e) {
-            const code = e?.code === "ACCOUNT_TOKEN_REQUIRED" ? "ACCOUNT_TOKEN_REQUIRED" : "ACCOUNT_BOOTSTRAP_FAILED";
-            recordDiagnostic({ source:"server", kind:"account_bootstrap_failed", page:"server", message:e?.message || String(e), stack:e?.stack || "", detail:{ code, page: String(page || "index"), hasAccountId: !!normalizeAccountId(accountId || "") } });
-            cb({ ok: false, code });
-        }
-    });
-
-    // ----------------------------------------------------------------
-    // RENAME SELF — ผู้เล่นเปลี่ยนชื่อเองได้ แต่ server ต้องยืนยัน Login Identity ก่อน
-    // ----------------------------------------------------------------
-    socket.on("rename_my_account", async ({ accountId, accountToken, newName } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
-        if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
-        try {
-            const result = await renameOwnAccount(accountId, accountToken, newName, socket.data?.deviceId || "");
-            cb({ ok: true, accountId: result.accountId, name: result.name, changed: result.changed, account: accountPublicProfile(result.profile) });
-        } catch (e) {
-            cb({ ok: false, code: e.code || "RENAME_FAILED", error: e.message || "rename failed", retryAfterMs: e.retryAfterMs || 0 });
-        }
-    });
-
-    // ----------------------------------------------------------------
-    // ACCOUNT TOUCH — action สำคัญที่ผู้ใช้ทำจริง เช่น เปิด Profile
-    // ----------------------------------------------------------------
-    socket.on("account_touch", async ({ accountId, accountToken, reason } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
-        if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
-        const id = normalizeAccountId(accountId || "");
-        if (!id || !accountToken) return cb({ ok: false, code: "BAD_IDENTITY" });
-        try {
-            const verified = await verifyAccountLogin(id, accountToken, { deviceId: socket.data?.deviceId || "" });
-            if (!verified.profile) return cb({ ok: false, code: "ACCOUNT_NOT_FOUND" });
-            if (verified.ok === false) return cb({ ok: false, code: verified.code, account: accountPublicProfile(verified.profile) });
-            const profile = verified.profile;
-            const nowMs = Date.now();
-            const doc = await getDynamoDocClient();
-            const now = new Date(nowMs).toISOString();
-            const exprValues = { ":now": now, ":reason": String(reason || "touch").slice(0, 32) };
-            let updateExpression = "SET lastSeen = :now, lastActivityAt = :now, updatedAt = :now, lastActivityReason = :reason";
-            if ((profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY) {
-                updateExpression += ", temporaryExpiresAt = :expiry";
-                exprValues[":expiry"] = buildTemporaryExpiry(nowMs);
-            }
-            const out = await doc.send(new UpdateCommand({
-                TableName: STATS_TABLE_NAME,
-                Key: { playerName: ACCOUNTS_PARTITION_KEY, statKey: accountProfileKey(id) },
-                UpdateExpression: updateExpression,
-                ExpressionAttributeValues: exprValues,
-                ReturnValues: "ALL_NEW",
-            }));
-            accountActivityDbAt.set(id, nowMs);
-            const next = out.Attributes || { ...profile, lastSeen: now, lastActivityAt: now, updatedAt: now, lastActivityReason: String(reason || "touch").slice(0, 32) };
-            if ((profile.accountType || ACCOUNT_TYPE_TEMPORARY) === ACCOUNT_TYPE_TEMPORARY) next.temporaryExpiresAt = buildTemporaryExpiry(nowMs);
-            else delete next.temporaryExpiresAt;
-            accountProfileCache.set(id, next);
-            cb({ ok: true, account: accountPublicProfile(next) });
-        } catch (e) {
-            logAccountDbWarning(e);
-            cb({ ok: false, code: "ACCOUNT_TOUCH_FAILED" });
-        }
-    });
-
-    // ----------------------------------------------------------------
-    // GLOBAL PAGE PRESENCE — นับผู้เล่นออนไลน์ตั้งแต่หน้า index แม้ยังไม่เข้าห้อง
-    // ----------------------------------------------------------------
-    socket.on("presence_hello", async ({ token, name, page, visible, roomId, isHost, accountId, accountToken, deviceId, tabId } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        if (resetInProgress) return cb({ ok: false, code: "RESET_IN_PROGRESS" });
-        if (socket.data.testerToken || socket.data.admin) return cb({ ok: false, code: "IGNORED" });
-        const id = normalizeAccountId(accountId || "");
-        const safeName = sanitizeName(name, "");
-        if (!id || !accountToken) return cb({ ok: false, code: "BAD_IDENTITY" });
-        try {
-            // Presence heartbeat ไม่ถือเป็น activity: แค่เปิดแท็บค้างไว้จะไม่ต่ออายุ Temporary Account
-            // ต้องมี action ที่ server ยืนยันจริง เช่น bootstrap / เข้า-กลับห้อง / เปลี่ยนชื่อ / จบเกม
-            const verified = await verifyAccountLogin(id, accountToken, { deviceId: socket.data?.deviceId || normalizeDeviceId(deviceId || "") });
-            if (!verified.profile) return cb({ ok: false, code: "ACCOUNT_NOT_FOUND" });
-            if (verified.ok === false) return cb({ ok: false, code: verified.code, account: accountPublicProfile(verified.profile) });
-            const profile = verified.profile;
-            const resolvedName = sanitizeName(profile.currentName || safeName, "ผู้เล่น");
-            setAccountPresenceSocket(id, socket.id, { page, name: resolvedName, visible, roomId, isHost, deviceId: socket.data?.deviceId || normalizeDeviceId(deviceId || ""), tabId: socket.data?.tabId || normalizeTabId(tabId || "") });
-            cb({ ok: true, accountId: id, name: resolvedName, account: accountPublicProfile(profile) });
-        } catch (e) {
-            cb({ ok: false, code: "PRESENCE_FAILED" });
-        }
-    });
-    socket.on("presence_ping", ({ visible, roomId, isHost } = {}) => {
-        if (resetInProgress) return;
-        updateAccountPresenceSocket(socket.id, { visible: visible !== false, roomId: roomId || "", isHost: !!isHost });
-    });
-
-    // ----------------------------------------------------------------
-    // ADMIN — หน้า admin.html (ไม่มีลิงก์เชื่อมจากหน้าไหนเลย ต้องพิมพ์ URL เอง)
-    // ใช้ดู "บัญชี" ที่กำลังเชื่อมต่ออยู่จริงในระบบ (ทุกห้อง) และแก้ชื่อจากจุดเดียวนี้แทน
-    // (เดิมแก้ชื่อได้จากหน้าโฮสต์ — ย้ายมารวมไว้ที่นี่แทนทั้งหมด ดูคอมเมนต์ที่ลบไปด้านบน)
-    // ----------------------------------------------------------------
-
     // ADMIN ROOM INSPECTOR — snapshot สำหรับแอดมินเท่านั้น
     // รายการห้องใช้ข้อมูล summary สำหรับการ์ด/ตัวกรอง แต่ Inspector ต้องเห็นบริบทเกมจริง
     // โดยไม่ใช้ room object ตรง ๆ เพราะข้างในมี password, token, socket id และ private state
@@ -17284,7 +10101,7 @@ io.on("connection", (socket) => {
             isHost: !!p?.isHost,
             isBot: !!p?.isBot,
             isTester: !!p?.isTester,
-            accountId: p?.isBot || p?.isTester ? "" : String(p?.accountId || ""),
+            
             alive: p?.alive !== false,
             killed: !!p?.killed,
             protected: !!p?.protected,
@@ -17341,31 +10158,65 @@ io.on("connection", (socket) => {
                 maxPlayers: Number(room.maxPlayers || 0),
                 revealDeadRole: room.revealDeadRole !== false,
                 voteTimerEnabled: room.voteTimerEnabled !== false,
-                botAIEnabled: room.botAI?.enabled === true,
                 testerConditions: room.isTesterRoom && room.testerConditions && typeof room.testerConditions === "object" ? { ...room.testerConditions } : {},
                 roleConfig: room.config && typeof room.config === "object" ? { ...room.config } : {},
             },
             gameResult: result,
             players: safePlayers,
-            diagnostics: {
-                selectedTargetCount: Object.keys(selectedTargets).length,
-                voteCount: Object.keys(votes).length,
-                shieldTargetCount: Object.keys(shieldTargets).length,
-                wolfKillVoteCount: Object.keys(wolfKillVotes).length,
-                banditKillVoteCount: Object.keys(banditKillVotes).length,
-                continueReadyCount: room.continueReady && typeof room.continueReady === "object" ? Object.keys(room.continueReady).length : 0,
-                chatMessages: Number(room.chatSeq || 0),
-            },
             serverTime: new Date().toISOString(),
         };
     }
 
     socket.on("admin_list_rooms", (cb) => {
         if (typeof cb !== "function") cb=()=>{};
-        const list=Object.values(rooms).map((r)=>({roomId:r.id,isTester:!!r.isTesterRoom,started:!!r.started,gameOver:!!r.gameOver,hostName:r.players?.find(p=>p.isHost)?.name||"-",hostSlot:r.testerHostSlot||0,players:(r.players||[]).filter(p=>!p.isHost).length,totalPlayers:(r.players||[]).filter(p=>!p.isHost&&!p.isBot).length,bots:(r.players||[]).filter(p=>p.isBot).length,maxPlayers:r.maxPlayers||0,createdAt:r.createdAt||null}));
-        list.forEach((item) => { const source = rooms[item.roomId]; ensureRoomRuntimeState(source); item.stateVersion = Number(source?.stateVersion || 0); item.stateChangedAt = Number(source?.stateChangedAt || 0); });
+        const list=Object.values(rooms).map((r)=>{
+            ensureRoomRuntimeState(r);
+            const players = Array.isArray(r.players) ? r.players : [];
+            const realPlayers = players.filter((p) => !p?.isHost && !p?.isBot);
+            const bots = players.filter((p) => !!p?.isBot);
+            const connectedRealPlayers = realPlayers.filter((p) => isPlayerCurrentlyConnected(p));
+            return {
+                roomId:r.id,
+                isTester:!!r.isTesterRoom,
+                started:!!r.started,
+                gameOver:!!r.gameOver,
+                hostName:players.find(p=>p?.isHost)?.name||"-",
+                hostSlot:r.testerHostSlot||0,
+                players:players.filter(p=>!p?.isHost).length,
+                totalPlayers:realPlayers.length,
+                connectedPlayers:connectedRealPlayers.length,
+                bots:bots.length,
+                connectedBots:bots.filter((p) => isPlayerCurrentlyConnected(p)).length,
+                maxPlayers:r.maxPlayers||0,
+                createdAt:r.createdAt||null,
+                startedAt:r.startedAt||null,
+                phase:r.gameOver ? "game_over" : !r.started ? "waiting" : r.isNight ? "night" : (r.voteMode ? "day_vote" : "day"),
+                livePlayers:realPlayers.map((p)=>({
+                    name:String(p?.name||"ผู้เล่น"),
+                    connected:isPlayerCurrentlyConnected(p),
+                    alive:p?.alive !== false,
+                    isTester:!!p?.isTester,
+                })),
+            };
+        });
         list.sort((a,b)=>String(a.roomId).localeCompare(String(b.roomId)));
-        cb({ok:true,rooms:list});
+        const livePlayers = list.flatMap((room) => room.livePlayers.map((player) => ({ ...player, roomId: room.roomId, started: room.started, phase: room.phase })));
+        const humansConnected = livePlayers.filter((p) => p.connected && !p.isTester).length;
+        const humansPlaying = livePlayers.filter((p) => !p.isTester).length;
+        const activeRooms = list.filter((r) => !r.gameOver);
+        const playingRooms = activeRooms.filter((r) => r.started);
+        cb({
+            ok:true,
+            rooms:list,
+            presence:{
+                openRooms:activeRooms.length,
+                playingRooms:playingRooms.length,
+                humansPlaying,
+                humansConnected,
+                updatedAt:Date.now(),
+                players:livePlayers.filter((p) => !p.isTester),
+            },
+        });
     });
 
     socket.on("admin_get_room_detail", async ({ roomId } = {}, cb) => {
@@ -17398,154 +10249,6 @@ io.on("connection", (socket) => {
         catch(e){ recordDiagnostic({source:"server",kind:"admin_close_room_failed",page:"admin",message:e?.message||String(e),stack:e?.stack||""}); cb({error:e.message||"close_failed",code:"CLOSE_FAILED"}); }
     });
 
-    // LIST ACCOUNTS — ทุกบัญชีที่ "หน้าเว็บยังอยู่เบื้องหน้า" ไม่จำกัดว่าต้องอยู่ในห้องเกม
-    // และยังตัด tester/bot ออกเหมือนเดิม. หนึ่งบัญชีอาจมีหลาย socket/tab แต่ Admin แสดงบัญชีเพียง 1 แถว แล้วนับ connections แยก.
-    socket.on("admin_list_accounts", async (cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        if (resetInProgress) return cb({ ok: true, accounts: [], resetInProgress: true, resetEpoch: resetEpoch || "" });
-        const resetEpochAtStart = resetEpoch || "";
-        // Online presence is an in-memory live signal. Do NOT make the admin's online list depend
-        // on DynamoDB being readable: an IAM/DB problem must not turn a visibly-open index page
-        // into "offline". Persistence is a separate concern.
-        try {
-            let profileMap = new Map();
-            try {
-                const profiles = await queryAllAccountProfiles();
-                profiles.forEach((it) => {
-                    const id = normalizeAccountId(it.accountId || String(it.statKey || "").replace(/^ACCOUNT#/, ""));
-                    if (id) profileMap.set(id, it);
-                });
-            } catch (e) {
-                recordDiagnostic({ source:"server", kind:"admin_presence_profile_read_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "" });
-            }
-            if (resetInProgress || resetEpoch !== resetEpochAtStart) {
-                return cb({ ok: true, accounts: [], resetInProgress: !!resetInProgress, resetEpoch: resetEpoch || "" });
-            }
-            const accounts = [];
-            const accountIds = new Set(accountPresence.keys());
-            for (const sock of io.sockets.sockets.values()) {
-                const id = normalizeAccountId(sock?.data?.accountId || "");
-                if (sock?.connected && !sock.data?.resetInvalidated && id) accountIds.add(id);
-            }
-            for (const accountId of accountIds) {
-                const profile = profileMap.get(accountId);
-                if (profile?.status === "deleted" || profile?.isTester === true) continue;
-                const sessions = getLiveSessionsForAccount(accountId);
-                if (!sessions.length) continue;
-                const roomIds = Array.from(new Set(sessions.map((x) => String(x.roomId || "").toUpperCase()).filter(Boolean)));
-                const pages = Array.from(new Set(sessions.map((x) => String(x.page || "")).filter(Boolean)));
-                accounts.push({
-                    accountId,
-                    roomId: roomIds.length === 1 ? roomIds[0] : "",
-                    roomIds,
-                    page: pages.length === 1 ? pages[0] : (pages[0] || "unknown"),
-                    pages,
-                    name: profile?.currentName || sessions.find((x) => x.name)?.name || "ผู้เล่น",
-                    accountType: profile?.accountType || ACCOUNT_TYPE_TEMPORARY,
-                    temporaryExpiresAt: profile?.temporaryExpiresAt || null,
-                    isHost: sessions.some((x) => x.isHost),
-                    isTester: false,
-                    connected: true,
-                    connectionCount: sessions.length,
-                    sessionCount: sessions.length,
-                    activeActivity: getAccountActiveActivity(profile),
-                });
-            }
-            accounts.sort((a,b) => String(a.name || "").localeCompare(String(b.name || ""), "th"));
-            cb({ ok: true, accounts });
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_list_accounts_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "" });
-            cb({ error: e.message || "account list failed", code: "ACCOUNT_LIST_FAILED" });
-        }
-    });
-
-    // RENAME ACCOUNT — ใช้ accountId ไม่ต้องออนไลน์ และอัปเดตทุกห้อง/ทุกจอของบัญชีเดียวกัน
-    socket.on("admin_rename_account", async ({ accountId, roomId, playerId, newName } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        try {
-            let id = normalizeAccountId(accountId);
-            if (!id && roomId && playerId) {
-                const room = rooms[roomId];
-                const p = room?.players?.find((x) => x.id === playerId);
-                if (p && !p.isBot && !p.isTester) id = normalizeAccountId(p.accountId || "");
-            }
-            if (!id) return cb({ error: "account not found", code: "ACCOUNT_NOT_FOUND" });
-            const result = await updateAccountName(id, newName);
-            cb({ ok: true, name: result.name, accountId: id, changed: result.changed });
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_rename_account_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", data:e?.code || "" });
-            cb({ error: e.code === "ACCOUNT_NOT_FOUND" ? "account not found" : (e.code === "ACCOUNT_DELETED" ? "account deleted" : (e.message || "rename failed")), code: e.code || "RENAME_FAILED" });
-        }
-    });
-
-    // จัดการบัญชีจากหน้า "ผู้เล่นทั้งหมด" — wrapper ด้านบนบังคับ Admin session ก่อนถึง event นี้เสมอเมื่อมี password
-    socket.on("admin_set_account_status", async ({ accountId, status } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        try {
-            const next = await setAccountStatus(accountId, status);
-            if (status === "suspended" || status === "deleted") {
-                disconnectAccountSessions(accountId, status === "deleted" ? "account_deleted" : "account_suspended", status);
-            }
-            cb({ ok: true, accountId: normalizeAccountId(accountId), status: next.status });
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_status_update_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", data:e?.code || "" });
-            cb({ error: e.message || "status update failed", code: e.code || "STATUS_FAILED" });
-        }
-    });
-
-    socket.on("admin_reset_account_stats", async ({ accountId } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        try {
-            const result = await resetAccountStats(accountId);
-            cb(result);
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_reset_stats_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", data:e?.code || "" });
-            cb({ error: e.message || "reset stats failed", code: e.code || "RESET_STATS_FAILED" });
-        }
-    });
-
-    socket.on("admin_kick_account", ({ accountId } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        const count = disconnectAccountSessions(accountId, "account_kicked", "admin_kick");
-        cb({ ok: true, disconnected: count });
-    });
-
-    // Legacy player management — ข้อมูลก่อนระบบ accountId ยังแก้/ลบได้จากหน้า "ผู้เล่นทั้งหมด"
-    // โดยย้าย/ลบทั้ง partition ตามชื่ออย่างปลอดภัยและห้าม merge กับข้อมูลชื่อใหม่ที่มีอยู่แล้ว
-    socket.on("admin_rename_legacy_player", async ({ name, newName } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        try {
-            const result = await renameLegacyPlayer(name, newName);
-            cb({ ok: true, ...result });
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_legacy_rename_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", data:e?.code || "" });
-            cb({ error: e.message || "legacy rename failed", code: e.code || "LEGACY_RENAME_FAILED" });
-        }
-    });
-
-    socket.on("admin_migrate_legacy_player", async ({ name, accountId } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        try {
-            const result = await migrateLegacyPlayerToAccount(name, accountId);
-            cb(result);
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_legacy_migrate_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", data:e?.code || "" });
-            cb({ error: e.message || "legacy migration failed", code: e.code || "LEGACY_MIGRATE_FAILED" });
-        }
-    });
-
-    socket.on("admin_delete_legacy_player", async ({ name } = {}, cb) => {
-        if (typeof cb !== "function") cb = () => {};
-        try {
-            const result = await deleteLegacyPlayer(name);
-            cb({ ok: true, ...result });
-        } catch (e) {
-            recordDiagnostic({ source:"server", kind:"admin_legacy_delete_failed", page:"admin", message:e?.message || String(e), stack:e?.stack || "", data:e?.code || "" });
-            cb({ error: e.message || "legacy delete failed", code: e.code || "LEGACY_DELETE_FAILED" });
-        }
-    });
-
-    // รายละเอียดบัญชีเดียว: โปรไฟล์ + สถิติ + ประวัติ + session ออนไลน์
     // ----------------------------------------------------------------
     // ADD BOT (โหมดผู้ทดสอบ) — เพิ่มผู้เล่นปลอมเข้าห้องเพื่อให้แจกบทได้ครบตามจำนวน
     // บอทเป็น "ผู้เล่นจริง" ในสายตา server ทุกจุด (นับใน realPlayers, รับบทได้ปกติ)
@@ -17595,56 +10298,7 @@ io.on("connection", (socket) => {
         cb && cb({ ok: true, id: bot.id, token: bot.token, name: bot.name });
     });
 
-    // ----------------------------------------------------------------
-    // TOGGLE BOT AI (เฟส 4 — bot-autonomous-ai-phases.md)
-    // ควบคุมการเล่นอัตโนมัติของบอทจากฝั่งโฮสต์ 2 ระดับ:
-    //   - ระบุ botId → คุมเฉพาะบอทตัวนั้น เขียนลง room.botAI.perBot[botId]
-    //     (false = ปิด AI ให้บอทตัวนี้เฉยๆ แม้ไม่มีคนเข้าสิงก็จะไม่ทำ action เอง)
-    //   - ไม่ระบุ botId (undefined/null) → master switch ทั้งห้อง เขียนลง room.botAI.enabled
-    // botEngine.js (botEligibleNow) อ่านค่าทั้งสอง field นี้อยู่แล้วตั้งแต่เฟส 2-3 จึงมีผลทันที
-    // ตั้งแต่ action ถัดไปที่ยังไม่ได้ตั้ง timer — ไม่ต้อง restart อะไรเพิ่ม
-    // ----------------------------------------------------------------
-    socket.on("toggle_bot_ai", ({ roomId, botId, enabled } = {}) => {
-        const room = rooms[roomId];
-        if (!room || !isHostSocket(room, socket.id)) return;
-        if (!room.botAI) room.botAI = { enabled: true, perBot: {}, llmBots: {} };
-
-        if (botId) {
-            const bot = room.players.find((p) => p.id === botId && p.isBot);
-            if (!bot) return;
-            if (!room.botAI.perBot) room.botAI.perBot = {};
-            room.botAI.perBot[botId] = !!enabled;
-        } else {
-            room.botAI.enabled = !!enabled;
-        }
-
-        broadcastRoomUpdate(roomId, room);
-    });
-
-    // ----------------------------------------------------------------
-    // TOGGLE BOT LLM MODE (เฟส 5 / "แนวทาง B" — bot-autonomous-ai-approach-b-technical.md)
-    // เปิด/ปิดให้บอทตัวหนึ่งใช้ Claude ตัดสินใจแทนสุ่ม — ต้องเปิด "เล่นเองอัตโนมัติ" (toggle_bot_ai)
-    // ไว้ด้วยถึงจะมีผล เพราะ botEligibleNow() เช็ค room.botAI.enabled/perBot ก่อนเรียก botEngine.js
-    // เสมออยู่แล้ว ไม่ว่าจะเป็นเส้นทางสุ่มหรือ LLM (llmBots เป็นแค่ "จะเลือกยังไง" ไม่ใช่ "จะเลือกไหม")
-    // ปิดเป็นค่าเริ่มต้นเสมอ (room.botAI.llmBots ว่างตอนสร้างห้อง) — ไม่กระทบห้องที่ไม่เคยเปิดใช้เลย
-    // ----------------------------------------------------------------
-    socket.on("toggle_bot_llm_mode", ({ roomId, botId, enabled } = {}) => {
-        const room = rooms[roomId];
-        if (!room || !isHostSocket(room, socket.id)) return;
-        if (!botId) return; // ไม่มี master switch สำหรับโหมดนี้ (ต่างจาก toggle_bot_ai) — ต้องระบุบอททีละตัวเสมอ
-
-        const bot = room.players.find((p) => p.id === botId && p.isBot);
-        if (!bot) return;
-
-        if (!room.botAI) room.botAI = { enabled: true, perBot: {}, llmBots: {} };
-        if (!room.botAI.llmBots) room.botAI.llmBots = {};
-        room.botAI.llmBots[botId] = !!enabled;
-
-        broadcastRoomUpdate(roomId, room);
-    });
-
-    // ----------------------------------------------------------------
-    // RELEASE BOT — โฮสต์กด "กลับหน้าโฮสต์" จากในจอที่กำลังสิงบอทอยู่ เพื่อคืนสถานะให้บอท
+    // RELEASE BOT — โฮสต์กด "กลับหน้าโฮสต์"    // RELEASE BOT — โฮสต์กด "กลับหน้าโฮสต์" จากในจอที่กำลังสิงบอทอยู่ เพื่อคืนสถานะให้บอท
     // กลับไป "ว่าง" ทันที แทนที่จะปล่อยให้เข้า flow หลุดการเชื่อมต่อปกติซึ่งมี grace period
     // ยาว (5-10 นาที) กว่าจะเปลี่ยนสถานะ — ตัวนี้เคลียร์ทันทีไม่ต้องรอ ปลอดภัยเพราะเช็คว่า
     // ต้องเป็น isBot เท่านั้นถึงจะยอมให้ปล่อยแบบนี้ (กันผู้เล่นจริงเผลอเรียก event นี้)
@@ -17763,7 +10417,6 @@ io.on("connection", (socket) => {
             }
         }
 
-        if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "" }).catch(() => {});
         room.players = room.players.filter((p) => p.id !== playerId);
 
         if (room.players.length === 0) {
@@ -17792,11 +10445,12 @@ io.on("connection", (socket) => {
         if (!room) return cb && cb({ ok: true });
         if (room.started) return cb && cb({ error: "started", code: "ROOM_STARTED" });
 
-        const player = normalizeAccountId(socket.data?.accountId || "")
-            ? room.players.find((p) => !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === normalizeAccountId(socket.data.accountId || "")
-                && String(p.membershipId || "") === String(socket.data?.membershipId || ""))
-                || room.players.find((p) => !p.isHost && !p.isBot && normalizeAccountId(p.accountId || "") === normalizeAccountId(socket.data.accountId || ""))
-            : room.players.find((p) => p.id === socket.id && p.token === token);
+        const roomMembershipId = String(socket.data?.membershipId || "").trim();
+        const suppliedToken = String(token || "");
+        const player = (roomMembershipId
+            ? room.players.find((p) => p && !p.isHost && String(p.membershipId || "").trim() === roomMembershipId && (!suppliedToken || p.token === suppliedToken))
+            : null)
+            || room.players.find((p) => p && !p.isHost && p.id === socket.id && (!suppliedToken || p.token === suppliedToken));
         if (!player || player.isHost) return cb && cb({ ok: true });
 
         // ยกเลิก pending removal / pending indicator ที่มีอยู่ (เหมือน kick_player)
@@ -17824,7 +10478,6 @@ io.on("connection", (socket) => {
         cleanMap(room.wolfKillVotes);
         cleanMap(room.banditKillVotes);
 
-        if (player.accountId) await clearAccountActivity(player.accountId, { roomId, membershipId: player.membershipId || "", sessionHash: socket.data?.accountSessionHash || "", deviceId: socket.data?.deviceId || "" }).catch(() => {});
         room.players = room.players.filter((p) => p !== player && String(p.membershipId || "") !== String(player.membershipId || ""));
 
         if (room.players.length === 0) {
@@ -17938,9 +10591,6 @@ io.on("connection", (socket) => {
     // DISCONNECT
     // ----------------------------------------------------------------
     socket.on("disconnect", async () => {
-        removeAccountPresenceSocket(socket.id);
-        const disconnectedAccountId = normalizeAccountId(socket.data?.accountId || "");
-        if (disconnectedAccountId && !getConnectedSocketsForAccount(disconnectedAccountId).length) accountSessionWatchAt.delete(disconnectedAccountId);
         // ----- จอโฮสต์ (รองรับหลายจอพร้อมกัน) -----
         // เอา socket ที่หลุดออกจากชุดจอโฮสต์ของห้องนั้น แล้วค่อยเช็คว่ายังเหลือ
         // จอโฮสต์อื่นเชื่อมต่ออยู่ไหม — ถ้ายังมีอย่างน้อย 1 จอ ไม่ต้องขึ้นสถานะ "หลุด"
@@ -17953,6 +10603,7 @@ io.on("connection", (socket) => {
             if (hostPlayerForDisconnect) rememberSocketDisconnect('host', hostRoomId, hostPlayerForDisconnect.token, socket.id);
             const stillHasHostScreen = removeHostSocket(room, socket.id);
             if (room) {
+                touchRoomActivity(room);
                 const hostPlayer = room.players.find((p) => p.isHost);
                 if (hostPlayer && !stillHasHostScreen) {
                     hostPlayer.disconnected = true;
@@ -17967,36 +10618,18 @@ io.on("connection", (socket) => {
             const room = rooms[id];
             const player = getRoomPlayerForSocket(room, socket);
             if (!player || player.isHost) continue; // โฮสต์ถูกจัดการไปแล้วด้านบน
-            const playerAccountId = normalizeAccountId(player.accountId || "");
-            const playerMembershipId = String(player.membershipId || "").trim();
-            const otherAccountSockets = playerAccountId && playerMembershipId
-                ? getConnectedSocketsForAccount(playerAccountId).filter((sock) => sock.id !== socket.id && String(sock.data?.membershipId || "") === playerMembershipId)
-                : [];
+            if (!player.isBot) touchRoomActivity(room);
             rememberSocketDisconnect('player', id, player.token, socket.id);
-            if (!player.isTester && !player.isBot && otherAccountSockets.length > 0) {
-                const nextSocket = otherAccountSockets[0];
-                if (String(player.id || "") === String(socket.id)) {
-                    remapPlayerId(room, socket.id, nextSocket.id);
-                    player.id = nextSocket.id;
-                    player.activeDeviceId = normalizeDeviceId(nextSocket.data?.deviceId || player.activeDeviceId || "");
-                    player.activeTabId = normalizeTabId(nextSocket.data?.tabId || player.activeTabId || "");
-                }
-                player.disconnected = false;
-                player.offline = false;
-                continue;
-            }
-
             // Tester player เป็น session ชั่วคราว: ถ้ายังไม่เริ่มเกมและแท็บถูกปิดจริง ให้เอาออกจากห้องทันที
             // เพื่อคืนเลข Player ที่ว่าง ไม่ปล่อยชื่อ 1/2/3 ค้างเพราะ RECONNECT_GRACE ของผู้เล่นปกติ
             if (player.isTester && !player.isBot && !room.started) {
                 if (pendingRemovals[player.token]) { clearTimeout(pendingRemovals[player.token].timer); delete pendingRemovals[player.token]; }
                 if (pendingIndicators[player.token]) { clearTimeout(pendingIndicators[player.token]); delete pendingIndicators[player.token]; }
-                if (player.accountId) await clearAccountActivity(player.accountId, { roomId: id }).catch(() => {});
                 room.players = room.players.filter((p) => p.id !== player.id);
                 broadcastRoomUpdate(id, room);
                 if (room.players.length > 0) schedulePersistRoom(id, true);
                 if (room.players.length === 0 && room.isTesterRoom) {
-                    if (ROOM_PERSISTENCE_ENABLED) { try { await deletePersistedRoom(id); } catch (e) { logAccountDbWarning(e); } }
+                    if (ROOM_PERSISTENCE_ENABLED) { try { await deletePersistedRoom(id); } catch (e) { console.error(`[room-persist] ลบ snapshot ห้อง ${id} ไม่สำเร็จ:`, e?.name || "Error", e?.message || e); } }
                     delete rooms[id];
                 }
                 broadcastSuggestedRoom();
@@ -18010,13 +10643,6 @@ io.on("connection", (socket) => {
                 player.disconnected = false;
                 player.offline = true;
                 continue;
-            }
-
-            // นับเวลาเริ่ม "ออฟไลน์" ตั้งแต่วินาทีที่ socket หลุดจริง (ไม่รอดีเลย์ของสถานะ UI
-            // ด้านล่าง) เฉพาะตอนเกมกำลังเล่นอยู่เท่านั้น (ก่อนเริ่ม/หลังจบเกมไม่เกี่ยวกับการ
-            // ตัดสิน "ออกเกม" ของตานี้ — ดู didLeaveGame/recordGameStats ด้านบน)
-            if (room.started && !room.gameOver) {
-                markPlayerOfflineStart(player);
             }
 
             // ผู้เล่นทั่วไป: อย่าเพิ่งขึ้นสถานะ "🟡 กำลังเชื่อมต่อ..." ทันที
@@ -18069,40 +10695,45 @@ io.on("connection", (socket) => {
     });
 });
 
+// A single server sweep owns room expiry. Never refresh from a game/bot timer.
+const roomIdleSweepTimer = setInterval(() => {
+    if (!appBootReady || appDraining || resetInProgress) return;
+    const now = Date.now();
+    for (const [id, room] of Object.entries(rooms)) {
+        if (!room || room.isClosing) continue;
+        if (ROOM_PERSISTENCE_ENABLED && !isTesterRoom(room) && !roomLeaseOwnedLocally(id)) continue;
+        initializeRoomActivity(room, now);
+        if (hasLiveRoomMember(room, io.sockets.sockets)) {
+            if (now - room.lastRoomActivityAt >= ROOM_PRESENCE_REFRESH_MS) {
+                touchRoomActivity(room, now);
+                // Advance the durable revision without filling the gameplay timeline with heartbeats.
+                ensureRoomRuntimeState(room);
+                room.stateVersion += 1;
+                room.heartbeatStateVersion = room.stateVersion;
+                emitRoomUpdateToRoom(id, room);
+            }
+        } else if (roomIdleExpired(room, io.sockets.sockets, now)) {
+            closeRoomNow(id, "idle_timeout").catch((err) => console.error("[room-idle] close failed", id, err?.message));
+        }
+    }
+}, 5_000);
+roomIdleSweepTimer.unref?.();
+
 // ============================================================
 // HTTP_ERROR_MIDDLEWARE_V15: จับ exception ที่หลุดจาก Express route ให้มี trace/request/location ก่อนตอบ 500
 app.use(function HTTP_ERROR_MIDDLEWARE_V15(err, req, res, next) {
     if (res.headersSent) return next(err);
-    const ctx = req.__wwDiagnostic || {};
+    const ctx = {}; 
     const isEntityTooLarge = err?.type === "entity.too.large" || err?.status === 413 || err?.statusCode === 413;
     const status = isEntityTooLarge ? 413 : 500;
     const code = isEntityTooLarge ? "REQUEST_ENTITY_TOO_LARGE" : "INTERNAL_SERVER_ERROR";
 
-    // A malformed/oversized diagnostics submission must never be turned into a
-    // second 500 diagnostic event by the diagnostics endpoint itself. Return a
-    // stable 413 so the client can distinguish transport-size rejection from a
-    // real application failure. The client already hard-caps diagnostic payloads
-    // below the parser limit, so this is a defensive server-side ceiling.
     res.status(status).json({
             error: isEntityTooLarge ? "request_entity_too_large" : "internal_server_error",
             code,
             requestId: ctx.requestId || ""
     });
 
-    // Keep the original diagnostic for ordinary server exceptions. For an
-    // oversized diagnostics report, do not recursively record the parser error
-    // from /api/diagnostics/client-error itself.
-    if (!(isEntityTooLarge && req.path === "/api/diagnostics/client-error")) {
-        recordDiagnostic({
-            source:"server", kind:"http_handler_error", page:"server",
-            message:err?.message || String(err), stack:err?.stack || "",
-            endpoint:req.path, status,
-            traceId:ctx.traceId, sessionId:ctx.sessionId, action:ctx.action,
-            requestId:ctx.requestId, clientRequestId:ctx.clientRequestId,
-            durationMs:Date.now() - Number(ctx.startedAt || Date.now()),
-            context:{ method:req.method, endpoint:req.path, requestId:ctx.requestId, code },
-        });
-    }
 
 });
 
