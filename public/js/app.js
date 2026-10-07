@@ -21,7 +21,9 @@
     }
     function entry(message = '') {
         remember(null); state = null; cardShown = false; cardIdentity = '';
-        $('room').hidden = true; $('entry').hidden = false; notice(message);
+        $('room').hidden = true; $('entry').hidden = false;
+        $('dayNightBadge').hidden = true; document.body.classList.add('is-day'); document.body.classList.remove('is-night');
+        notice(message);
     }
     function connection() {
         $('connection').textContent = socket?.connected ? '● เชื่อมต่อแล้ว' : '○ กำลังเชื่อมต่อใหม่…';
@@ -53,6 +55,10 @@
     }
     function receive(room) {
         state = room; $('entry').hidden = true; $('room').hidden = false;
+        document.body.classList.toggle('is-day', room.phase !== 'night');
+        document.body.classList.toggle('is-night', room.phase === 'night');
+        $('dayNightBadge').hidden = room.phase === 'lobby';
+        $('dayNightText').textContent = phaseText(room);
         $('roomCode').textContent = room.id;
         $('roomStatus').textContent = `${phaseText(room)} · โฮสต์ ${room.hostName}`;
         if (page === 'host') renderHost(); else renderPlayer();

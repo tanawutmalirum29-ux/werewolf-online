@@ -29,6 +29,6 @@ for (const page of ['host', 'player']) {
 }
 const index = path.join(output, 'index.html');
 let html = fs.readFileSync(index, 'utf8').replace('ห้องเป็นวงเล่นชั่วคราว หากเซิร์ฟเวอร์เริ่มใหม่ ให้สร้างห้องใหม่', 'ห้องอยู่ในหน้าโฮสต์ โฮสต์ต้องเปิดหน้านี้ไว้ตลอดเกม หากปิดหรือรีเฟรช ให้สร้างห้องใหม่');
-if (!configured) html = html.replace('<main class="landing">', '<main class="landing"><p class="notice" role="status">เว็บติดตั้งแล้ว แต่ยังไม่พร้อมเล่น เจ้าของเว็บต้องตั้งค่า AppSync ตาม README แล้ว deploy อีกครั้ง</p>');
+if (!configured) html = html.replace('<main class="landing lobby-layout">', '<main class="landing lobby-layout"><p class="notice" role="status">เว็บติดตั้งแล้ว แต่ยังไม่พร้อมเล่น เจ้าของเว็บต้องตั้งค่า AppSync ตาม README แล้ว deploy อีกครั้ง</p>');
 fs.writeFileSync(index, html);
 console.log(configured ? 'Built AWS frontend in dist/. Ready for an AppSync connection test.' : 'Built setup frontend in dist/. Gameplay is disabled until the three AppSync variables are configured. See README.');
